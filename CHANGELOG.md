@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.2](https://github.com/jensvogt/euclid-jdk/compare/euclid-jdk-v0.1.1...euclid-jdk-v0.1.2) (2026-08-19)
+
+
+### Bug Fixes
+
+* github action ([ad2b8e8](https://github.com/jensvogt/euclid-jdk/commit/ad2b8e8b486b162bfa96abc9eff7e092d205f980))
+
 ## [0.1.1](https://github.com/jensvogt/euclid-jdk/compare/euclid-jdk-v0.1.0...euclid-jdk-v0.1.1) (2026-08-19)
 
 
