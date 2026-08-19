@@ -38,7 +38,7 @@ class EuclidSqsLoadTest {
 
 
     private static final int THREAD_COUNT = 10;
-    private static final int MESSAGES_PER_THREAD = 10_000;
+    private static final int MESSAGES_PER_THREAD = 100_000;
 
     @Test
     void concurrentSendReceiveDeleteOnSharedQueue() throws Exception {
