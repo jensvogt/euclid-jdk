@@ -1,0 +1,21 @@
+package de.jensvogt.euclid.dto.sqs;
+
+public record DeleteQueueRequest(String ern) {
+
+    public static Builder builder() {
+        return new Builder();
+    }
+
+    public static final class Builder {
+        private String ern;
+
+        public Builder ern(String ern) {
+            this.ern = ern;
+            return this;
+        }
+
+        public DeleteQueueRequest build() {
+            return new DeleteQueueRequest(ern);
+        }
+    }
+}
