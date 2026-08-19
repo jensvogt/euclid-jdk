@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.4](https://github.com/jensvogt/euclid-jdk/compare/euclid-jdk-v0.1.3...euclid-jdk-v0.1.4) (2026-08-19)
+
+
+### Bug Fixes
+
+* add GetMessageMetadataRequest/Response, add GetQueueMetadataRequesr/Response ([6f111a1](https://github.com/jensvogt/euclid-jdk/commit/6f111a1671838c9a3b477c25e90448570fe31995))
+
 ## [0.1.3](https://github.com/jensvogt/euclid-jdk/compare/euclid-jdk-v0.1.2...euclid-jdk-v0.1.3) (2026-08-19)
 
 
