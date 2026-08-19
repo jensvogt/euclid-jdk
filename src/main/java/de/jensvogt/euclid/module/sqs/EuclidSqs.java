@@ -6,10 +6,18 @@ import de.jensvogt.euclid.dto.sqs.CreateQueueRequest;
 import de.jensvogt.euclid.dto.sqs.CreateQueueResponse;
 import de.jensvogt.euclid.dto.sqs.DeleteMessageRequest;
 import de.jensvogt.euclid.dto.sqs.DeleteQueueRequest;
+import de.jensvogt.euclid.dto.sqs.GetMessageAttributeRequest;
+import de.jensvogt.euclid.dto.sqs.GetMessageAttributeResponse;
 import de.jensvogt.euclid.dto.sqs.GetMessageCountRequest;
 import de.jensvogt.euclid.dto.sqs.GetMessageCountResponse;
+import de.jensvogt.euclid.dto.sqs.GetMessageMetadataRequest;
+import de.jensvogt.euclid.dto.sqs.GetMessageMetadataResponse;
 import de.jensvogt.euclid.dto.sqs.GetQueueErnRequest;
 import de.jensvogt.euclid.dto.sqs.GetQueueErnResponse;
+import de.jensvogt.euclid.dto.sqs.GetQueueMetadataRequest;
+import de.jensvogt.euclid.dto.sqs.GetQueueMetadataResponse;
+import de.jensvogt.euclid.dto.sqs.ListMessagesRequest;
+import de.jensvogt.euclid.dto.sqs.ListMessagesResponse;
 import de.jensvogt.euclid.dto.sqs.ListQueueRequest;
 import de.jensvogt.euclid.dto.sqs.PurgeAllQueuesRequest;
 import de.jensvogt.euclid.dto.sqs.PurgeQueueRequest;
@@ -17,6 +25,7 @@ import de.jensvogt.euclid.dto.sqs.ReceiveMessagesRequest;
 import de.jensvogt.euclid.dto.sqs.ReceiveMessagesResponse;
 import de.jensvogt.euclid.dto.sqs.SendMessageRequest;
 import de.jensvogt.euclid.dto.sqs.SendMessageResponse;
+import de.jensvogt.euclid.dto.sqs.SetMessageVisibilityRequest;
 import de.jensvogt.euclid.dto.sqs.model.Message;
 import de.jensvogt.euclid.dto.sqs.model.Queue;
 import de.jensvogt.euclid.dto.sqs.model.Variant;
@@ -83,6 +92,25 @@ public final class EuclidSqs {
         return extractQueues(response.body());
     }
 
+    public ListMessagesResponse listMessages(String queueErn) throws IOException, InterruptedException {
+        return listMessages(queueErn, 10, 0, "created");
+    }
+
+    public ListMessagesResponse listMessages(String queueErn, long pageSize, long pageIndex, String sortColumn)
+            throws IOException, InterruptedException {
+        String body = OBJECT_MAPPER.writeValueAsString(
+                ListMessagesRequest.builder().queueErn(queueErn).pageSize(pageSize).pageIndex(pageIndex)
+                        .sortColumn(sortColumn).build());
+        HttpResponse<String> response = httpClient.post(baseUrl + "/", body, "sqs", "list-messages",
+                requestHeaders("list-messages", body));
+
+        if (response.statusCode() / 100 != 2) {
+            throw new EuclidAuthenticationException(response.statusCode(), response.body());
+        }
+
+        return extractListMessagesResponse(response.body());
+    }
+
     public CreateQueueResponse createQueue(String name) throws IOException, InterruptedException {
         return createQueue(name, 30, 3, 1024 * 1024, "");
     }
@@ -122,6 +150,18 @@ public final class EuclidSqs {
         }
 
         return extractGetQueueErnResponse(response.body());
+    }
+
+    public GetQueueMetadataResponse getQueueMetadata(String ern) throws IOException, InterruptedException {
+        String body = OBJECT_MAPPER.writeValueAsString(GetQueueMetadataRequest.builder().ern(ern).build());
+        HttpResponse<String> response = httpClient.post(baseUrl + "/", body, "sqs", "get-queue-metadata",
+                requestHeaders("get-queue-metadata", body));
+
+        if (response.statusCode() / 100 != 2) {
+            throw new EuclidAuthenticationException(response.statusCode(), response.body());
+        }
+
+        return extractGetQueueMetadataResponse(response.body());
     }
 
     public void purgeQueue(String ern) throws IOException, InterruptedException {
@@ -250,6 +290,44 @@ public final class EuclidSqs {
         return extractGetMessageCountResponse(response.body());
     }
 
+    public void setVisibility(String messageId, long visibility) throws IOException, InterruptedException {
+        String body = OBJECT_MAPPER.writeValueAsString(
+                SetMessageVisibilityRequest.builder().messageId(messageId).visibility(visibility).build());
+        HttpResponse<String> response = httpClient.post(baseUrl + "/", body, "sqs", "set-visibility",
+                requestHeaders("set-visibility", body));
+
+        if (response.statusCode() / 100 != 2) {
+            throw new EuclidAuthenticationException(response.statusCode(), response.body());
+        }
+    }
+
+    public GetMessageAttributeResponse getMessageAttribute(String messageId, String name)
+            throws IOException, InterruptedException {
+        String body = OBJECT_MAPPER.writeValueAsString(
+                GetMessageAttributeRequest.builder().messageId(messageId).name(name).build());
+        HttpResponse<String> response = httpClient.post(baseUrl + "/", body, "sqs", "get-message-attribute",
+                requestHeaders("get-message-attribute", body));
+
+        if (response.statusCode() / 100 != 2) {
+            throw new EuclidAuthenticationException(response.statusCode(), response.body());
+        }
+
+        return extractGetMessageAttributeResponse(response.body());
+    }
+
+    public GetMessageMetadataResponse getMessageMetadata(String messageId) throws IOException, InterruptedException {
+        String body = OBJECT_MAPPER.writeValueAsString(
+                GetMessageMetadataRequest.builder().messageId(messageId).build());
+        HttpResponse<String> response = httpClient.post(baseUrl + "/", body, "sqs", "get-message-metadata",
+                requestHeaders("get-message-metadata", body));
+
+        if (response.statusCode() / 100 != 2) {
+            throw new EuclidAuthenticationException(response.statusCode(), response.body());
+        }
+
+        return extractGetMessageMetadataResponse(response.body());
+    }
+
     private static SendMessageResponse extractSendMessageResponse(String responseBody) throws IOException {
         JsonNode root = OBJECT_MAPPER.readTree(responseBody);
         return SendMessageResponse.builder().messageId(textOrNull(root, "messageId")).build();
@@ -269,6 +347,37 @@ public final class EuclidSqs {
         JsonNode root = OBJECT_MAPPER.readTree(responseBody);
         return GetMessageCountResponse.builder().ern(textOrNull(root, "ern")).available(root.path("available").asLong(0))
                 .delayed(root.path("delayed").asLong(0)).invisible(root.path("invisible").asLong(0)).build();
+    }
+
+    private static ListMessagesResponse extractListMessagesResponse(String responseBody) throws IOException {
+        JsonNode root = OBJECT_MAPPER.readTree(responseBody);
+        return ListMessagesResponse.builder().messages(toMessageList(root.get("messages")))
+                .total(root.path("total").asLong(0)).build();
+    }
+
+    private static GetQueueMetadataResponse extractGetQueueMetadataResponse(String responseBody) throws IOException {
+        JsonNode root = OBJECT_MAPPER.readTree(responseBody);
+        return GetQueueMetadataResponse.builder().region(textOrNull(root, "region")).accountId(textOrNull(root, "accountId"))
+                .owner(textOrNull(root, "owner")).nameSpace(textOrNull(root, "nameSpace")).name(textOrNull(root, "name"))
+                .ern(textOrNull(root, "ern")).size(root.path("size").asLong(0)).messages(root.path("messages").asLong(0)).build();
+    }
+
+    private static GetMessageAttributeResponse extractGetMessageAttributeResponse(String responseBody) throws IOException {
+        JsonNode root = OBJECT_MAPPER.readTree(responseBody);
+        JsonNode valueNode = root.get("value");
+        Variant value = valueNode == null ? null : new Variant(textOrNull(valueNode, "type"), textOrNull(valueNode, "value"));
+        return GetMessageAttributeResponse.builder().messageId(textOrNull(root, "messageId")).name(textOrNull(root, "name"))
+                .value(value).build();
+    }
+
+    private static GetMessageMetadataResponse extractGetMessageMetadataResponse(String responseBody) throws IOException {
+        JsonNode root = OBJECT_MAPPER.readTree(responseBody);
+        return GetMessageMetadataResponse.builder().messageId(textOrNull(root, "messageId")).queueErn(textOrNull(root, "queueErn"))
+                .receiptHandle(textOrNull(root, "receiptHandle")).status(textOrNull(root, "status"))
+                .size(root.path("size").asLong(0)).receivedCount(root.path("receivedCount").asLong(0))
+                .visibilityTimeout(root.path("visibilityTimeout").asLong(0)).contentType(textOrNull(root, "contentType"))
+                .md5Body(textOrNull(root, "md5Body")).md5Attributes(textOrNull(root, "md5Attributes"))
+                .created(textOrNull(root, "created")).modified(textOrNull(root, "modified")).build();
     }
 
     /**
@@ -320,7 +429,11 @@ public final class EuclidSqs {
 
     private static ReceiveMessagesResponse extractReceiveMessagesResponse(String responseBody) throws IOException {
         JsonNode root = OBJECT_MAPPER.readTree(responseBody);
-        JsonNode messagesNode = root.get("messages");
+        return ReceiveMessagesResponse.builder().messages(toMessageList(root.get("messages")))
+                .total(root.path("total").asLong(0)).build();
+    }
+
+    private static List<Message> toMessageList(JsonNode messagesNode) {
         List<Message> messages = new ArrayList<>();
         if (messagesNode != null && messagesNode.isArray()) {
             for (JsonNode messageNode : messagesNode) {
@@ -335,7 +448,7 @@ public final class EuclidSqs {
                         textOrNull(messageNode, "modified")));
             }
         }
-        return ReceiveMessagesResponse.builder().messages(messages).total(root.path("total").asLong(0)).build();
+        return messages;
     }
 
     private static Map<String, Variant> toVariantMap(JsonNode node) {
