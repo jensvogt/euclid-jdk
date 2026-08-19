@@ -36,7 +36,6 @@ import static org.junit.jupiter.api.Assertions.fail;
 @Disabled("requires a live Euclid server at https://localhost:5566 and moves 1,000,000 messages - run manually")
 class EuclidSqsLoadTest {
 
-
     private static final int THREAD_COUNT = 10;
     private static final int MESSAGES_PER_THREAD = 100_000;
 
