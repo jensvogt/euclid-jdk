@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.6](https://github.com/jensvogt/euclid-jdk/compare/euclid-jdk-v0.1.5...euclid-jdk-v0.1.6) (2026-08-24)
+
+
+### Bug Fixes
+
+* new javadocs ([3d2ef32](https://github.com/jensvogt/euclid-jdk/commit/3d2ef327aa488267c90d4d98d8d7d778cea30e57))
+
 ## [0.1.5](https://github.com/jensvogt/euclid-jdk/compare/euclid-jdk-v0.1.4...euclid-jdk-v0.1.5) (2026-08-24)
 
 
