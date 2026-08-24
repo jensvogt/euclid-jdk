@@ -41,7 +41,7 @@ class EuclidEamTest {
                 .login();
 
         assertEquals("abc123", session.token());
-        assertTrue(receivedBody.get().contains("\"username\":\"jens\""));
+        assertTrue(receivedBody.get().contains("\"userId\":\"jens\""));
         assertTrue(receivedBody.get().contains("\"password\":\"s3cret\""));
     }
 
@@ -50,6 +50,7 @@ class EuclidEamTest {
         server = startServer("/login", exchange -> sendResponse(exchange, 401, "{\"error\":\"invalid credentials\"}"));
 
         EuclidEam access = EuclidEam.forServer(baseUrl())
+                .loginPath("/login")
                 .username("jens")
                 .password("wrong");
 

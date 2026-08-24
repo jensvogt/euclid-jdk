@@ -6,6 +6,19 @@ import com.sun.net.httpserver.HttpHandler;
 import com.sun.net.httpserver.HttpServer;
 import de.jensvogt.euclid.auth.SigV4;
 import de.jensvogt.euclid.auth.SignableRequest;
+import de.jensvogt.euclid.dto.eqs.CreateQueueResponse;
+import de.jensvogt.euclid.dto.eqs.GetMessageAttributeResponse;
+import de.jensvogt.euclid.dto.eqs.GetMessageCountResponse;
+import de.jensvogt.euclid.dto.eqs.GetMessageMetadataResponse;
+import de.jensvogt.euclid.dto.eqs.GetQueueErnResponse;
+import de.jensvogt.euclid.dto.eqs.GetQueueMetadataResponse;
+import de.jensvogt.euclid.dto.eqs.ListMessagesResponse;
+import de.jensvogt.euclid.dto.eqs.ReceiveMessagesResponse;
+import de.jensvogt.euclid.dto.eqs.SendMessageResponse;
+import de.jensvogt.euclid.dto.eqs.model.Message;
+import de.jensvogt.euclid.dto.eqs.model.Queue;
+import de.jensvogt.euclid.dto.eqs.model.Variant;
+import de.jensvogt.euclid.exception.EuclidAuthenticationException;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
@@ -13,15 +26,21 @@ import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * Confirms EuclidEqs actually authenticates the way it claims to: SigV4-signed when an access
- * key is configured, bearer token otherwise - mirroring euclid-cli's HttpClient.cpp.
+ * Confirms EuclidEqs authenticates the way it claims to (SigV4-signed when an access key is
+ * configured, bearer token otherwise, mirroring euclid-cli's HttpClient.cpp), routes every
+ * operation to the right action with a correctly-shaped request body, parses the corresponding
+ * response, and surfaces non-2xx responses as {@link EuclidAuthenticationException}.
  */
 class EuclidEqsTest {
 
@@ -74,6 +93,418 @@ class EuclidEqsTest {
         sqs.sendMessage("ern:sqs:eu-central-1:863459426936:queue/test", "hello");
 
         assertEquals("Bearer my-jwt-token", received.get().header("authorization"));
+    }
+
+    @Test
+    void listQueuesUsesDefaultsAndParsesResponse() throws Exception {
+        AtomicReference<SignableRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(captureRequest(exchange));
+            sendResponse(exchange, 200, "{\"queues\":[{\"region\":\"eu-central-1\",\"name\":\"orders\","
+                    + "\"owner\":\"alice\",\"ern\":\"ern:sqs:eu-central-1:863459426936:queue/orders\","
+                    + "\"tags\":{\"env\":\"prod\"},\"delay\":5,\"size\":100,\"messages\":3,\"delayed\":1,"
+                    + "\"busy\":0,\"visibility\":30,\"maxMessageLength\":1048576,\"maxReceiveCount\":3,"
+                    + "\"deadLetterQueueArn\":null,\"created\":\"2026-01-01\",\"modified\":\"2026-01-02\"}]}");
+        });
+
+        List<Queue> queues = newClient().listQueues();
+
+        assertEquals("list-queues", received.get().header("x-euclid-action"));
+        assertBodyContains(received.get().body(), "\"prefix\":\"\"", "\"pageSize\":10", "\"pageIndex\":0",
+                "\"sortColumn\":\"name\"");
+
+        assertEquals(1, queues.size());
+        Queue queue = queues.get(0);
+        assertEquals("orders", queue.name());
+        assertEquals("ern:sqs:eu-central-1:863459426936:queue/orders", queue.ern());
+        assertEquals("prod", queue.tags().get("env"));
+        assertEquals(3, queue.messages());
+        assertNullSafe(queue.deadLetterQueueArn());
+    }
+
+    @Test
+    void listQueuesWithExplicitParameters() throws Exception {
+        AtomicReference<SignableRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(captureRequest(exchange));
+            sendResponse(exchange, 200, "{\"queues\":[]}");
+        });
+
+        List<Queue> queues = newClient().listQueues("ord", 25, 2, "created");
+
+        assertBodyContains(received.get().body(), "\"prefix\":\"ord\"", "\"pageSize\":25", "\"pageIndex\":2",
+                "\"sortColumn\":\"created\"");
+        assertTrue(queues.isEmpty());
+    }
+
+    @Test
+    void listMessagesParsesResponse() throws Exception {
+        AtomicReference<SignableRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(captureRequest(exchange));
+            sendResponse(exchange, 200, "{\"messages\":[" + messageJson("msg-1", "rh-1") + "],\"total\":1}");
+        });
+
+        ListMessagesResponse response = newClient().listMessages("queue-ern");
+
+        assertEquals("list-messages", received.get().header("x-euclid-action"));
+        assertBodyContains(received.get().body(), "\"queueErn\":\"queue-ern\"", "\"pageSize\":10",
+                "\"pageIndex\":0", "\"sortColumn\":\"created\"");
+        assertEquals(1, response.total());
+        assertEquals("msg-1", response.messages().get(0).messageId());
+    }
+
+    @Test
+    void createQueueUsesDefaultsAndParsesResponse() throws Exception {
+        AtomicReference<SignableRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(captureRequest(exchange));
+            sendResponse(exchange, 200, "{\"name\":\"orders\",\"ern\":\"ern:sqs:eu-central-1:863459426936:queue/orders\"}");
+        });
+
+        CreateQueueResponse response = newClient().createQueue("orders");
+
+        assertEquals("create-queue", received.get().header("x-euclid-action"));
+        assertBodyContains(received.get().body(), "\"name\":\"orders\"", "\"visibility\":30", "\"maxRetries\":3",
+                "\"maxMessageLength\":1048576", "\"dlqName\":\"\"", "\"delay\":0");
+        assertEquals("orders", response.name());
+        assertEquals("ern:sqs:eu-central-1:863459426936:queue/orders", response.ern());
+    }
+
+    @Test
+    void createQueueWithExplicitParameters() throws Exception {
+        AtomicReference<SignableRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(captureRequest(exchange));
+            sendResponse(exchange, 200, "{\"name\":\"orders\",\"ern\":\"ern:orders\"}");
+        });
+
+        newClient().createQueue("orders", 60, 5, 2048, "orders-dlq", 10);
+
+        assertBodyContains(received.get().body(), "\"visibility\":60", "\"maxRetries\":5", "\"maxMessageLength\":2048",
+                "\"dlqName\":\"orders-dlq\"", "\"delay\":10");
+    }
+
+    @Test
+    void deleteQueueSendsErn() throws Exception {
+        AtomicReference<SignableRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(captureRequest(exchange));
+            sendResponse(exchange, 200, "{}");
+        });
+
+        newClient().deleteQueue("queue-ern");
+
+        assertEquals("delete-queue", received.get().header("x-euclid-action"));
+        assertBodyContains(received.get().body(), "\"ern\":\"queue-ern\"");
+    }
+
+    @Test
+    void getQueueErnParsesResponse() throws Exception {
+        AtomicReference<SignableRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(captureRequest(exchange));
+            sendResponse(exchange, 200, "{\"ern\":\"ern:sqs:eu-central-1:863459426936:queue/orders\"}");
+        });
+
+        GetQueueErnResponse response = newClient().getQueueErn("orders");
+
+        assertEquals("get-queue-ern", received.get().header("x-euclid-action"));
+        assertBodyContains(received.get().body(), "\"name\":\"orders\"");
+        assertEquals("ern:sqs:eu-central-1:863459426936:queue/orders", response.ern());
+    }
+
+    @Test
+    void getQueueMetadataParsesResponse() throws Exception {
+        AtomicReference<SignableRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(captureRequest(exchange));
+            sendResponse(exchange, 200, "{\"region\":\"eu-central-1\",\"accountId\":\"863459426936\","
+                    + "\"owner\":\"alice\",\"nameSpace\":\"default\",\"name\":\"orders\",\"ern\":\"queue-ern\","
+                    + "\"size\":42,\"messages\":7}");
+        });
+
+        GetQueueMetadataResponse response = newClient().getQueueMetadata("queue-ern");
+
+        assertEquals("get-queue-metadata", received.get().header("x-euclid-action"));
+        assertBodyContains(received.get().body(), "\"ern\":\"queue-ern\"");
+        assertEquals("orders", response.name());
+        assertEquals(42, response.size());
+        assertEquals(7, response.messages());
+    }
+
+    @Test
+    void purgeQueueSendsErn() throws Exception {
+        AtomicReference<SignableRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(captureRequest(exchange));
+            sendResponse(exchange, 200, "{}");
+        });
+
+        newClient().purgeQueue("queue-ern");
+
+        assertEquals("purge-queue", received.get().header("x-euclid-action"));
+        assertBodyContains(received.get().body(), "\"ern\":\"queue-ern\"");
+    }
+
+    @Test
+    void purgeAllQueuesUsesInstanceRegionAndAccountByDefault() throws Exception {
+        AtomicReference<SignableRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(captureRequest(exchange));
+            sendResponse(exchange, 200, "{}");
+        });
+
+        newClient().purgeAllQueues();
+
+        assertEquals("purge-all-queues", received.get().header("x-euclid-action"));
+        assertBodyContains(received.get().body(), "\"region\":\"eu-central-1\"", "\"accountId\":\"863459426936\"");
+    }
+
+    @Test
+    void purgeAllQueuesWithExplicitRegionAndAccount() throws Exception {
+        AtomicReference<SignableRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(captureRequest(exchange));
+            sendResponse(exchange, 200, "{}");
+        });
+
+        newClient().purgeAllQueues("us-east-1", "111111111111");
+
+        assertBodyContains(received.get().body(), "\"region\":\"us-east-1\"", "\"accountId\":\"111111111111\"");
+    }
+
+    @Test
+    void sendMessageWithDefaultsUsesMiddlePriorityAndEmptyAttributes() throws Exception {
+        AtomicReference<SignableRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(captureRequest(exchange));
+            sendResponse(exchange, 200, "{\"messageId\":\"msg-1\",\"md5Body\":\"abc\",\"md5Attributes\":\"def\"}");
+        });
+
+        SendMessageResponse response = newClient().sendMessage("queue-ern", "hello");
+
+        assertEquals("send-message", received.get().header("x-euclid-action"));
+        assertBodyContains(received.get().body(), "\"ern\":\"queue-ern\"", "\"body\":\"hello\"",
+                "\"attributes\":{}", "\"priority\":\"MIDDLE\"");
+        assertEquals("msg-1", response.messageId());
+        assertEquals("abc", response.md5Body());
+        assertEquals("def", response.md5Attributes());
+    }
+
+    @Test
+    void sendMessageWithAttributesAndPriority() throws Exception {
+        AtomicReference<SignableRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(captureRequest(exchange));
+            sendResponse(exchange, 200, "{\"messageId\":\"msg-1\"}");
+        });
+
+        newClient().sendMessage("queue-ern", "hello", Map.of("count", new Variant("long", 5)), "HIGH");
+
+        assertBodyContains(received.get().body(), "\"priority\":\"HIGH\"", "\"count\":{\"type\":\"long\",\"value\":5}");
+    }
+
+    @Test
+    void receiveMessagesReturnsEmptyWithoutPollingWhenNoneAvailable() throws Exception {
+        AtomicInteger receiveMessagesCalls = new AtomicInteger();
+        server = startServer(exchange -> {
+            String action = exchange.getRequestHeaders().getFirst("x-euclid-action");
+            if ("get-message-count".equals(action)) {
+                sendResponse(exchange, 200, "{\"ern\":\"queue-ern\",\"available\":0,\"delayed\":0,\"invisible\":0}");
+            } else if ("receive-messages".equals(action)) {
+                receiveMessagesCalls.incrementAndGet();
+                sendResponse(exchange, 200, "{\"messages\":[],\"total\":0}");
+            } else {
+                sendResponse(exchange, 500, "{\"error\":\"unexpected action " + action + "\"}");
+            }
+        });
+
+        ReceiveMessagesResponse response = newClient().receiveMessages("queue-ern", 10, 0);
+
+        assertTrue(response.messages().isEmpty());
+        assertEquals(0, receiveMessagesCalls.get(), "should short-circuit on the message count instead of polling");
+    }
+
+    @Test
+    void receiveMessagesReturnsMessagesWhenAvailable() throws Exception {
+        AtomicReference<SignableRequest> receiveRequest = new AtomicReference<>();
+        server = startServer(exchange -> {
+            String action = exchange.getRequestHeaders().getFirst("x-euclid-action");
+            if ("get-message-count".equals(action)) {
+                sendResponse(exchange, 200, "{\"ern\":\"queue-ern\",\"available\":1,\"delayed\":0,\"invisible\":0}");
+            } else if ("receive-messages".equals(action)) {
+                receiveRequest.set(captureRequest(exchange));
+                sendResponse(exchange, 200, "{\"messages\":[" + messageJson("msg-1", "rh-1") + "],\"total\":1}");
+            } else {
+                sendResponse(exchange, 500, "{\"error\":\"unexpected action " + action + "\"}");
+            }
+        });
+
+        ReceiveMessagesResponse response = newClient().receiveMessages("queue-ern", 5, 0);
+
+        assertBodyContains(receiveRequest.get().body(), "\"maxCount\":5", "\"waitTime\":0");
+        assertEquals(1, response.messages().size());
+        assertEquals("msg-1", response.messages().get(0).messageId());
+        assertEquals("rh-1", response.messages().get(0).receiptHandle());
+    }
+
+    @Test
+    void receiveMessagesPollsUntilMessageArrives() throws Exception {
+        AtomicInteger callCount = new AtomicInteger();
+        server = startServer(exchange -> {
+            if (callCount.getAndIncrement() == 0) {
+                sendResponse(exchange, 200, "{\"messages\":[],\"total\":0}");
+            } else {
+                sendResponse(exchange, 200, "{\"messages\":[" + messageJson("msg-1", "rh-1") + "],\"total\":1}");
+            }
+        });
+
+        ReceiveMessagesResponse response = newClient().receiveMessages("queue-ern", 10, 2);
+
+        assertTrue(callCount.get() >= 2, "should have polled more than once before a message showed up");
+        assertEquals(1, response.messages().size());
+        assertEquals("msg-1", response.messages().get(0).messageId());
+    }
+
+    @Test
+    void receiveAllMessagesDrainsMultipleBatches() throws Exception {
+        AtomicInteger messageCountCalls = new AtomicInteger();
+        server = startServer(exchange -> {
+            String action = exchange.getRequestHeaders().getFirst("x-euclid-action");
+            if ("get-message-count".equals(action)) {
+                long available = messageCountCalls.getAndIncrement() == 0 ? 2 : 0;
+                sendResponse(exchange, 200, "{\"ern\":\"queue-ern\",\"available\":" + available + ",\"delayed\":0,\"invisible\":0}");
+            } else if ("receive-messages".equals(action)) {
+                sendResponse(exchange, 200, "{\"messages\":[" + messageJson("msg-1", "rh-1") + ","
+                        + messageJson("msg-2", "rh-2") + "],\"total\":2}");
+            } else {
+                sendResponse(exchange, 500, "{\"error\":\"unexpected action " + action + "\"}");
+            }
+        });
+
+        ReceiveMessagesResponse response = newClient().receiveAllMessages("queue-ern");
+
+        assertEquals(2, response.total());
+        assertEquals(List.of("msg-1", "msg-2"), response.messages().stream().map(Message::messageId).toList());
+        assertEquals(2, messageCountCalls.get(), "should stop once the count check reports nothing left");
+    }
+
+    @Test
+    void deleteMessageSendsReceiptHandle() throws Exception {
+        AtomicReference<SignableRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(captureRequest(exchange));
+            sendResponse(exchange, 200, "{}");
+        });
+
+        newClient().deleteMessage("rh-1");
+
+        assertEquals("delete-message", received.get().header("x-euclid-action"));
+        assertBodyContains(received.get().body(), "\"receiptHandle\":\"rh-1\"");
+    }
+
+    @Test
+    void getMessageCountParsesResponseAndComputesTotal() throws Exception {
+        AtomicReference<SignableRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(captureRequest(exchange));
+            sendResponse(exchange, 200, "{\"ern\":\"queue-ern\",\"available\":3,\"delayed\":2,\"invisible\":1}");
+        });
+
+        GetMessageCountResponse response = newClient().getMessageCount("queue-ern");
+
+        assertEquals("get-message-count", received.get().header("x-euclid-action"));
+        assertBodyContains(received.get().body(), "\"ern\":\"queue-ern\"");
+        assertEquals(3, response.available());
+        assertEquals(6, response.total());
+    }
+
+    @Test
+    void setVisibilitySendsMessageIdAndVisibility() throws Exception {
+        AtomicReference<SignableRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(captureRequest(exchange));
+            sendResponse(exchange, 200, "{}");
+        });
+
+        newClient().setVisibility("msg-1", 45);
+
+        assertEquals("set-visibility", received.get().header("x-euclid-action"));
+        assertBodyContains(received.get().body(), "\"messageId\":\"msg-1\"", "\"visibility\":45");
+    }
+
+    @Test
+    void getMessageAttributeParsesResponse() throws Exception {
+        AtomicReference<SignableRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(captureRequest(exchange));
+            sendResponse(exchange, 200, "{\"messageId\":\"msg-1\",\"name\":\"count\","
+                    + "\"value\":{\"type\":\"long\",\"value\":5}}");
+        });
+
+        GetMessageAttributeResponse response = newClient().getMessageAttribute("msg-1", "count");
+
+        assertEquals("get-message-attribute", received.get().header("x-euclid-action"));
+        assertBodyContains(received.get().body(), "\"messageId\":\"msg-1\"", "\"name\":\"count\"");
+        assertEquals("count", response.name());
+        assertEquals("long", response.value().type());
+        assertEquals("5", response.value().value());
+    }
+
+    @Test
+    void getMessageMetadataParsesResponse() throws Exception {
+        AtomicReference<SignableRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(captureRequest(exchange));
+            sendResponse(exchange, 200, "{\"messageId\":\"msg-1\",\"queueErn\":\"queue-ern\","
+                    + "\"receiptHandle\":\"rh-1\",\"status\":\"VISIBLE\",\"priority\":\"MIDDLE\",\"size\":11,"
+                    + "\"receivedCount\":2,\"visibilityTimeout\":30,\"contentType\":\"text/plain\","
+                    + "\"md5Body\":\"abc\",\"md5Attributes\":\"def\",\"created\":\"2026-01-01\","
+                    + "\"modified\":\"2026-01-02\"}");
+        });
+
+        GetMessageMetadataResponse response = newClient().getMessageMetadata("msg-1");
+
+        assertEquals("get-message-metadata", received.get().header("x-euclid-action"));
+        assertBodyContains(received.get().body(), "\"messageId\":\"msg-1\"");
+        assertEquals("queue-ern", response.queueErn());
+        assertEquals("VISIBLE", response.status());
+        assertEquals(2, response.receivedCount());
+        assertEquals(30, response.visibilityTimeout());
+    }
+
+    @Test
+    void nonSuccessResponseThrowsEuclidAuthenticationException() throws Exception {
+        server = startServer(exchange -> sendResponse(exchange, 500, "{\"error\":\"boom\"}"));
+
+        EuclidEqs sqs = newClient();
+        EuclidAuthenticationException exception =
+                assertThrows(EuclidAuthenticationException.class, () -> sqs.createQueue("orders"));
+
+        assertEquals(500, exception.statusCode());
+        assertTrue(exception.responseBody().contains("boom"));
+    }
+
+    private EuclidEqs newClient() {
+        return new EuclidEqs(baseUrl(), "test-token", "eu-central-1", "863459426936", "alice", null, null, null);
+    }
+
+    private static String messageJson(String messageId, String receiptHandle) {
+        return "{\"ern\":\"msg-ern\",\"queueErn\":\"queue-ern\",\"messageId\":\"" + messageId + "\","
+                + "\"status\":\"VISIBLE\",\"priority\":\"MIDDLE\",\"body\":\"hello\",\"md5Body\":\"abc\","
+                + "\"receiptHandle\":\"" + receiptHandle + "\",\"attributes\":{},\"md5Attributes\":\"def\","
+                + "\"lastReceived\":null,\"created\":\"2026-01-01\",\"modified\":\"2026-01-02\"}";
+    }
+
+    private static void assertBodyContains(String body, String... fragments) {
+        for (String fragment : fragments) {
+            assertTrue(body.contains(fragment), "expected body to contain " + fragment + " but was " + body);
+        }
+    }
+
+    private static void assertNullSafe(String value) {
+        assertFalse(value != null && !value.isEmpty(), "expected null/empty but was " + value);
     }
 
     private static SignableRequest captureRequest(HttpExchange exchange) throws IOException {

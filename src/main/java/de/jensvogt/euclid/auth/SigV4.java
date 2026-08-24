@@ -49,6 +49,11 @@ public final class SigV4 {
     private SigV4() {
     }
 
+    /**
+     * The headers a SigV4 signature always covers, in the order they must be signed.
+     *
+     * @return the signed header names, lowercase, in signing order.
+     */
     public static List<String> signedHeaderNames() {
         return SIGNED_HEADER_NAMES;
     }
@@ -56,6 +61,11 @@ public final class SigV4 {
     /**
      * The "&lt;accessKeyId&gt;/&lt;date&gt;/&lt;region&gt;/&lt;service&gt;/aws4_request" scope
      * parsed out of an Authorization header.
+     *
+     * @param accessKeyId the credential's access key ID
+     * @param dateStamp   the scope's date, in {@code yyyyMMdd} form
+     * @param region      the scope's region
+     * @param service     the scope's service name
      */
     public record CredentialScope(String accessKeyId, String dateStamp, String region, String service) {
     }
@@ -63,6 +73,7 @@ public final class SigV4 {
     /**
      * Authorization header, split into its components.
      *
+     * @param scope         the credential scope
      * @param signedHeaders as literally presented, semicolon-joined
      * @param signature     lowercase hex
      */
@@ -71,6 +82,8 @@ public final class SigV4 {
 
     /**
      * Result of a successful {@link #verify} call.
+     *
+     * @param accessKeyId the access key ID whose signature was verified
      */
     public record VerifyResult(String accessKeyId) {
     }
@@ -182,6 +195,7 @@ public final class SigV4 {
      * @param amzDate                 full request timestamp, e.g. "20260818T120000Z".
      * @param credentialScope         "&lt;date&gt;/&lt;region&gt;/&lt;service&gt;/aws4_request".
      * @param canonicalRequestHashHex lowercase hex SHA-256 of the canonical request.
+     * @return the string-to-sign.
      */
     public static String buildStringToSign(String amzDate, String credentialScope, String canonicalRequestHashHex) {
         return ALGORITHM + "\n" + amzDate + "\n" + credentialScope + "\n" + canonicalRequestHashHex;
@@ -248,6 +262,9 @@ public final class SigV4 {
     /**
      * Verifies a SigV4-signed request with the default 15-minute clock-skew tolerance.
      *
+     * @param req          the request to verify.
+     * @param lookupSecret resolves an access key ID to its secret, or empty if unknown.
+     * @return the resolved access key ID on success, empty on any failure.
      * @see #verify(SignableRequest, Function, Duration)
      */
     public static Optional<VerifyResult> verify(SignableRequest req, Function<String, Optional<String>> lookupSecret) {
