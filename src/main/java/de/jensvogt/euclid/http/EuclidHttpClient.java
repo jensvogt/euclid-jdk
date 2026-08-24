@@ -107,6 +107,19 @@ public class EuclidHttpClient {
         return send(request);
     }
 
+    /**
+     * Sends a POST request with a raw binary body instead of JSON, mirroring euclid-cli's
+     * {@code HttpClient::PostBinary()}: used by ESM's upload-part, where request-specific metadata
+     * (upload ID, part number) travels in {@code headers} instead of a JSON field since the body
+     * is opaque bytes.
+     */
+    public HttpResponse<String> postBinary(String url, byte[] data, String target, String action, Map<String, String> headers) throws IOException, InterruptedException {
+        HttpRequest request = newRequestBuilder(url, target, action, headers)
+                .POST(HttpRequest.BodyPublishers.ofByteArray(data))
+                .build();
+        return send(request);
+    }
+
     public HttpResponse<String> put(String url, String body) throws IOException, InterruptedException {
         return put(url, body, Map.of());
     }
