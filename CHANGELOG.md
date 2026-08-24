@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.8](https://github.com/jensvogt/euclid-jdk/compare/euclid-jdk-v0.1.7...euclid-jdk-v0.1.8) (2026-08-24)
+
+
+### Bug Fixes
+
+* documentation warnings, missing params, return, no comment ([2b0d9e8](https://github.com/jensvogt/euclid-jdk/commit/2b0d9e843a0a4082aa3718d6c516b7bfdc227802))
+
 ## [0.1.7](https://github.com/jensvogt/euclid-jdk/compare/euclid-jdk-v0.1.6...euclid-jdk-v0.1.7) (2026-08-24)
 
 

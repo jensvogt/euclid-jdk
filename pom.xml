@@ -4,7 +4,7 @@
 
     <groupId>io.github.jensvogt</groupId>
     <artifactId>euclid-jdk</artifactId>
-    <version>0.1.8-SNAPSHOT</version>
+    <version>0.1.8</version>
     <name>euclid-jdk</name>
     <description>Java client library for the Euclid access and SQS APIs</description>
     <packaging>jar</packaging>
