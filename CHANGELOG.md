@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.5](https://github.com/jensvogt/euclid-jdk/compare/euclid-jdk-v0.1.4...euclid-jdk-v0.1.5) (2026-08-24)
+
+
+### Bug Fixes
+
+* rename modules ([fdab89c](https://github.com/jensvogt/euclid-jdk/commit/fdab89c0e2a62223050b3ccf19117abb17239411))
+
 ## [0.1.4](https://github.com/jensvogt/euclid-jdk/compare/euclid-jdk-v0.1.3...euclid-jdk-v0.1.4) (2026-08-19)
 
 
