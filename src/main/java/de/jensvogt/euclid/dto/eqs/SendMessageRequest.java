@@ -12,6 +12,12 @@ public record SendMessageRequest(String ern, String body, Map<String, Variant> a
     }
 
     public static final class Builder {
+        /**
+         * Creates an empty builder.
+         */
+        public Builder() {
+        }
+
         private String ern;
         private String body;
         private Map<String, Variant> attributes = new LinkedHashMap<>();

@@ -7,6 +7,12 @@ public record GetMessageMetadataRequest(String messageId) {
     }
 
     public static final class Builder {
+        /**
+         * Creates an empty builder.
+         */
+        public Builder() {
+        }
+
         private String messageId;
 
         public Builder messageId(String messageId) {

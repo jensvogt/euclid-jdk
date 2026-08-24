@@ -7,6 +7,12 @@ public record SetMessageVisibilityRequest(String messageId, long visibility) {
     }
 
     public static final class Builder {
+        /**
+         * Creates an empty builder.
+         */
+        public Builder() {
+        }
+
         private String messageId;
         private long visibility;
 

@@ -7,6 +7,12 @@ public record ListBucketsRequest(String prefix, long pageSize, long pageIndex, S
     }
 
     public static final class Builder {
+        /**
+         * Creates an empty builder.
+         */
+        public Builder() {
+        }
+
         private String prefix = "";
         private long pageSize = 10;
         private long pageIndex = 0;

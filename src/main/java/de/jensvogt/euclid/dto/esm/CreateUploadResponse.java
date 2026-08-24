@@ -7,6 +7,12 @@ public record CreateUploadResponse(String uploadId, String bucketErn, String key
     }
 
     public static final class Builder {
+        /**
+         * Creates an empty builder.
+         */
+        public Builder() {
+        }
+
         private String uploadId;
         private String bucketErn;
         private String key;

@@ -11,6 +11,12 @@ public record ListObjectsResponse(List<EsmObject> objects, long total) {
     }
 
     public static final class Builder {
+        /**
+         * Creates an empty builder.
+         */
+        public Builder() {
+        }
+
         private List<EsmObject> objects;
         private long total;
 

@@ -7,6 +7,12 @@ public record GetQueueErnRequest(String name) {
     }
 
     public static final class Builder {
+        /**
+         * Creates an empty builder.
+         */
+        public Builder() {
+        }
+
         private String name;
 
         public Builder name(String name) {

@@ -19,11 +19,22 @@ public final class Euclid {
         this.baseUrl = baseUrl;
     }
 
+    /**
+     * Targets an Euclid server for subsequent {@link #access()}/{@link #eqs()}/{@link #esm()} calls.
+     *
+     * @param baseUrl the server's base URL, e.g. {@code https://euclid.example.com}.
+     * @return a {@link Euclid} targeting that server.
+     */
     public static Euclid forServer(String baseUrl) {
         Objects.requireNonNull(baseUrl, "baseUrl must not be null");
         return new Euclid(baseUrl);
     }
 
+    /**
+     * Starts an {@link EuclidEam} login flow against this server.
+     *
+     * @return an {@link EuclidEam} for this server.
+     */
     public EuclidEam access() {
         return EuclidEam.forServer(baseUrl);
     }
@@ -33,6 +44,10 @@ public final class Euclid {
      * {@link EuclidEam#login()}). Requires a prior {@code access().credentials(...).login()}
      * call to have populated {@code ~/.euclid/credentials} with a still-valid token; otherwise
      * login() will fail requiring explicit credentials.
+     *
+     * @return an {@link EuclidEqs} for this server, authenticated with the cached session.
+     * @throws IOException          if the cached session can't be read or the login request fails.
+     * @throws InterruptedException if the login request is interrupted.
      */
     public EuclidEqs eqs() throws IOException, InterruptedException {
         return access().login().eqs();
@@ -43,6 +58,10 @@ public final class Euclid {
      * {@link EuclidEam#login()}). Requires a prior {@code access().credentials(...).login()}
      * call to have populated {@code ~/.euclid/credentials} with a still-valid token; otherwise
      * login() will fail requiring explicit credentials.
+     *
+     * @return an {@link EuclidEsm} for this server, authenticated with the cached session.
+     * @throws IOException          if the cached session can't be read or the login request fails.
+     * @throws InterruptedException if the login request is interrupted.
      */
     public EuclidEsm esm() throws IOException, InterruptedException {
         return access().login().esm();

@@ -7,6 +7,12 @@ public record DeleteUserRequest(String userId) {
     }
 
     public static final class Builder {
+        /**
+         * Creates an empty builder.
+         */
+        public Builder() {
+        }
+
         private String userId;
 
         public Builder userId(String userId) {

@@ -7,6 +7,12 @@ public record GetMessageCountRequest(String ern) {
     }
 
     public static final class Builder {
+        /**
+         * Creates an empty builder.
+         */
+        public Builder() {
+        }
+
         private String ern;
 
         public Builder ern(String ern) {

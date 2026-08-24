@@ -11,6 +11,12 @@ public record ReceiveMessagesResponse(List<Message> messages, long total) {
     }
 
     public static final class Builder {
+        /**
+         * Creates an empty builder.
+         */
+        public Builder() {
+        }
+
         private List<Message> messages;
         private long total;
 

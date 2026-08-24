@@ -11,6 +11,12 @@ public record ListUserResponse(List<User> users, long total) {
     }
 
     public static final class Builder {
+        /**
+         * Creates an empty builder.
+         */
+        public Builder() {
+        }
+
         private List<User> users;
         private long total;
 

@@ -7,6 +7,12 @@ public record ListObjectsRequest(String bucketErn, String prefix, long pageSize,
     }
 
     public static final class Builder {
+        /**
+         * Creates an empty builder.
+         */
+        public Builder() {
+        }
+
         private String bucketErn = "";
         private String prefix = "";
         private long pageSize = 10;

@@ -11,6 +11,12 @@ public record ListBucketsResponse(List<Bucket> buckets, long total) {
     }
 
     public static final class Builder {
+        /**
+         * Creates an empty builder.
+         */
+        public Builder() {
+        }
+
         private List<Bucket> buckets;
         private long total;
 
