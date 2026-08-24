@@ -7,6 +7,12 @@ public record GetMessageAttributeRequest(String messageId, String name) {
     }
 
     public static final class Builder {
+        /**
+         * Creates an empty builder.
+         */
+        public Builder() {
+        }
+
         private String messageId;
         private String name;
 

@@ -10,6 +10,12 @@ public record GetMessageMetadataResponse(String messageId, String queueErn, Stri
     }
 
     public static final class Builder {
+        /**
+         * Creates an empty builder.
+         */
+        public Builder() {
+        }
+
         private String messageId;
         private String queueErn;
         private String receiptHandle;

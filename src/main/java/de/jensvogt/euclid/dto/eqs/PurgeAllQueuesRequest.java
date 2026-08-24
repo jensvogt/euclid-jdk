@@ -7,6 +7,12 @@ public record PurgeAllQueuesRequest(String region, String accountId) {
     }
 
     public static final class Builder {
+        /**
+         * Creates an empty builder.
+         */
+        public Builder() {
+        }
+
         private String region;
         private String accountId;
 

@@ -8,6 +8,12 @@ public record GetQueueMetadataResponse(String region, String accountId, String o
     }
 
     public static final class Builder {
+        /**
+         * Creates an empty builder.
+         */
+        public Builder() {
+        }
+
         private String region;
         private String accountId;
         private String owner;

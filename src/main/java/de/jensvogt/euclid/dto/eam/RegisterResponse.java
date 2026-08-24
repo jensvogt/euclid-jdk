@@ -9,6 +9,12 @@ public record RegisterResponse(User user) {
     }
 
     public static final class Builder {
+        /**
+         * Creates an empty builder.
+         */
+        public Builder() {
+        }
+
         private User user;
 
         public Builder user(User user) {

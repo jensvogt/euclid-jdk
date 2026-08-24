@@ -7,6 +7,12 @@ public record SendMessageResponse(String messageId, String md5Body, String md5At
     }
 
     public static final class Builder {
+        /**
+         * Creates an empty builder.
+         */
+        public Builder() {
+        }
+
         private String messageId;
         private String md5Body;
         private String md5Attributes;

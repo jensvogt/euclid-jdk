@@ -7,6 +7,12 @@ public record ListQueueRequest(String prefix, long pageSize, long pageIndex, Str
     }
 
     public static final class Builder {
+        /**
+         * Creates an empty builder.
+         */
+        public Builder() {
+        }
+
         private String prefix = "";
         private long pageSize = 10;
         private long pageIndex = 0;

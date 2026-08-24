@@ -9,6 +9,12 @@ public record GetMessageAttributeResponse(String messageId, String name, Variant
     }
 
     public static final class Builder {
+        /**
+         * Creates an empty builder.
+         */
+        public Builder() {
+        }
+
         private String messageId;
         private String name;
         private Variant value;

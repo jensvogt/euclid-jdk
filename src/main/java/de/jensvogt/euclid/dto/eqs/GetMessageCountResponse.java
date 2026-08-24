@@ -11,6 +11,12 @@ public record GetMessageCountResponse(String ern, long available, long delayed, 
     }
 
     public static final class Builder {
+        /**
+         * Creates an empty builder.
+         */
+        public Builder() {
+        }
+
         private String ern;
         private long available;
         private long delayed;

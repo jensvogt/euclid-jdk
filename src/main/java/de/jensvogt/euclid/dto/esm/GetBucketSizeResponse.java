@@ -7,6 +7,12 @@ public record GetBucketSizeResponse(String ern, long size) {
     }
 
     public static final class Builder {
+        /**
+         * Creates an empty builder.
+         */
+        public Builder() {
+        }
+
         private String ern;
         private long size;
 

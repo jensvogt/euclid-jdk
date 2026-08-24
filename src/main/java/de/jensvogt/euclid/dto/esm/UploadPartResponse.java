@@ -7,6 +7,12 @@ public record UploadPartResponse(String uploadId, long partNumber, long size) {
     }
 
     public static final class Builder {
+        /**
+         * Creates an empty builder.
+         */
+        public Builder() {
+        }
+
         private String uploadId;
         private long partNumber;
         private long size;

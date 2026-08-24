@@ -7,6 +7,12 @@ public record PurgeBucketResponse(String ern, long count) {
     }
 
     public static final class Builder {
+        /**
+         * Creates an empty builder.
+         */
+        public Builder() {
+        }
+
         private String ern;
         private long count;
 

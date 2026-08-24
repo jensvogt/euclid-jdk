@@ -7,6 +7,12 @@ public record ReceiveMessagesRequest(String ern, long maxCount, long waitTime) {
     }
 
     public static final class Builder {
+        /**
+         * Creates an empty builder.
+         */
+        public Builder() {
+        }
+
         private String ern;
         private long maxCount;
         private long waitTime;

@@ -7,6 +7,12 @@ public record RegisterRequest(String userId, String password, String email, Stri
     }
 
     public static final class Builder {
+        /**
+         * Creates an empty builder.
+         */
+        public Builder() {
+        }
+
         private String userId;
         private String password;
         private String email;

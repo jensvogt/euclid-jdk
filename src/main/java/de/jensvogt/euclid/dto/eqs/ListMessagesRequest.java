@@ -7,6 +7,12 @@ public record ListMessagesRequest(String queueErn, long pageSize, long pageIndex
     }
 
     public static final class Builder {
+        /**
+         * Creates an empty builder.
+         */
+        public Builder() {
+        }
+
         private String queueErn;
         private long pageSize = 10;
         private long pageIndex = 0;
