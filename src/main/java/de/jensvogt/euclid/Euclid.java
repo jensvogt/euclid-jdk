@@ -1,7 +1,8 @@
 package de.jensvogt.euclid;
 
-import de.jensvogt.euclid.module.access.EuclidAccess;
-import de.jensvogt.euclid.module.sqs.EuclidSqs;
+import de.jensvogt.euclid.module.eam.EuclidEam;
+import de.jensvogt.euclid.module.eqs.EuclidEqs;
+import de.jensvogt.euclid.module.esm.EuclidEsm;
 
 import java.io.IOException;
 import java.util.Objects;
@@ -23,17 +24,27 @@ public final class Euclid {
         return new Euclid(baseUrl);
     }
 
-    public EuclidAccess access() {
-        return EuclidAccess.forServer(baseUrl);
+    public EuclidEam access() {
+        return EuclidEam.forServer(baseUrl);
     }
 
     /**
-     * Resolves an {@link EuclidSqs} using a cached session for this server (see
-     * {@link EuclidAccess#login()}). Requires a prior {@code access().credentials(...).login()}
+     * Resolves an {@link EuclidEqs} using a cached session for this server (see
+     * {@link EuclidEam#login()}). Requires a prior {@code access().credentials(...).login()}
      * call to have populated {@code ~/.euclid/credentials} with a still-valid token; otherwise
      * login() will fail requiring explicit credentials.
      */
-    public EuclidSqs sqs() throws IOException, InterruptedException {
-        return access().login().sqs();
+    public EuclidEqs eqs() throws IOException, InterruptedException {
+        return access().login().eqs();
+    }
+
+    /**
+     * Resolves an {@link EuclidEsm} using a cached session for this server (see
+     * {@link EuclidEam#login()}). Requires a prior {@code access().credentials(...).login()}
+     * call to have populated {@code ~/.euclid/credentials} with a still-valid token; otherwise
+     * login() will fail requiring explicit credentials.
+     */
+    public EuclidEsm esm() throws IOException, InterruptedException {
+        return access().login().esm();
     }
 }
