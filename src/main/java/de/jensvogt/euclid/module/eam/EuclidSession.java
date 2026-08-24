@@ -40,12 +40,24 @@ import java.util.Map;
 public record EuclidSession(String token, String userId, String accountId, String region, String accessKeyId,
                              String secretAccessKey, String rawResponse, String baseUrl, String caCertPath) {
 
+    /**
+     * A static and immutable instance of {@link ObjectMapper} used for JSON serialization
+     * and deserialization within the {@code EuclidSession} class.
+     *
+     * This mapper is configured for generic-purpose JSON processing tasks and enables conversion
+     * between Java objects and their JSON representations.
+     *
+     * Being a shared constant, this instance ensures consistent behavior and reduces the
+     * overhead of repeatedly instantiating an {@link ObjectMapper}.
+     */
     private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
 
     /**
      * EQS operations for this session. Requests are signed with SigV4 using
      * {@link #accessKeyId()}/{@link #secretAccessKey()} when both are present, falling back to
      * the bearer token otherwise - mirroring how euclid-cli authenticates service calls.
+     *
+     * @return EuclidEqs instance
      */
     public EuclidEqs eqs() {
         return new EuclidEqs(baseUrl, token, region, accountId, userId, accessKeyId, secretAccessKey, caCertPath);
@@ -55,23 +67,53 @@ public record EuclidSession(String token, String userId, String accountId, Strin
      * ESM (storage) operations for this session. Requests are signed with SigV4 using
      * {@link #accessKeyId()}/{@link #secretAccessKey()} when both are present, falling back to
      * the bearer token otherwise - mirroring how euclid-cli authenticates service calls.
+     *
+     * @return EuclidEsm instance
      */
     public EuclidEsm esm() {
         return new EuclidEsm(baseUrl, token, region, accountId, userId, accessKeyId, secretAccessKey, caCertPath);
     }
 
+    /**
+     * Retrieves the account ID associated with this session.
+     *
+     * @return the account ID as a {@code String}.
+     */
     public String getAccountId() {
         return accountId;
     }
 
+    /**
+     * Retrieves the region associated with this session.
+     *
+     * @return the region as a {@code String}.
+     */
     public String getRegion() {
         return region;
     }
 
+    /**
+     * Retrieves a list of all available users using default filtering, pagination, and sorting parameters.
+     *
+     * @return a {@code List} of {@code User} objects.
+     * @throws IOException           if an I/O error occurs during the operation.
+     * @throws InterruptedException  if the operation is interrupted while waiting for a response.
+     */
     public List<User> listUsers() throws IOException, InterruptedException {
         return listUsers("", 10, 0, "userId");
     }
 
+    /**
+     * Retrieves a list of users based on the provided filtering and pagination parameters.
+     *
+     * @param prefix      a string used to filter users whose identifiers start with the specified prefix
+     * @param pageSize    the maximum number of users to retrieve per page
+     * @param pageIndex   the index of the page to retrieve (zero-based)
+     * @param sortColumn  the name of the column by which the user list should be sorted
+     * @return a {@code List} of {@code User} objects matching the specified criteria
+     * @throws IOException              if an I/O error occurs when sending or receiving the HTTP request
+     * @throws InterruptedException     if the operation is interrupted while waiting for the HTTP response
+     */
     public List<User> listUsers(String prefix, long pageSize, long pageIndex, String sortColumn)
             throws IOException, InterruptedException {
         String body = OBJECT_MAPPER.writeValueAsString(
@@ -87,6 +129,18 @@ public record EuclidSession(String token, String userId, String accountId, Strin
         return extractListUserResponse(response.body()).users();
     }
 
+    /**
+     * Registers a new user in the system by sending an HTTP POST request with the user details.
+     *
+     * @param region    the region where the user is being registered
+     * @param accountId the unique identifier of the account associated with the user
+     * @param userId    the unique identifier of the user being registered
+     * @param password  the password for the new user
+     * @param email     the email address of the user being registered
+     * @param isAdmin   indicates whether the user should have administrative privileges
+     * @throws IOException          if an I/O error occurs during the registration process
+     * @throws InterruptedException if the operation is interrupted while waiting for a response
+     */
     public void register(String region, String accountId, String userId, String password, String email, boolean isAdmin)
             throws IOException, InterruptedException {
         RegisterRequest request = RegisterRequest.builder().region(region).accountId(accountId).userId(userId).password(password).email(email).isAdmin(isAdmin).build();
@@ -99,6 +153,13 @@ public record EuclidSession(String token, String userId, String accountId, Strin
         }
     }
 
+    /**
+     * Deletes a user identified by the specified user ID.
+     *
+     * @param userId the unique identifier of the user to be deleted
+     * @throws IOException          if an I/O error occurs during the operation
+     * @throws InterruptedException if the operation is interrupted while waiting for a response
+     */
     public void deleteUser(String userId)
             throws IOException, InterruptedException {
         String body = OBJECT_MAPPER.writeValueAsString(DeleteUserRequest.builder().userId(userId).build());
@@ -110,6 +171,15 @@ public record EuclidSession(String token, String userId, String accountId, Strin
         }
     }
 
+    /**
+     * Merges the provided headers with additional session-specific headers like region, account ID, and user ID,
+     * if they are available.
+     *
+     * @param headers a map of custom headers to be included in the request. These headers are merged
+     *                with session-specific headers managed by the instance.
+     * @return a map containing the combined headers, including the provided headers and any additional
+     *         session-specific headers such as "x-euclid-region", "x-euclid-account-id", and "x-euclid-user-id".
+     */
     private Map<String, String> requestHeaders(Map<String, String> headers) {
         Map<String, String> merged = new LinkedHashMap<>(headers);
         if (region != null) {
@@ -124,6 +194,14 @@ public record EuclidSession(String token, String userId, String accountId, Strin
         return merged;
     }
 
+    /**
+     * Extracts and constructs a {@code ListUserResponse} object from a given JSON response string.
+     *
+     * @param responseBody the JSON response body as a {@code String}, containing user-related data.
+     * @return a {@code ListUserResponse} object containing a list of {@code User} records
+     *         and the total count of users.
+     * @throws IOException if an error occurs while processing the JSON response.
+     */
     private static ListUserResponse extractListUserResponse(String responseBody) throws IOException {
         JsonNode root = OBJECT_MAPPER.readTree(responseBody);
         JsonNode usersNode = root.get("users");
@@ -142,6 +220,15 @@ public record EuclidSession(String token, String userId, String accountId, Strin
         return ListUserResponse.builder().users(users).total(root.path("total").asLong(0)).build();
     }
 
+    /**
+     * Retrieves the text value of a specified field from a given {@code JsonNode}.
+     * If the field is missing or has a null value, this method returns {@code null}.
+     *
+     * @param node  the {@code JsonNode} from which to extract the field value
+     * @param field the name of the field to retrieve
+     * @return the text value of the specified field as a {@code String}, or {@code null} if the field
+     *         is missing or has a null value
+     */
     private static String textOrNull(JsonNode node, String field) {
         JsonNode value = node.get(field);
         return value == null || value.isNull() ? null : value.asText();
