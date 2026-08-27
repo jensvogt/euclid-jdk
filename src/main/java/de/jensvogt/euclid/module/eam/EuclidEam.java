@@ -125,6 +125,12 @@ public final class EuclidEam {
     private String caCertPath = Files.isReadable(DEFAULT_CA_CERT_PATH) ? DEFAULT_CA_CERT_PATH.toString() : null;
 
     /**
+     * Namespace to make active for the session on successful login, or {@code null} to leave it
+     * unscoped. Set via {@link #namespace(String)}.
+     */
+    private String namespace;
+
+    /**
      * Constructs an instance of {@code EuclidEam} with the specified base URL.
      *
      * @param baseUrl the base URL of the server to be used for making API requests; must not be null
@@ -207,6 +213,20 @@ public final class EuclidEam {
     }
 
     /**
+     * Sets the namespace to make active for the session once login succeeds - validated and
+     * applied via a follow-up {@link EuclidSession#changeNamespace(String)} call, mirroring
+     * euclid-cli's "eam login --namespace" option. Every namespace-scoped command run afterward
+     * through the returned session is automatically restricted to it, until changed again.
+     *
+     * @param namespace the namespace to make active
+     * @return the current instance of {@code EuclidEam}
+     */
+    public EuclidEam namespace(String namespace) {
+        this.namespace = namespace;
+        return this;
+    }
+
+    /**
      * Sets the target value and returns the current instance of {@code EuclidEam}.
      *
      * @param target the target value to be set
@@ -257,6 +277,9 @@ public final class EuclidEam {
         }
 
         EuclidSession session = extractSession(response.body(), baseUrl, caCertPath);
+        if (namespace != null) {
+            session = session.changeNamespace(namespace);
+        }
         storeCredentials(session);
         return session;
     }
@@ -282,7 +305,7 @@ public final class EuclidEam {
             }
             return new EuclidSession(token, textOrNull(root, "userId"), textOrNull(root, "accountId"),
                     textOrNull(root, "region"), textOrNull(root, "accessKeyId"), textOrNull(root, "secretAccessKey"),
-                    root.toString(), baseUrl, caCertPath);
+                    root.toString(), baseUrl, caCertPath, textOrNull(root, "nameSpace"));
         } catch (IOException ignored) {
             return null;
         }
@@ -309,11 +332,46 @@ public final class EuclidEam {
         credentials.put("accessKeyId", session.accessKeyId());
         credentials.put("secretAccessKey", session.secretAccessKey());
         credentials.put("baseUrl", baseUrl);
+        credentials.put("nameSpace", session.nameSpace());
         Files.writeString(CREDENTIALS_PATH, OBJECT_MAPPER.writeValueAsString(credentials));
         try {
             Files.setPosixFilePermissions(CREDENTIALS_PATH, PosixFilePermissions.fromString("rw-------"));
         } catch (UnsupportedOperationException ignored) {
             // best-effort; not every filesystem supports POSIX permissions
+        }
+    }
+
+    /**
+     * Patches the cached credentials file's namespace in place, if one is cached for
+     * {@code baseUrl} - keeping the on-disk cache in sync when a session's namespace is changed
+     * outside of {@link #login()} (i.e. via {@link EuclidSession#changeNamespace(String)} on an
+     * already-cached session). Silently a no-op if nothing is cached yet for {@code baseUrl},
+     * mirroring the best-effort nature of {@link #loadCachedSession()}.
+     *
+     * @param baseUrl   the server the cached session must be for
+     * @param namespace the namespace to record
+     */
+    static void updateCachedNamespace(String baseUrl, String namespace) {
+        if (!Files.isReadable(CREDENTIALS_PATH)) {
+            return;
+        }
+        try {
+            JsonNode root = OBJECT_MAPPER.readTree(Files.readString(CREDENTIALS_PATH));
+            if (!baseUrl.equals(textOrNull(root, "baseUrl"))) {
+                return;
+            }
+            Map<String, String> credentials = new LinkedHashMap<>();
+            credentials.put("token", textOrNull(root, "token"));
+            credentials.put("userId", textOrNull(root, "userId"));
+            credentials.put("accountId", textOrNull(root, "accountId"));
+            credentials.put("region", textOrNull(root, "region"));
+            credentials.put("accessKeyId", textOrNull(root, "accessKeyId"));
+            credentials.put("secretAccessKey", textOrNull(root, "secretAccessKey"));
+            credentials.put("baseUrl", baseUrl);
+            credentials.put("nameSpace", namespace);
+            Files.writeString(CREDENTIALS_PATH, OBJECT_MAPPER.writeValueAsString(credentials));
+        } catch (IOException ignored) {
+            // best-effort; nothing cached to patch
         }
     }
 
@@ -367,7 +425,8 @@ public final class EuclidEam {
         JsonNode metadata = root.get("metadata");
         return new EuclidSession(textOrNull(root, "token"), textOrNull(metadata, "user"),
                 textOrNull(metadata, "accountId"), textOrNull(metadata, "region"),
-                textOrNull(root, "accessKeyId"), textOrNull(root, "secretAccessKey"), responseBody, baseUrl, caCertPath);
+                textOrNull(root, "accessKeyId"), textOrNull(root, "secretAccessKey"), responseBody, baseUrl,
+                caCertPath, null);
     }
 
     /**

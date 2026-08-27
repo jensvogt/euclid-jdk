@@ -52,7 +52,7 @@ public final class EuclidEsm {
     /**
      * A singleton instance of {@code ObjectMapper} from the Jackson library used for
      * serializing Java objects to JSON and deserializing JSON to Java objects.
-     * <br>
+     * <p>
      * This instance is thread-safe and can be reused throughout the application
      * to avoid the overhead of creating multiple instances.
      */
@@ -79,7 +79,7 @@ public final class EuclidEsm {
      * This value is typically used to define the number of parallel threads
      * or tasks that can be executed concurrently, depending on the application's
      * design and requirements.
-     *
+     * <p>
      * The default value of 4 is chosen as a reasonable balance for environments with
      * multiple processor cores, allowing efficient multitasking without overwhelming
      * system resources.
@@ -90,7 +90,7 @@ public final class EuclidEsm {
      * The maximum number of retry attempts allowed for a single part upload operation.
      * This value determines how many times the system will retry in the case of a transient
      * failure before aborting the part upload.
-     *
+     * <p>
      * Designed to enhance the robustness of the upload process for large files, where
      * thousands of part uploads may occur. Allows a few quick retries to handle transient
      * issues, minimizing the risk of completely aborting the entire upload process.
@@ -227,7 +227,7 @@ public final class EuclidEsm {
 
     /**
      * Retrieves a list of storage buckets.
-     *
+     * <p>
      * This method fetches a list of buckets with default parameters: an
      * empty filter, a maximum of 10 results, an offset of 0, and ordering
      * by name.
@@ -520,11 +520,11 @@ public final class EuclidEsm {
      * the uploadFile functionality and is not intended to be used as a standalone action.
      * Data is sent as raw bytes directly over the wire without including a JSON body.
      * The authentication for this method uses the bearer token instead of SigV4 signing.
-     *
+     * <p>
      * Uploads one part of a multipart upload (internal helper used by uploadFile; not a
      * standalone action). Unlike every other action here, this does NOT send a JSON body -
      * uploadId/partNumber ride as headers and data goes straight over the wire as raw bytes.
-     *
+     * <p>
      * One deliberate deviation worth flagging: this always authenticates with the bearer token,
      * never SigV4, even when access keys are configured (unlike the rest of the SDK). Reason:
      * SigV4.sign() hashes the body as a UTF-8 String, which is lossy for arbitrary binary bytes;
