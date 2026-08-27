@@ -51,12 +51,12 @@ public final class EuclidEqs {
     /**
      * A statically instantiated, thread-safe Jackson {@code ObjectMapper} used for
      * JSON serialization and deserialization throughout the application.
-     *
+     * <p>
      * This mapper serves as the primary utility for converting between Java objects
      * and JSON representations, as well as providing additional configuration options
      * for handling JSON-specific operations such as formatting, custom serializers,
      * and deserializers.
-     *
+     * <p>
      * Its static nature ensures reuse across multiple calls, improving performance
      * by avoiding repeated instantiation.
      */
@@ -64,7 +64,7 @@ public final class EuclidEqs {
 
     /**
      * Defines the polling interval, in milliseconds, used for receiving messages from a queue.
-     *
+     * <p>
      * This constant specifies the time between consecutive polling attempts when consuming
      * messages. Adjusting this value can impact the trade-off between resource usage and
      * latency in message processing. The value is fixed at 500 milliseconds.
@@ -75,7 +75,7 @@ public final class EuclidEqs {
      * Represents the constant target identifier used within the EuclidEqs class.
      * This specific string value is tied to the term "eqs" and may serve as an
      * identifier, namespace, or discriminator for operations related to its scope.
-     *
+     * <p>
      * Being a static and final constant, the value of TARGET remains unchanged
      * throughout the runtime of the application.
      */
@@ -125,11 +125,11 @@ public final class EuclidEqs {
      * This key, along with the corresponding secret access key, is utilized for
      * signing requests with SigV4 for secure communication with the service.
      * It serves as a unique identifier for the credentials of the requesting user.
-     *
+     * <p>
      * The access key ID is configured during the initialization of the EuclidEqs instance
      * and is required when the service is set to use SigV4-based authentication instead
      * of the bearer token.
-     *
+     * <p>
      * This field is immutable and cannot be changed after the object is constructed.
      */
     private final String accessKeyId;
@@ -149,11 +149,11 @@ public final class EuclidEqs {
      * Represents an HTTP client used for sending and receiving HTTP requests
      * and responses in the EuclidEqs service. This client is responsible
      * for managing the underlying HTTP communication with the service's endpoints.
-     *
+     * <p>
      * This instance is configured to support authenticated requests, utilizing
      * either SigV4 signing with access key credentials or a bearer token,
      * based on the current authentication setup provided during initialization.
-     *
+     * <p>
      * The httpClient is immutable and initialized during the construction of
      * the EuclidEqs instance, ensuring a consistent configuration throughout
      * the lifecycle of the object.
@@ -397,7 +397,7 @@ public final class EuclidEqs {
 
     /**
      * Purges all message queues associated with a given region and account ID.
-     *
+     * <p>
      * This method clears all messages from the queues owned by the specified
      * account within the specified region. It invokes an internal mechanism
      * to perform this operation and may throw exceptions if the process

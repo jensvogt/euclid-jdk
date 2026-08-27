@@ -46,6 +46,32 @@ class EuclidEamTest {
     }
 
     @Test
+    void loginWithNamespaceAppliesActiveNamespace() throws Exception {
+        AtomicReference<String> changeNamespaceBody = new AtomicReference<>();
+        server = startServer("/", exchange -> {
+            String action = exchange.getRequestHeaders().getFirst("x-euclid-action");
+            if ("login".equals(action)) {
+                exchange.getRequestBody().readAllBytes();
+                sendResponse(exchange, 200, "{\"token\":\"abc123\"}");
+            } else if ("change-namespace".equals(action)) {
+                changeNamespaceBody.set(new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8));
+                sendResponse(exchange, 200, "{}");
+            } else {
+                sendResponse(exchange, 500, "{\"error\":\"unexpected action " + action + "\"}");
+            }
+        });
+
+        EuclidSession session = EuclidEam.forServer(baseUrl())
+                .username("jens")
+                .password("s3cret")
+                .namespace("prod")
+                .login();
+
+        assertEquals("prod", session.nameSpace());
+        assertTrue(changeNamespaceBody.get().contains("\"namespace\":\"prod\""));
+    }
+
+    @Test
     void loginThrowsAuthenticationExceptionForRejectedCredentials() throws Exception {
         server = startServer("/login", exchange -> sendResponse(exchange, 401, "{\"error\":\"invalid credentials\"}"));
 

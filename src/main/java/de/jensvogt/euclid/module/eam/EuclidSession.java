@@ -2,13 +2,34 @@ package de.jensvogt.euclid.module.eam;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import de.jensvogt.euclid.dto.eam.ChangeNamespaceRequest;
+import de.jensvogt.euclid.dto.eam.CreateAccessKeyResponse;
+import de.jensvogt.euclid.dto.eam.CreateAccountRequest;
+import de.jensvogt.euclid.dto.eam.CreateNamespaceRequest;
+import de.jensvogt.euclid.dto.eam.CreateUserGroupRequest;
+import de.jensvogt.euclid.dto.eam.DeleteAccessKeyRequest;
+import de.jensvogt.euclid.dto.eam.DeleteAccountRequest;
+import de.jensvogt.euclid.dto.eam.DeleteNamespaceRequest;
+import de.jensvogt.euclid.dto.eam.DeleteUserGroupRequest;
 import de.jensvogt.euclid.dto.eam.DeleteUserRequest;
+import de.jensvogt.euclid.dto.eam.GrantNamespaceAccessRequest;
+import de.jensvogt.euclid.dto.eam.ListAccountsRequest;
+import de.jensvogt.euclid.dto.eam.ListNamespacesRequest;
+import de.jensvogt.euclid.dto.eam.ListUserGroupsRequest;
 import de.jensvogt.euclid.dto.eam.ListUserRequest;
 import de.jensvogt.euclid.dto.eam.ListUserResponse;
 import de.jensvogt.euclid.dto.eam.RegisterRequest;
+import de.jensvogt.euclid.dto.eam.RevokeNamespaceAccessRequest;
+import de.jensvogt.euclid.dto.eam.UserGroupAddUserRequest;
+import de.jensvogt.euclid.dto.eam.UserGroupRemoveUserRequest;
 import de.jensvogt.euclid.exception.EuclidAuthenticationException;
 import de.jensvogt.euclid.http.EuclidHttpClient;
+import de.jensvogt.euclid.dto.eam.model.Account;
+import de.jensvogt.euclid.dto.eam.model.AccessKey;
+import de.jensvogt.euclid.dto.eam.model.AccountGrant;
+import de.jensvogt.euclid.dto.eam.model.Namespace;
 import de.jensvogt.euclid.dto.eam.model.User;
+import de.jensvogt.euclid.dto.eam.model.UserGroup;
 import de.jensvogt.euclid.module.eqs.EuclidEqs;
 import de.jensvogt.euclid.module.esm.EuclidEsm;
 
@@ -36,9 +57,14 @@ import java.util.Map;
  * @param baseUrl         the server this session was issued by, used for follow-up requests
  * @param caCertPath      path to an additional PEM CA certificate trusted for TLS connections to
  *                        {@code baseUrl}, or {@code null} to trust only the system store
+ * @param nameSpace       the session's active namespace, or {@code null} if unscoped. Set via
+ *                        {@link EuclidEam#namespace(String)} at login or {@link #changeNamespace(String)}
+ *                        afterward; sent as the {@code x-euclid-namespace} header on every
+ *                        subsequent request from this session, mirroring euclid-cli's HttpClient.cpp
  */
 public record EuclidSession(String token, String userId, String accountId, String region, String accessKeyId,
-                             String secretAccessKey, String rawResponse, String baseUrl, String caCertPath) {
+                             String secretAccessKey, String rawResponse, String baseUrl, String caCertPath,
+                             String nameSpace) {
 
     /**
      * A static and immutable instance of {@link ObjectMapper} used for JSON serialization
@@ -172,6 +198,434 @@ public record EuclidSession(String token, String userId, String accountId, Strin
     }
 
     /**
+     * Switches the active namespace for this session: validated by the server against the
+     * current account (and the caller's namespace grants, unless an account administrator) and,
+     * on success, persisted to the local credentials cache alongside the returned session -
+     * mirroring euclid-cli's "eam change-namespace" action. Every namespace-scoped call made
+     * through the returned session is automatically restricted to it, until changed again.
+     *
+     * @param namespace the namespace to switch to; empty clears it back to unscoped
+     * @return a new session, identical to this one except with the namespace switched
+     * @throws IOException          if an I/O error occurs during the operation
+     * @throws InterruptedException if the operation is interrupted while waiting for a response
+     */
+    public EuclidSession changeNamespace(String namespace) throws IOException, InterruptedException {
+        String body = OBJECT_MAPPER.writeValueAsString(ChangeNamespaceRequest.builder().namespace(namespace).build());
+        HttpResponse<String> response = new EuclidHttpClient(caCertPath).post(baseUrl + "/", body, "eam", "change-namespace",
+                requestHeaders(Map.of("Content-Type", "application/json", "Authorization", "Bearer " + token)));
+
+        if (response.statusCode() / 100 != 2) {
+            throw new EuclidAuthenticationException(response.statusCode(), response.body());
+        }
+
+        EuclidSession updated = new EuclidSession(token, userId, accountId, region, accessKeyId, secretAccessKey,
+                rawResponse, baseUrl, caCertPath, namespace);
+        EuclidEam.updateCachedNamespace(baseUrl, namespace);
+        return updated;
+    }
+
+    /**
+     * Creates a new SigV4 access key for this session's user and returns it. The secret is only
+     * ever returned once, right here - it is not retrievable again via {@link #listAccessKeys()}.
+     *
+     * @return the newly created access key, including its secret
+     * @throws IOException          if an I/O error occurs during the operation
+     * @throws InterruptedException if the operation is interrupted while waiting for a response
+     */
+    public CreateAccessKeyResponse createAccessKey() throws IOException, InterruptedException {
+        HttpResponse<String> response = new EuclidHttpClient(caCertPath).post(baseUrl + "/", "{}", "eam", "create-access-key",
+                requestHeaders(Map.of("Content-Type", "application/json", "Authorization", "Bearer " + token)));
+
+        if (response.statusCode() / 100 != 2) {
+            throw new EuclidAuthenticationException(response.statusCode(), response.body());
+        }
+
+        JsonNode root = OBJECT_MAPPER.readTree(response.body());
+        return CreateAccessKeyResponse.builder().accessKeyId(textOrNull(root, "accessKeyId"))
+                .secretAccessKey(textOrNull(root, "secretAccessKey")).createdAt(textOrNull(root, "createdAt")).build();
+    }
+
+    /**
+     * Lists this session's user's own access keys. Secrets are never returned after creation.
+     *
+     * @return the caller's access keys
+     * @throws IOException          if an I/O error occurs during the operation
+     * @throws InterruptedException if the operation is interrupted while waiting for a response
+     */
+    public List<AccessKey> listAccessKeys() throws IOException, InterruptedException {
+        HttpResponse<String> response = new EuclidHttpClient(caCertPath).post(baseUrl + "/", "{}", "eam", "list-access-keys",
+                requestHeaders(Map.of("Content-Type", "application/json", "Authorization", "Bearer " + token)));
+
+        if (response.statusCode() / 100 != 2) {
+            throw new EuclidAuthenticationException(response.statusCode(), response.body());
+        }
+
+        List<AccessKey> keys = new ArrayList<>();
+        JsonNode node = OBJECT_MAPPER.readTree(response.body()).get("accessKeys");
+        if (node != null && node.isArray()) {
+            for (JsonNode keyNode : node) {
+                keys.add(new AccessKey(textOrNull(keyNode, "accessKeyId"), keyNode.path("active").asBoolean(true),
+                        textOrNull(keyNode, "createdAt")));
+            }
+        }
+        return keys;
+    }
+
+    /**
+     * Deletes one of this session's user's own access keys.
+     *
+     * @param accessKeyId the access key ID to delete, e.g. "AKIA..."
+     * @throws IOException          if an I/O error occurs during the operation
+     * @throws InterruptedException if the operation is interrupted while waiting for a response
+     */
+    public void deleteAccessKey(String accessKeyId) throws IOException, InterruptedException {
+        String body = OBJECT_MAPPER.writeValueAsString(DeleteAccessKeyRequest.builder().accessKeyId(accessKeyId).build());
+        HttpResponse<String> response = new EuclidHttpClient(caCertPath).post(baseUrl + "/", body, "eam", "delete-access-key",
+                requestHeaders(Map.of("Content-Type", "application/json", "Authorization", "Bearer " + token)));
+
+        if (response.statusCode() / 100 != 2) {
+            throw new EuclidAuthenticationException(response.statusCode(), response.body());
+        }
+    }
+
+    /**
+     * Creates a new, empty user group. Requires administrator privileges.
+     *
+     * @param name        group name, unique across the deployment
+     * @param description free-text description of the group's purpose
+     * @return the newly created group
+     * @throws IOException          if an I/O error occurs during the operation
+     * @throws InterruptedException if the operation is interrupted while waiting for a response
+     */
+    public UserGroup createUserGroup(String name, String description) throws IOException, InterruptedException {
+        String body = OBJECT_MAPPER.writeValueAsString(
+                CreateUserGroupRequest.builder().name(name).description(description).build());
+        HttpResponse<String> response = new EuclidHttpClient(caCertPath).post(baseUrl + "/", body, "eam", "create-user-group",
+                requestHeaders(Map.of("Content-Type", "application/json", "Authorization", "Bearer " + token)));
+
+        if (response.statusCode() / 100 != 2) {
+            throw new EuclidAuthenticationException(response.statusCode(), response.body());
+        }
+
+        return toUserGroup(OBJECT_MAPPER.readTree(response.body()).get("userGroup"));
+    }
+
+    /**
+     * Lists user groups using default filtering, pagination, and sorting parameters.
+     *
+     * @return the user groups
+     * @throws IOException          if an I/O error occurs during the operation
+     * @throws InterruptedException if the operation is interrupted while waiting for a response
+     */
+    public List<UserGroup> listUserGroups() throws IOException, InterruptedException {
+        return listUserGroups("", 10, 0, "userId");
+    }
+
+    /**
+     * Lists user groups, optionally filtered by name prefix and paginated.
+     *
+     * @param prefix     user group name prefix
+     * @param pageSize   page size
+     * @param pageIndex  page index (zero-based)
+     * @param sortColumn sorting column
+     * @return the matching user groups
+     * @throws IOException          if an I/O error occurs during the operation
+     * @throws InterruptedException if the operation is interrupted while waiting for a response
+     */
+    public List<UserGroup> listUserGroups(String prefix, long pageSize, long pageIndex, String sortColumn)
+            throws IOException, InterruptedException {
+        String body = OBJECT_MAPPER.writeValueAsString(
+                ListUserGroupsRequest.builder().prefix(prefix).pageSize(pageSize).pageIndex(pageIndex)
+                        .sortColumn(sortColumn).build());
+        HttpResponse<String> response = new EuclidHttpClient(caCertPath).post(baseUrl + "/", body, "eam", "list-user-groups",
+                requestHeaders(Map.of("Content-Type", "application/json", "Authorization", "Bearer " + token)));
+
+        if (response.statusCode() / 100 != 2) {
+            throw new EuclidAuthenticationException(response.statusCode(), response.body());
+        }
+
+        List<UserGroup> groups = new ArrayList<>();
+        JsonNode node = OBJECT_MAPPER.readTree(response.body()).get("userGroups");
+        if (node != null && node.isArray()) {
+            for (JsonNode groupNode : node) {
+                groups.add(toUserGroup(groupNode));
+            }
+        }
+        return groups;
+    }
+
+    /**
+     * Adds a user to a user group.
+     *
+     * @param userGroup user group ERN
+     * @param user      user ERN
+     * @throws IOException          if an I/O error occurs during the operation
+     * @throws InterruptedException if the operation is interrupted while waiting for a response
+     */
+    public void addUserToUserGroup(String userGroup, String user) throws IOException, InterruptedException {
+        String body = OBJECT_MAPPER.writeValueAsString(
+                UserGroupAddUserRequest.builder().userGroup(userGroup).user(user).build());
+        HttpResponse<String> response = new EuclidHttpClient(caCertPath).post(baseUrl + "/", body, "eam", "user-group-add-user",
+                requestHeaders(Map.of("Content-Type", "application/json", "Authorization", "Bearer " + token)));
+
+        if (response.statusCode() / 100 != 2) {
+            throw new EuclidAuthenticationException(response.statusCode(), response.body());
+        }
+    }
+
+    /**
+     * Removes a user from a user group.
+     *
+     * @param userGroup user group ERN
+     * @param user      user ERN
+     * @throws IOException          if an I/O error occurs during the operation
+     * @throws InterruptedException if the operation is interrupted while waiting for a response
+     */
+    public void removeUserFromUserGroup(String userGroup, String user) throws IOException, InterruptedException {
+        String body = OBJECT_MAPPER.writeValueAsString(
+                UserGroupRemoveUserRequest.builder().userGroup(userGroup).user(user).build());
+        HttpResponse<String> response = new EuclidHttpClient(caCertPath).post(baseUrl + "/", body, "eam", "user-group-remove-user",
+                requestHeaders(Map.of("Content-Type", "application/json", "Authorization", "Bearer " + token)));
+
+        if (response.statusCode() / 100 != 2) {
+            throw new EuclidAuthenticationException(response.statusCode(), response.body());
+        }
+    }
+
+    /**
+     * Deletes an existing user group. Requires administrator privileges.
+     *
+     * @param name group name to delete
+     * @throws IOException          if an I/O error occurs during the operation
+     * @throws InterruptedException if the operation is interrupted while waiting for a response
+     */
+    public void deleteUserGroup(String name) throws IOException, InterruptedException {
+        String body = OBJECT_MAPPER.writeValueAsString(DeleteUserGroupRequest.builder().name(name).build());
+        HttpResponse<String> response = new EuclidHttpClient(caCertPath).post(baseUrl + "/", body, "eam", "delete-user-group",
+                requestHeaders(Map.of("Content-Type", "application/json", "Authorization", "Bearer " + token)));
+
+        if (response.statusCode() / 100 != 2) {
+            throw new EuclidAuthenticationException(response.statusCode(), response.body());
+        }
+    }
+
+    /**
+     * Creates a new account. Requires administrator privileges.
+     *
+     * @param accountId   account ID, unique across the deployment
+     * @param name        human-readable account name
+     * @param description free-text description of the account's purpose
+     * @return the newly created account
+     * @throws IOException          if an I/O error occurs during the operation
+     * @throws InterruptedException if the operation is interrupted while waiting for a response
+     */
+    public Account createAccount(String accountId, String name, String description) throws IOException, InterruptedException {
+        String body = OBJECT_MAPPER.writeValueAsString(
+                CreateAccountRequest.builder().accountId(accountId).name(name).description(description).build());
+        HttpResponse<String> response = new EuclidHttpClient(caCertPath).post(baseUrl + "/", body, "eam", "create-account",
+                requestHeaders(Map.of("Content-Type", "application/json", "Authorization", "Bearer " + token)));
+
+        if (response.statusCode() / 100 != 2) {
+            throw new EuclidAuthenticationException(response.statusCode(), response.body());
+        }
+
+        return toAccount(OBJECT_MAPPER.readTree(response.body()).get("account"));
+    }
+
+    /**
+     * Lists accounts using default filtering, pagination, and sorting parameters.
+     *
+     * @return the accounts
+     * @throws IOException          if an I/O error occurs during the operation
+     * @throws InterruptedException if the operation is interrupted while waiting for a response
+     */
+    public List<Account> listAccounts() throws IOException, InterruptedException {
+        return listAccounts("", 10, 0, "accountId");
+    }
+
+    /**
+     * Lists accounts, optionally filtered by accountId prefix and paginated.
+     *
+     * @param prefix     account ID prefix
+     * @param pageSize   page size
+     * @param pageIndex  page index (zero-based)
+     * @param sortColumn sorting column
+     * @return the matching accounts
+     * @throws IOException          if an I/O error occurs during the operation
+     * @throws InterruptedException if the operation is interrupted while waiting for a response
+     */
+    public List<Account> listAccounts(String prefix, long pageSize, long pageIndex, String sortColumn)
+            throws IOException, InterruptedException {
+        String body = OBJECT_MAPPER.writeValueAsString(
+                ListAccountsRequest.builder().prefix(prefix).pageSize(pageSize).pageIndex(pageIndex)
+                        .sortColumn(sortColumn).build());
+        HttpResponse<String> response = new EuclidHttpClient(caCertPath).post(baseUrl + "/", body, "eam", "list-accounts",
+                requestHeaders(Map.of("Content-Type", "application/json", "Authorization", "Bearer " + token)));
+
+        if (response.statusCode() / 100 != 2) {
+            throw new EuclidAuthenticationException(response.statusCode(), response.body());
+        }
+
+        List<Account> accounts = new ArrayList<>();
+        JsonNode node = OBJECT_MAPPER.readTree(response.body()).get("accounts");
+        if (node != null && node.isArray()) {
+            for (JsonNode accountNode : node) {
+                accounts.add(toAccount(accountNode));
+            }
+        }
+        return accounts;
+    }
+
+    /**
+     * Deletes an existing account. Requires administrator privileges, and the account must have
+     * no remaining namespaces or user grants.
+     *
+     * @param accountId account ID to delete
+     * @throws IOException          if an I/O error occurs during the operation
+     * @throws InterruptedException if the operation is interrupted while waiting for a response
+     */
+    public void deleteAccount(String accountId) throws IOException, InterruptedException {
+        String body = OBJECT_MAPPER.writeValueAsString(DeleteAccountRequest.builder().accountId(accountId).build());
+        HttpResponse<String> response = new EuclidHttpClient(caCertPath).post(baseUrl + "/", body, "eam", "delete-account",
+                requestHeaders(Map.of("Content-Type", "application/json", "Authorization", "Bearer " + token)));
+
+        if (response.statusCode() / 100 != 2) {
+            throw new EuclidAuthenticationException(response.statusCode(), response.body());
+        }
+    }
+
+    /**
+     * Creates a new namespace under an account. Requires administrator privileges on that account.
+     *
+     * @param accountId   the account the namespace belongs to
+     * @param name        namespace name, unique within accountId
+     * @param description free-text description of the namespace's purpose
+     * @return the newly created namespace
+     * @throws IOException          if an I/O error occurs during the operation
+     * @throws InterruptedException if the operation is interrupted while waiting for a response
+     */
+    public Namespace createNamespace(String accountId, String name, String description) throws IOException, InterruptedException {
+        String body = OBJECT_MAPPER.writeValueAsString(
+                CreateNamespaceRequest.builder().accountId(accountId).name(name).description(description).build());
+        HttpResponse<String> response = new EuclidHttpClient(caCertPath).post(baseUrl + "/", body, "eam", "create-namespace",
+                requestHeaders(Map.of("Content-Type", "application/json", "Authorization", "Bearer " + token)));
+
+        if (response.statusCode() / 100 != 2) {
+            throw new EuclidAuthenticationException(response.statusCode(), response.body());
+        }
+
+        return toNamespace(OBJECT_MAPPER.readTree(response.body()).get("namespace"));
+    }
+
+    /**
+     * Lists namespaces under an account using default filtering, pagination, and sorting parameters.
+     *
+     * @param accountId only namespaces belonging to this account are returned
+     * @return the namespaces
+     * @throws IOException          if an I/O error occurs during the operation
+     * @throws InterruptedException if the operation is interrupted while waiting for a response
+     */
+    public List<Namespace> listNamespaces(String accountId) throws IOException, InterruptedException {
+        return listNamespaces(accountId, "", 10, 0, "name");
+    }
+
+    /**
+     * Lists namespaces under an account, optionally filtered by name prefix and paginated.
+     *
+     * @param accountId  only namespaces belonging to this account are returned
+     * @param prefix     namespace name prefix
+     * @param pageSize   page size
+     * @param pageIndex  page index (zero-based)
+     * @param sortColumn sorting column
+     * @return the matching namespaces
+     * @throws IOException          if an I/O error occurs during the operation
+     * @throws InterruptedException if the operation is interrupted while waiting for a response
+     */
+    public List<Namespace> listNamespaces(String accountId, String prefix, long pageSize, long pageIndex, String sortColumn)
+            throws IOException, InterruptedException {
+        String body = OBJECT_MAPPER.writeValueAsString(
+                ListNamespacesRequest.builder().accountId(accountId).prefix(prefix).pageSize(pageSize)
+                        .pageIndex(pageIndex).sortColumn(sortColumn).build());
+        HttpResponse<String> response = new EuclidHttpClient(caCertPath).post(baseUrl + "/", body, "eam", "list-namespaces",
+                requestHeaders(Map.of("Content-Type", "application/json", "Authorization", "Bearer " + token)));
+
+        if (response.statusCode() / 100 != 2) {
+            throw new EuclidAuthenticationException(response.statusCode(), response.body());
+        }
+
+        List<Namespace> namespaces = new ArrayList<>();
+        JsonNode node = OBJECT_MAPPER.readTree(response.body()).get("namespaces");
+        if (node != null && node.isArray()) {
+            for (JsonNode namespaceNode : node) {
+                namespaces.add(toNamespace(namespaceNode));
+            }
+        }
+        return namespaces;
+    }
+
+    /**
+     * Deletes an existing namespace. Requires administrator privileges on the account, and the
+     * namespace must have no remaining user grants.
+     *
+     * @param accountId the account the namespace belongs to
+     * @param name      namespace name to delete
+     * @throws IOException          if an I/O error occurs during the operation
+     * @throws InterruptedException if the operation is interrupted while waiting for a response
+     */
+    public void deleteNamespace(String accountId, String name) throws IOException, InterruptedException {
+        String body = OBJECT_MAPPER.writeValueAsString(
+                DeleteNamespaceRequest.builder().accountId(accountId).name(name).build());
+        HttpResponse<String> response = new EuclidHttpClient(caCertPath).post(baseUrl + "/", body, "eam", "delete-namespace",
+                requestHeaders(Map.of("Content-Type", "application/json", "Authorization", "Bearer " + token)));
+
+        if (response.statusCode() / 100 != 2) {
+            throw new EuclidAuthenticationException(response.statusCode(), response.body());
+        }
+    }
+
+    /**
+     * Grants a user access to a namespace within an account. Requires administrator privileges
+     * on that account.
+     *
+     * @param user      user ERN to grant access to
+     * @param accountId the account the namespace belongs to
+     * @param namespace namespace within accountId to grant access to
+     * @throws IOException          if an I/O error occurs during the operation
+     * @throws InterruptedException if the operation is interrupted while waiting for a response
+     */
+    public void grantNamespaceAccess(String user, String accountId, String namespace) throws IOException, InterruptedException {
+        String body = OBJECT_MAPPER.writeValueAsString(
+                GrantNamespaceAccessRequest.builder().user(user).accountId(accountId).namespace(namespace).build());
+        HttpResponse<String> response = new EuclidHttpClient(caCertPath).post(baseUrl + "/", body, "eam", "grant-namespace-access",
+                requestHeaders(Map.of("Content-Type", "application/json", "Authorization", "Bearer " + token)));
+
+        if (response.statusCode() / 100 != 2) {
+            throw new EuclidAuthenticationException(response.statusCode(), response.body());
+        }
+    }
+
+    /**
+     * Revokes a user's access to a namespace within an account. Requires administrator privileges
+     * on that account.
+     *
+     * @param user      user ERN to revoke access from
+     * @param accountId the account the namespace belongs to
+     * @param namespace namespace within accountId to revoke access from
+     * @throws IOException          if an I/O error occurs during the operation
+     * @throws InterruptedException if the operation is interrupted while waiting for a response
+     */
+    public void revokeNamespaceAccess(String user, String accountId, String namespace) throws IOException, InterruptedException {
+        String body = OBJECT_MAPPER.writeValueAsString(
+                RevokeNamespaceAccessRequest.builder().user(user).accountId(accountId).namespace(namespace).build());
+        HttpResponse<String> response = new EuclidHttpClient(caCertPath).post(baseUrl + "/", body, "eam", "revoke-namespace-access",
+                requestHeaders(Map.of("Content-Type", "application/json", "Authorization", "Bearer " + token)));
+
+        if (response.statusCode() / 100 != 2) {
+            throw new EuclidAuthenticationException(response.statusCode(), response.body());
+        }
+    }
+
+    /**
      * Merges the provided headers with additional session-specific headers like region, account ID, and user ID,
      * if they are available.
      *
@@ -191,6 +645,9 @@ public record EuclidSession(String token, String userId, String accountId, Strin
         if (userId != null) {
             merged.put("x-euclid-user-id", userId);
         }
+        if (nameSpace != null && !nameSpace.isEmpty()) {
+            merged.put("x-euclid-namespace", nameSpace);
+        }
         return merged;
     }
 
@@ -208,16 +665,103 @@ public record EuclidSession(String token, String userId, String accountId, Strin
         List<User> users = new ArrayList<>();
         if (usersNode != null && usersNode.isArray()) {
             for (JsonNode userNode : usersNode) {
-                users.add(new User(
-                        textOrNull(userNode, "userId"),
-                        textOrNull(userNode, "password"),
-                        textOrNull(userNode, "email"),
-                        textOrNull(userNode, "accountId"),
-                        textOrNull(userNode, "region"),
-                        userNode.path("isAdmin").asBoolean(false)));
+                users.add(toUser(userNode));
             }
         }
         return ListUserResponse.builder().users(users).total(root.path("total").asLong(0)).build();
+    }
+
+    /**
+     * Builds a {@code User} from its JSON representation.
+     *
+     * @param userNode the user's JSON representation
+     * @return the parsed {@code User}
+     */
+    private static User toUser(JsonNode userNode) {
+        return new User(
+                textOrNull(userNode, "userId"),
+                textOrNull(userNode, "ern"),
+                textOrNull(userNode, "password"),
+                textOrNull(userNode, "email"),
+                textOrNull(userNode, "accountId"),
+                textOrNull(userNode, "region"),
+                toAccountGrantList(userNode.get("accountGrants")),
+                textOrNull(userNode, "created"),
+                textOrNull(userNode, "modified"));
+    }
+
+    /**
+     * Builds the list of {@code AccountGrant}s from its JSON representation.
+     *
+     * @param accountGrantsNode the account grants' JSON representation, or {@code null} if absent
+     * @return the parsed {@code AccountGrant} list, empty if {@code accountGrantsNode} is absent
+     */
+    private static List<AccountGrant> toAccountGrantList(JsonNode accountGrantsNode) {
+        List<AccountGrant> grants = new ArrayList<>();
+        if (accountGrantsNode != null && accountGrantsNode.isArray()) {
+            for (JsonNode grantNode : accountGrantsNode) {
+                List<String> namespaces = new ArrayList<>();
+                JsonNode namespacesNode = grantNode.get("namespaces");
+                if (namespacesNode != null && namespacesNode.isArray()) {
+                    for (JsonNode nsNode : namespacesNode) {
+                        namespaces.add(nsNode.asText());
+                    }
+                }
+                grants.add(new AccountGrant(textOrNull(grantNode, "accountId"), namespaces,
+                        grantNode.path("isAdmin").asBoolean(false), textOrNull(grantNode, "granted")));
+            }
+        }
+        return grants;
+    }
+
+    /**
+     * Builds a {@code UserGroup} from its JSON representation.
+     *
+     * @param node the group's JSON representation, or {@code null}
+     * @return the parsed {@code UserGroup}, or {@code null} if {@code node} is {@code null}
+     */
+    private static UserGroup toUserGroup(JsonNode node) {
+        if (node == null) {
+            return null;
+        }
+        List<String> userIds = new ArrayList<>();
+        JsonNode userIdsNode = node.get("userIds");
+        if (userIdsNode != null && userIdsNode.isArray()) {
+            for (JsonNode userIdNode : userIdsNode) {
+                userIds.add(userIdNode.asText());
+            }
+        }
+        return new UserGroup(textOrNull(node, "name"), textOrNull(node, "ern"), textOrNull(node, "accountId"),
+                textOrNull(node, "region"), textOrNull(node, "description"), userIds,
+                textOrNull(node, "created"), textOrNull(node, "modified"));
+    }
+
+    /**
+     * Builds an {@code Account} from its JSON representation.
+     *
+     * @param node the account's JSON representation, or {@code null}
+     * @return the parsed {@code Account}, or {@code null} if {@code node} is {@code null}
+     */
+    private static Account toAccount(JsonNode node) {
+        if (node == null) {
+            return null;
+        }
+        return new Account(textOrNull(node, "accountId"), textOrNull(node, "name"), textOrNull(node, "ern"),
+                textOrNull(node, "description"), textOrNull(node, "created"), textOrNull(node, "modified"));
+    }
+
+    /**
+     * Builds a {@code Namespace} from its JSON representation.
+     *
+     * @param node the namespace's JSON representation, or {@code null}
+     * @return the parsed {@code Namespace}, or {@code null} if {@code node} is {@code null}
+     */
+    private static Namespace toNamespace(JsonNode node) {
+        if (node == null) {
+            return null;
+        }
+        return new Namespace(textOrNull(node, "accountId"), textOrNull(node, "name"), textOrNull(node, "ern"),
+                textOrNull(node, "description"), textOrNull(node, "created"), textOrNull(node, "modified"));
     }
 
     /**
