@@ -1,0 +1,89 @@
+package de.jensvogt.euclid.dto.ens;
+
+/**
+ * Response returned after successfully publishing a message.
+ *
+ * @param messageId     the newly published message's ID
+ * @param md5Body       MD5 checksum of the message body
+ * @param md5Attributes MD5 checksum of the message attributes
+ */
+public record PublishMessageResponse(String messageId, String md5Body, String md5Attributes) {
+
+    /**
+     * Creates a new instance of the Builder for constructing a PublishMessageResponse object.
+     *
+     * @return a new Builder instance for constructing PublishMessageResponse.
+     */
+    public static Builder builder() {
+        return new Builder();
+    }
+
+    /**
+     * Builder for constructing {@link PublishMessageResponse} instances.
+     */
+    public static final class Builder {
+
+        /**
+         * Creates an empty builder.
+         */
+        public Builder() {
+        }
+
+        /**
+         * The message ID.
+         */
+        private String messageId;
+
+        /**
+         * MD5 checksum of the message body.
+         */
+        private String md5Body;
+
+        /**
+         * MD5 checksum of the message attributes.
+         */
+        private String md5Attributes;
+
+        /**
+         * Sets the message ID.
+         *
+         * @param messageId the message ID
+         * @return the builder instance
+         */
+        public Builder messageId(String messageId) {
+            this.messageId = messageId;
+            return this;
+        }
+
+        /**
+         * Sets the MD5 checksum of the message body.
+         *
+         * @param md5Body the MD5 checksum
+         * @return the builder instance
+         */
+        public Builder md5Body(String md5Body) {
+            this.md5Body = md5Body;
+            return this;
+        }
+
+        /**
+         * Sets the MD5 checksum of the message attributes.
+         *
+         * @param md5Attributes the MD5 checksum
+         * @return the builder instance
+         */
+        public Builder md5Attributes(String md5Attributes) {
+            this.md5Attributes = md5Attributes;
+            return this;
+        }
+
+        /**
+         * Builds and returns a new instance of PublishMessageResponse using the properties set on the Builder.
+         *
+         * @return a new PublishMessageResponse instance.
+         */
+        public PublishMessageResponse build() {
+            return new PublishMessageResponse(messageId, md5Body, md5Attributes);
+        }
+    }
+}

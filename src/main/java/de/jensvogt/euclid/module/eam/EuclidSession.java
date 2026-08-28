@@ -30,6 +30,7 @@ import de.jensvogt.euclid.dto.eam.model.AccountGrant;
 import de.jensvogt.euclid.dto.eam.model.Namespace;
 import de.jensvogt.euclid.dto.eam.model.User;
 import de.jensvogt.euclid.dto.eam.model.UserGroup;
+import de.jensvogt.euclid.module.ens.EuclidEns;
 import de.jensvogt.euclid.module.eqs.EuclidEqs;
 import de.jensvogt.euclid.module.esm.EuclidEsm;
 
@@ -69,10 +70,10 @@ public record EuclidSession(String token, String userId, String accountId, Strin
     /**
      * A static and immutable instance of {@link ObjectMapper} used for JSON serialization
      * and deserialization within the {@code EuclidSession} class.
-     *
+     * <p>
      * This mapper is configured for generic-purpose JSON processing tasks and enables conversion
      * between Java objects and their JSON representations.
-     *
+     * <p>
      * Being a shared constant, this instance ensures consistent behavior and reduces the
      * overhead of repeatedly instantiating an {@link ObjectMapper}.
      */
@@ -98,6 +99,17 @@ public record EuclidSession(String token, String userId, String accountId, Strin
      */
     public EuclidEsm esm() {
         return new EuclidEsm(baseUrl, token, region, accountId, userId, accessKeyId, secretAccessKey, caCertPath);
+    }
+
+    /**
+     * ENS (pub/sub topic) operations for this session. Requests are signed with SigV4 using
+     * {@link #accessKeyId()}/{@link #secretAccessKey()} when both are present, falling back to
+     * the bearer token otherwise - mirroring how euclid-cli authenticates service calls.
+     *
+     * @return EuclidEns instance
+     */
+    public EuclidEns ens() {
+        return new EuclidEns(baseUrl, token, region, accountId, userId, accessKeyId, secretAccessKey, caCertPath);
     }
 
     /**
