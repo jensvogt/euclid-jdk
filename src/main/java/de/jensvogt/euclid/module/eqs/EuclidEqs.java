@@ -2,10 +2,12 @@ package de.jensvogt.euclid.module.eqs;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import de.jensvogt.euclid.dto.eqs.AddQueueTagRequest;
 import de.jensvogt.euclid.dto.eqs.CreateQueueRequest;
 import de.jensvogt.euclid.dto.eqs.CreateQueueResponse;
 import de.jensvogt.euclid.dto.eqs.DeleteMessageRequest;
 import de.jensvogt.euclid.dto.eqs.DeleteQueueRequest;
+import de.jensvogt.euclid.dto.eqs.DeleteQueueTagRequest;
 import de.jensvogt.euclid.dto.eqs.GetMessageAttributeRequest;
 import de.jensvogt.euclid.dto.eqs.GetMessageAttributeResponse;
 import de.jensvogt.euclid.dto.eqs.GetMessageCountRequest;
@@ -25,7 +27,9 @@ import de.jensvogt.euclid.dto.eqs.ReceiveMessagesRequest;
 import de.jensvogt.euclid.dto.eqs.ReceiveMessagesResponse;
 import de.jensvogt.euclid.dto.eqs.SendMessageRequest;
 import de.jensvogt.euclid.dto.eqs.SendMessageResponse;
+import de.jensvogt.euclid.dto.eqs.SetMessageAttributeRequest;
 import de.jensvogt.euclid.dto.eqs.SetMessageVisibilityRequest;
+import de.jensvogt.euclid.dto.eqs.SetQueueTagRequest;
 import de.jensvogt.euclid.dto.eqs.model.Message;
 import de.jensvogt.euclid.dto.eqs.model.Queue;
 import de.jensvogt.euclid.dto.eqs.model.Variant;
@@ -693,6 +697,86 @@ public final class EuclidEqs {
         }
 
         return extractGetMessageMetadataResponse(response.body());
+    }
+
+    /**
+     * Sets the value of a single message attribute, creating it if it doesn't exist yet.
+     *
+     * @param messageId the unique identifier of the message to update
+     * @param key       the key of the attribute to set
+     * @param value     the attribute's new value
+     * @return a {@code GetMessageAttributeResponse} reflecting the attribute's new value
+     * @throws IOException if an I/O error occurs during the HTTP request
+     * @throws InterruptedException if the operation is interrupted while waiting for the response
+     */
+    public GetMessageAttributeResponse setMessageAttribute(String messageId, String key, Variant value)
+            throws IOException, InterruptedException {
+        String body = OBJECT_MAPPER.writeValueAsString(
+                SetMessageAttributeRequest.builder().messageId(messageId).key(key).value(value).build());
+        HttpResponse<String> response = httpClient.post(baseUrl + "/", body, "eqs", "set-message-attribute",
+                requestHeaders("set-message-attribute", body));
+
+        if (response.statusCode() / 100 != 2) {
+            throw new EuclidAuthenticationException(response.statusCode(), response.body());
+        }
+
+        return extractGetMessageAttributeResponse(response.body());
+    }
+
+    /**
+     * Adds a tag to a queue.
+     *
+     * @param ern   the ERN of the queue to tag
+     * @param key   the tag key
+     * @param value the tag value
+     * @throws IOException if an I/O error occurs during the HTTP request
+     * @throws InterruptedException if the operation is interrupted while waiting for the response
+     */
+    public void addQueueTag(String ern, String key, String value) throws IOException, InterruptedException {
+        String body = OBJECT_MAPPER.writeValueAsString(AddQueueTagRequest.builder().ern(ern).key(key).value(value).build());
+        HttpResponse<String> response = httpClient.post(baseUrl + "/", body, "eqs", "add-queue-tag",
+                requestHeaders("add-queue-tag", body));
+
+        if (response.statusCode() / 100 != 2) {
+            throw new EuclidAuthenticationException(response.statusCode(), response.body());
+        }
+    }
+
+    /**
+     * Sets the value of an existing queue tag. The tag must already exist.
+     *
+     * @param ern   the ERN of the queue to tag
+     * @param key   the tag key
+     * @param value the tag's new value
+     * @throws IOException if an I/O error occurs during the HTTP request
+     * @throws InterruptedException if the operation is interrupted while waiting for the response
+     */
+    public void setQueueTag(String ern, String key, String value) throws IOException, InterruptedException {
+        String body = OBJECT_MAPPER.writeValueAsString(SetQueueTagRequest.builder().ern(ern).key(key).value(value).build());
+        HttpResponse<String> response = httpClient.post(baseUrl + "/", body, "eqs", "set-queue-tag",
+                requestHeaders("set-queue-tag", body));
+
+        if (response.statusCode() / 100 != 2) {
+            throw new EuclidAuthenticationException(response.statusCode(), response.body());
+        }
+    }
+
+    /**
+     * Deletes a tag from a queue.
+     *
+     * @param ern the ERN of the queue to untag
+     * @param key the tag key to delete
+     * @throws IOException if an I/O error occurs during the HTTP request
+     * @throws InterruptedException if the operation is interrupted while waiting for the response
+     */
+    public void deleteQueueTag(String ern, String key) throws IOException, InterruptedException {
+        String body = OBJECT_MAPPER.writeValueAsString(DeleteQueueTagRequest.builder().ern(ern).key(key).build());
+        HttpResponse<String> response = httpClient.post(baseUrl + "/", body, "eqs", "delete-queue-tag",
+                requestHeaders("delete-queue-tag", body));
+
+        if (response.statusCode() / 100 != 2) {
+            throw new EuclidAuthenticationException(response.statusCode(), response.body());
+        }
     }
 
     /**

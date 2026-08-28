@@ -475,6 +475,66 @@ class EuclidEqsTest {
     }
 
     @Test
+    void setMessageAttributeParsesResponse() throws Exception {
+        AtomicReference<SignableRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(captureRequest(exchange));
+            sendResponse(exchange, 200, "{\"messageId\":\"msg-1\",\"name\":\"count\","
+                    + "\"value\":{\"type\":\"long\",\"value\":5}}");
+        });
+
+        GetMessageAttributeResponse response = newClient().setMessageAttribute("msg-1", "count", new Variant("long", 5));
+
+        assertEquals("set-message-attribute", received.get().header("x-euclid-action"));
+        assertBodyContains(received.get().body(), "\"messageId\":\"msg-1\"", "\"key\":\"count\"",
+                "\"value\":{\"type\":\"long\",\"value\":5}");
+        assertEquals("count", response.name());
+        assertEquals("5", response.value().value());
+    }
+
+    @Test
+    void addQueueTagSendsErnKeyAndValue() throws Exception {
+        AtomicReference<SignableRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(captureRequest(exchange));
+            sendResponse(exchange, 200, "{}");
+        });
+
+        newClient().addQueueTag("queue-ern", "env", "prod");
+
+        assertEquals("add-queue-tag", received.get().header("x-euclid-action"));
+        assertBodyContains(received.get().body(), "\"ern\":\"queue-ern\"", "\"key\":\"env\"", "\"value\":\"prod\"");
+    }
+
+    @Test
+    void setQueueTagSendsErnKeyAndValue() throws Exception {
+        AtomicReference<SignableRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(captureRequest(exchange));
+            sendResponse(exchange, 200, "{}");
+        });
+
+        newClient().setQueueTag("queue-ern", "env", "staging");
+
+        assertEquals("set-queue-tag", received.get().header("x-euclid-action"));
+        assertBodyContains(received.get().body(), "\"ern\":\"queue-ern\"", "\"key\":\"env\"", "\"value\":\"staging\"");
+    }
+
+    @Test
+    void deleteQueueTagSendsErnAndKey() throws Exception {
+        AtomicReference<SignableRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(captureRequest(exchange));
+            sendResponse(exchange, 200, "{}");
+        });
+
+        newClient().deleteQueueTag("queue-ern", "env");
+
+        assertEquals("delete-queue-tag", received.get().header("x-euclid-action"));
+        assertBodyContains(received.get().body(), "\"ern\":\"queue-ern\"", "\"key\":\"env\"");
+    }
+
+    @Test
     void nonSuccessResponseThrowsEuclidAuthenticationException() throws Exception {
         server = startServer(exchange -> sendResponse(exchange, 500, "{\"error\":\"boom\"}"));
 
