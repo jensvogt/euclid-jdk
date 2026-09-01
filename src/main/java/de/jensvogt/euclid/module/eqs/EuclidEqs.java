@@ -945,7 +945,8 @@ public final class EuclidEqs {
      */
     private static SendMessageResponse extractSendMessageResponse(String responseBody) throws IOException {
         JsonNode root = OBJECT_MAPPER.readTree(responseBody);
-        return SendMessageResponse.builder().messageId(textOrNull(root, "messageId")).build();
+        return SendMessageResponse.builder().messageId(textOrNull(root, "messageId"))
+                .md5Body(textOrNull(root, "md5Body")).md5Attributes(textOrNull(root, "md5Attributes")).build();
     }
 
     /**
@@ -1046,6 +1047,7 @@ public final class EuclidEqs {
                 .priority(textOrNull(root, "priority"))
                 .size(root.path("size").asLong(0)).receivedCount(root.path("receivedCount").asLong(0))
                 .visibilityTimeout(root.path("visibilityTimeout").asLong(0)).contentType(textOrNull(root, "contentType"))
+                .md5Body(textOrNull(root, "md5Body")).md5Attributes(textOrNull(root, "md5Attributes"))
                 .created(textOrNull(root, "created")).modified(textOrNull(root, "modified")).build();
     }
 
@@ -1136,10 +1138,12 @@ public final class EuclidEqs {
                         textOrNull(messageNode, "status"),
                         textOrNull(messageNode, "priority"),
                         textOrNull(messageNode, "body"),
+                        textOrNull(messageNode, "md5Body"),
                         textOrNull(messageNode, "receiptHandle"),
                         messageNode.path("size").asLong(0),
                         textOrNull(messageNode, "contentType"),
                         toVariantMap(messageNode.get("attributes")),
+                        textOrNull(messageNode, "md5Attributes"),
                         textOrNull(messageNode, "lastReceived"),
                         textOrNull(messageNode, "created"),
                         textOrNull(messageNode, "modified")));

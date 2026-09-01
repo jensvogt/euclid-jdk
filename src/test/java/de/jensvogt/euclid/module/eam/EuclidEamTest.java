@@ -135,6 +135,49 @@ class EuclidEamTest {
         assertTrue(changeNamespaceBody.get().contains("\"namespace\":\"prod\""));
     }
 
+    // The server resolves the user by ID first and only falls back to the email, so a login that
+    // identifies the account by email must not also send a user ID.
+    @Test
+    void loginWithEmailSendsTheEmailAndNoUserId() throws Exception {
+        AtomicReference<String> receivedBody = new AtomicReference<>();
+        server = startServer("/", exchange -> {
+            receivedBody.set(new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8));
+            sendResponse(exchange, 200, "{\"token\":\"abc123\"}");
+        });
+
+        EuclidSession session = EuclidEam.forServer(baseUrl())
+                .email("jens@example.com")
+                .password("s3cret")
+                .login();
+
+        assertEquals("abc123", session.token());
+        assertTrue(receivedBody.get().contains("\"email\":\"jens@example.com\""));
+        assertTrue(receivedBody.get().contains("\"userId\":\"\""), "a userId would win over the email");
+    }
+
+    // A username set alongside an email wins, so the email is left out rather than sent and ignored.
+    @Test
+    void loginWithUsernameLeavesTheEmailOut() throws Exception {
+        AtomicReference<String> receivedBody = new AtomicReference<>();
+        server = startServer("/", exchange -> {
+            receivedBody.set(new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8));
+            sendResponse(exchange, 200, "{\"token\":\"abc123\"}");
+        });
+
+        EuclidEam.forServer(baseUrl()).username("jens").email("jens@example.com").password("s3cret").login();
+
+        assertTrue(receivedBody.get().contains("\"userId\":\"jens\""));
+        assertTrue(receivedBody.get().contains("\"email\":\"\""));
+    }
+
+    @Test
+    void loginRequiresAUsernameOrAnEmail() {
+        EuclidEam access = EuclidEam.forServer("http://localhost:1").password("s3cret");
+
+        NullPointerException exception = assertThrows(NullPointerException.class, access::login);
+        assertTrue(exception.getMessage().contains("username or email"));
+    }
+
     @Test
     void loginThrowsAuthenticationExceptionForRejectedCredentials() throws Exception {
         server = startServer("/login", exchange -> sendResponse(exchange, 401, "{\"error\":\"invalid credentials\"}"));

@@ -2,6 +2,9 @@ package de.jensvogt.euclid.module.eam;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import de.jensvogt.euclid.dto.Metadata;
+import de.jensvogt.euclid.dto.eam.LoginRequest;
+import de.jensvogt.euclid.dto.eam.LoginResponse;
 import de.jensvogt.euclid.exception.EuclidAuthenticationException;
 import de.jensvogt.euclid.http.EuclidHttpClient;
 
@@ -94,6 +97,12 @@ public final class EuclidEam {
      * This variable stores the login name required to establish a session with the server.
      */
     private String username;
+
+    /**
+     * Email address to authenticate with when no username is set. The server resolves the user by
+     * user ID first and falls back to this, so exactly one of the two identifies the account.
+     */
+    private String email;
 
     /**
      * Stores the password used for authentication.
@@ -221,6 +230,19 @@ public final class EuclidEam {
     }
 
     /**
+     * Sets the email address to authenticate with instead of a username. The server looks the user
+     * up by user ID first and only falls back to the email when no user ID was given, so set one or
+     * the other - a username set alongside an email wins.
+     *
+     * @param email the email address to log in with
+     * @return the current instance of {@code EuclidEam}
+     */
+    public EuclidEam email(String email) {
+        this.email = email;
+        return this;
+    }
+
+    /**
      * Sets the namespace to make active for the session once login succeeds - validated and
      * applied via a follow-up {@link EuclidSession#changeNamespace(String)} call, mirroring
      * euclid-cli's "eam login --namespace" option. Every namespace-scoped command run afterward
@@ -264,7 +286,8 @@ public final class EuclidEam {
      * @return an active {@code EuclidSession} object representing the authenticated session
      * @throws IOException if an error occurs during network communication or while processing the server response
      * @throws InterruptedException if the operation is interrupted during execution
-     * @throws NullPointerException if either the username or password is not set before calling this method
+     * @throws NullPointerException if the password, or both the username and email, are not set
+     *                               before calling this method
      * @throws EuclidAuthenticationException if the server responds with an authentication failure
      */
     public EuclidSession login() throws IOException, InterruptedException {
@@ -273,10 +296,16 @@ public final class EuclidEam {
             return cached;
         }
 
-        Objects.requireNonNull(username, "username must be set before calling login()");
+        if ((username == null || username.isEmpty()) && (email == null || email.isEmpty())) {
+            throw new NullPointerException("username or email must be set before calling login()");
+        }
         Objects.requireNonNull(password, "password must be set before calling login()");
 
-        String body = OBJECT_MAPPER.writeValueAsString(new LoginRequest(username, password));
+        // Only one identifier is sent: the server takes the user ID when it is present and only
+        // falls back to the email otherwise, so sending both would silently ignore the email.
+        String body = OBJECT_MAPPER.writeValueAsString(LoginRequest.builder()
+                .userId(username == null ? "" : username).password(password)
+                .email(username == null || username.isEmpty() ? (email == null ? "" : email) : "").build());
         Map<String, String> headers = Map.of("Content-Type", "application/json");
         HttpResponse<String> response = new EuclidHttpClient(caCertPath).post(baseUrl + loginPath, body, "eam", "login", headers);
 
@@ -437,12 +466,32 @@ public final class EuclidEam {
      * @throws IOException if an error occurs while reading or parsing the response body
      */
     private static EuclidSession extractSession(String responseBody, String baseUrl, String caCertPath) throws IOException {
+        LoginResponse login = extractLoginResponse(responseBody);
+        Metadata metadata = login.metadata();
+        return new EuclidSession(login.token(), metadata == null ? null : metadata.user(),
+                metadata == null ? null : metadata.accountId(), metadata == null ? null : metadata.region(),
+                login.accessKeyId(), login.secretAccessKey(), login.isAdmin(), responseBody, baseUrl,
+                caCertPath, null);
+    }
+
+    /**
+     * Parses a login response. The caller's identity travels in a nested {@code "metadata"} object,
+     * so the account and region a session is scoped to come from there rather than the top level.
+     *
+     * @param responseBody the JSON response body
+     * @return the parsed login response
+     * @throws IOException if the response body cannot be parsed
+     */
+    private static LoginResponse extractLoginResponse(String responseBody) throws IOException {
         JsonNode root = OBJECT_MAPPER.readTree(responseBody);
         JsonNode metadata = root.get("metadata");
-        return new EuclidSession(textOrNull(root, "token"), textOrNull(metadata, "user"),
-                textOrNull(metadata, "accountId"), textOrNull(metadata, "region"),
-                textOrNull(root, "accessKeyId"), textOrNull(root, "secretAccessKey"),
-                root.path("isAdmin").asBoolean(false), responseBody, baseUrl, caCertPath, null);
+        return LoginResponse.builder()
+                .metadata(metadata == null || !metadata.isObject() ? null
+                        : new Metadata(textOrNull(metadata, "region"), textOrNull(metadata, "accountId"),
+                                textOrNull(metadata, "user")))
+                .token(textOrNull(root, "token")).accessKeyId(textOrNull(root, "accessKeyId"))
+                .secretAccessKey(textOrNull(root, "secretAccessKey")).createdAt(textOrNull(root, "createdAt"))
+                .isAdmin(root.path("isAdmin").asBoolean(false)).build();
     }
 
     /**
@@ -469,6 +518,4 @@ public final class EuclidEam {
         return url.endsWith("/") ? url.substring(0, url.length() - 1) : url;
     }
 
-    private record LoginRequest(String userId, String password) {
-    }
 }

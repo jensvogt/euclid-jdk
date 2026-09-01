@@ -34,6 +34,7 @@ import de.jensvogt.euclid.dto.eam.model.AccountGrant;
 import de.jensvogt.euclid.dto.eam.model.Namespace;
 import de.jensvogt.euclid.dto.eam.model.User;
 import de.jensvogt.euclid.dto.eam.model.UserGroup;
+import de.jensvogt.euclid.module.eap.EuclidEap;
 import de.jensvogt.euclid.module.ekm.EuclidEkm;
 import de.jensvogt.euclid.module.ens.EuclidEns;
 import de.jensvogt.euclid.module.eqs.EuclidEqs;
@@ -145,6 +146,20 @@ public record EuclidSession(String token, String userId, String accountId, Strin
      */
     public EuclidEts ets() {
         return new EuclidEts(baseUrl, token, region, accountId, userId, accessKeyId, secretAccessKey, caCertPath, nameSpace);
+    }
+
+    /**
+     * EAP (application platform) operations for this session. Requests are signed with SigV4 using
+     * {@link #accessKeyId()}/{@link #secretAccessKey()} when both are present, falling back to
+     * the bearer token otherwise - mirroring how euclid-cli authenticates service calls.
+     * <p>
+     * Every EAP action is administrator-only server-side, so a session whose {@link #isAdmin()} is
+     * false gets HTTP 403 from all of them.
+     *
+     * @return EuclidEap instance
+     */
+    public EuclidEap eap() {
+        return new EuclidEap(baseUrl, token, region, accountId, userId, accessKeyId, secretAccessKey, caCertPath, nameSpace);
     }
 
     /**

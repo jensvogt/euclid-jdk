@@ -288,7 +288,7 @@ class EuclidEqsTest {
         AtomicReference<SignableRequest> received = new AtomicReference<>();
         server = startServer(exchange -> {
             received.set(captureRequest(exchange));
-            sendResponse(exchange, 200, "{\"messageId\":\"msg-1\"}");
+            sendResponse(exchange, 200, "{\"messageId\":\"msg-1\",\"md5Body\":\"abc\",\"md5Attributes\":\"def\"}");
         });
 
         SendMessageResponse response = newClient().sendMessage("queue-ern", "hello");
@@ -297,6 +297,8 @@ class EuclidEqsTest {
         assertBodyContains(received.get().body(), "\"ern\":\"queue-ern\"", "\"body\":\"hello\"",
                 "\"attributes\":{}", "\"priority\":\"MIDDLE\"");
         assertEquals("msg-1", response.messageId());
+        assertEquals("abc", response.md5Body());
+        assertEquals("def", response.md5Attributes());
     }
 
     @Test

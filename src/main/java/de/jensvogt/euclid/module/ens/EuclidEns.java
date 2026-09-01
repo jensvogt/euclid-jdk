@@ -613,7 +613,8 @@ public final class EuclidEns {
 
     private static PublishMessageResponse extractPublishMessageResponse(String responseBody) throws IOException {
         JsonNode root = OBJECT_MAPPER.readTree(responseBody);
-        return PublishMessageResponse.builder().messageId(textOrNull(root, "messageId")).build();
+        return PublishMessageResponse.builder().messageId(textOrNull(root, "messageId"))
+                .md5Body(textOrNull(root, "md5Body")).md5Attributes(textOrNull(root, "md5Attributes")).build();
     }
 
     private static ListMessagesResponse extractListMessagesResponse(String responseBody) throws IOException {
@@ -722,7 +723,9 @@ public final class EuclidEns {
                         textOrNull(messageNode, "messageId"),
                         textOrNull(messageNode, "status"),
                         textOrNull(messageNode, "body"),
+                        textOrNull(messageNode, "md5Body"),
                         toVariantMap(messageNode.get("attributes")),
+                        textOrNull(messageNode, "md5Attributes"),
                         textOrNull(messageNode, "lastReceived"),
                         textOrNull(messageNode, "created"),
                         textOrNull(messageNode, "modified")));

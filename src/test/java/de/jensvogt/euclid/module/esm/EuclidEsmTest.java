@@ -20,6 +20,7 @@ import de.jensvogt.euclid.dto.esm.ObjectAttributeResponse;
 import de.jensvogt.euclid.dto.esm.PurgeBucketResponse;
 import de.jensvogt.euclid.dto.esm.SubscribeResponse;
 import de.jensvogt.euclid.dto.esm.model.Bucket;
+import de.jensvogt.euclid.dto.esm.model.EsmObject;
 import de.jensvogt.euclid.exception.EuclidServiceException;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
@@ -797,6 +798,70 @@ class EuclidEsmTest {
 
         assertEquals("platform", buckets.getFirst().tags().get("team"));
         assertEquals("pim", objects.objects().getFirst().attributes().get("source").value());
+    }
+
+    @Test
+    void copyAndMoveObjectSendBothEndsAndParseTheStoredObject() throws Exception {
+        Map<String, String> bodyByAction = new ConcurrentHashMap<>();
+        server = startServer(exchange -> {
+            String action = exchange.getRequestHeaders().getFirst("x-euclid-action");
+            bodyByAction.put(action, new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8));
+            sendResponse(exchange, 200, "{\"ern\":\"obj-ern\",\"bucketErn\":\"target-ern\",\"key\":\"b.bin\","
+                    + "\"size\":10,\"status\":\"COMPLETED\",\"contentType\":\"application/octet-stream\","
+                    + "\"md5Sum\":\"abc\",\"attributes\":{},\"created\":\"2026-01-01\",\"modified\":\"2026-01-02\"}");
+        });
+
+        EuclidEsm esm = newClient();
+        EsmObject copied = esm.copyObject("source-ern", "a.bin", "target-ern", "b.bin");
+        esm.moveObject("source-ern", "a.bin", "target-ern", "b.bin");
+
+        for (String action : List.of("copy-object", "move-object")) {
+            assertBodyContains(bodyByAction.get(action), "\"sourceBucketErn\":\"source-ern\"",
+                    "\"sourceKey\":\"a.bin\"", "\"targetBucketErn\":\"target-ern\"", "\"targetKey\":\"b.bin\"");
+        }
+
+        assertEquals("obj-ern", copied.ern());
+        assertEquals("target-ern", copied.bucketErn());
+        assertEquals("b.bin", copied.key());
+        assertEquals("abc", copied.md5Sum());
+        assertEquals(10, copied.size());
+    }
+
+    // rename-object is a move that cannot leave the bucket, so it names one bucket and two keys
+    // rather than two of each.
+    @Test
+    void renameObjectSendsOneBucketAndTwoKeys() throws Exception {
+        AtomicReference<SignableRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(captureRequest(exchange));
+            sendResponse(exchange, 200, "{\"ern\":\"obj-ern\",\"bucketErn\":\"bucket-ern\",\"key\":\"new.bin\","
+                    + "\"size\":10,\"status\":\"COMPLETED\",\"attributes\":{}}");
+        });
+
+        EsmObject renamed = newClient().renameObject("bucket-ern", "old.bin", "new.bin");
+
+        assertEquals("rename-object", received.get().header("x-euclid-action"));
+        assertBodyContains(received.get().body(), "\"bucketErn\":\"bucket-ern\"", "\"key\":\"old.bin\"",
+                "\"newKey\":\"new.bin\"");
+        assertEquals("new.bin", renamed.key());
+    }
+
+    // The server refuses to silently replace an object at the target rather than overwriting it.
+    @Test
+    void copyObjectSurfacesAConflictAtTheTarget() throws Exception {
+        server = startServer(exchange -> {
+            exchange.getRequestBody().readAllBytes();
+            sendResponse(exchange, 409, "{\"error\":\"Object already exists, bucket: target-ern, key: b.bin\"}");
+        });
+
+        EuclidEsm esm = newClient();
+        EuclidServiceException exception = assertThrows(EuclidServiceException.class,
+                () -> esm.copyObject("source-ern", "a.bin", "target-ern", "b.bin"));
+
+        assertEquals("esm", exception.service());
+        assertEquals("copy-object", exception.action());
+        assertEquals(409, exception.statusCode());
+        assertTrue(exception.responseBody().contains("Object already exists"));
     }
 
     private EuclidEsm newClient() {

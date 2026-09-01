@@ -12,12 +12,15 @@ package de.jensvogt.euclid.dto.eqs;
  * @param receivedCount     number of times the message has been received
  * @param visibilityTimeout seconds the message stays invisible after a receive
  * @param contentType       the message body's content type
+ * @param md5Body           MD5 checksum of the message body
+ * @param md5Attributes     MD5 checksum of the message's attributes
  * @param created           creation timestamp
  * @param modified          last-modified timestamp
  */
 public record GetMessageMetadataResponse(String messageId, String queueErn, String receiptHandle, String status,
                                          String priority, long size, long receivedCount, long visibilityTimeout,
-                                         String contentType, String created, String modified) {
+                                         String contentType, String md5Body, String md5Attributes, String created,
+                                         String modified) {
 
     /**
      * Creates a new instance of the Builder for constructing a GetMessageMetadataResponse object.
@@ -83,6 +86,16 @@ public record GetMessageMetadataResponse(String messageId, String queueErn, Stri
          * The message body's content type.
          */
         private String contentType;
+
+        /**
+         * MD5 checksum of the message body.
+         */
+        private String md5Body;
+
+        /**
+         * MD5 checksum of the message's attributes.
+         */
+        private String md5Attributes;
 
         /**
          * Creation timestamp.
@@ -194,6 +207,28 @@ public record GetMessageMetadataResponse(String messageId, String queueErn, Stri
         }
 
         /**
+         * Sets MD5 checksum of the message body.
+         *
+         * @param md5Body MD5 checksum of the message body
+         * @return the builder instance
+         */
+        public Builder md5Body(String md5Body) {
+            this.md5Body = md5Body;
+            return this;
+        }
+
+        /**
+         * Sets MD5 checksum of the message's attributes.
+         *
+         * @param md5Attributes MD5 checksum of the message's attributes
+         * @return the builder instance
+         */
+        public Builder md5Attributes(String md5Attributes) {
+            this.md5Attributes = md5Attributes;
+            return this;
+        }
+
+        /**
          * Sets creation timestamp.
          *
          * @param created creation timestamp
@@ -221,7 +256,7 @@ public record GetMessageMetadataResponse(String messageId, String queueErn, Stri
          * @return a new GetMessageMetadataResponse instance.
          */
         public GetMessageMetadataResponse build() {
-            return new GetMessageMetadataResponse(messageId, queueErn, receiptHandle, status, priority, size, receivedCount, visibilityTimeout, contentType, created, modified);
+            return new GetMessageMetadataResponse(messageId, queueErn, receiptHandle, status, priority, size, receivedCount, visibilityTimeout, contentType, md5Body, md5Attributes, created, modified);
         }
     }
 }

@@ -8,6 +8,7 @@ import de.jensvogt.euclid.dto.com.Variant;
 import de.jensvogt.euclid.dto.esm.AddBucketTagRequest;
 import de.jensvogt.euclid.dto.esm.CompleteDownloadRequest;
 import de.jensvogt.euclid.dto.esm.CompleteUploadRequest;
+import de.jensvogt.euclid.dto.esm.CopyObjectRequest;
 import de.jensvogt.euclid.dto.esm.CompleteUploadResponse;
 import de.jensvogt.euclid.dto.esm.CreateBucketRequest;
 import de.jensvogt.euclid.dto.esm.CreateBucketResponse;
@@ -36,6 +37,7 @@ import de.jensvogt.euclid.dto.esm.ListSubscriptionsResponse;
 import de.jensvogt.euclid.dto.esm.ObjectAttributeRequest;
 import de.jensvogt.euclid.dto.esm.ObjectAttributeResponse;
 import de.jensvogt.euclid.dto.esm.PurgeBucketRequest;
+import de.jensvogt.euclid.dto.esm.RenameObjectRequest;
 import de.jensvogt.euclid.dto.esm.PurgeBucketResponse;
 import de.jensvogt.euclid.dto.esm.SetBucketTagRequest;
 import de.jensvogt.euclid.dto.esm.SubscribeRequest;
@@ -483,6 +485,100 @@ public final class EuclidEsm {
         }
 
         return extractPurgeBucketResponse(response.body());
+    }
+
+    /**
+     * Copies an object, leaving the source in place. The copy gets its own bytes on disk and its
+     * own ERN, so the two are independent from here on.
+     * <p>
+     * Both ends are permission-checked: reading out of one bucket and writing into another are
+     * separate rights and this does both. An existing object at the target is refused with HTTP 409
+     * rather than silently replaced - overwriting means deleting the target first and saying so.
+     *
+     * @param sourceBucketErn the ERN of the bucket the object is read from
+     * @param sourceKey the key of the object to copy
+     * @param targetBucketErn the ERN of the bucket the object is written to
+     * @param targetKey the key the copy is written under
+     * @return the newly stored object
+     * @throws IOException if an I/O error occurs during the HTTP request
+     * @throws InterruptedException if the operation is interrupted while waiting for a response
+     */
+    public EsmObject copyObject(String sourceBucketErn, String sourceKey, String targetBucketErn, String targetKey)
+            throws IOException, InterruptedException {
+        return transferObject("copy-object", sourceBucketErn, sourceKey, targetBucketErn, targetKey);
+    }
+
+    /**
+     * Moves an object to another bucket or key, removing the source. The bytes on disk are not
+     * copied - the same file simply answers to a different key from now on - so this is cheap
+     * regardless of object size.
+     * <p>
+     * Refuses an existing object at the target with HTTP 409, exactly as {@link #copyObject} does.
+     *
+     * @param sourceBucketErn the ERN of the bucket the object is moved out of
+     * @param sourceKey the key of the object to move
+     * @param targetBucketErn the ERN of the bucket the object is moved into
+     * @param targetKey the key the object is written under
+     * @return the object at its new location
+     * @throws IOException if an I/O error occurs during the HTTP request
+     * @throws InterruptedException if the operation is interrupted while waiting for a response
+     */
+    public EsmObject moveObject(String sourceBucketErn, String sourceKey, String targetBucketErn, String targetKey)
+            throws IOException, InterruptedException {
+        return transferObject("move-object", sourceBucketErn, sourceKey, targetBucketErn, targetKey);
+    }
+
+    /**
+     * Renames an object within its bucket - a {@link #moveObject} that cannot leave the bucket,
+     * which is the whole difference between the two.
+     *
+     * @param bucketErn the ERN of the bucket holding the object
+     * @param key the object's current key
+     * @param newKey the key to rename it to
+     * @return the object under its new key
+     * @throws IOException if an I/O error occurs during the HTTP request
+     * @throws InterruptedException if the operation is interrupted while waiting for a response
+     */
+    public EsmObject renameObject(String bucketErn, String key, String newKey)
+            throws IOException, InterruptedException {
+        String body = OBJECT_MAPPER.writeValueAsString(
+                RenameObjectRequest.builder().bucketErn(bucketErn).key(key).newKey(newKey).build());
+        HttpResponse<String> response = httpClient.post(baseUrl + "/", body, "esm", "rename-object",
+                requestHeaders("rename-object", body));
+
+        if (response.statusCode() / 100 != 2) {
+            throw new EuclidServiceException("esm", "rename-object", response.statusCode(), response.body());
+        }
+
+        return toEsmObject(OBJECT_MAPPER.readTree(response.body()));
+    }
+
+    /**
+     * Sends a copy-object or move-object action, which take the same request and differ only in
+     * whether the source survives.
+     *
+     * @param action the action to send, {@code "copy-object"} or {@code "move-object"}
+     * @param sourceBucketErn the ERN of the bucket the object is read from
+     * @param sourceKey the key of the object to transfer
+     * @param targetBucketErn the ERN of the bucket the object is written to
+     * @param targetKey the key the object is written under
+     * @return the stored object at its target location
+     * @throws IOException if an I/O error occurs during the HTTP request
+     * @throws InterruptedException if the operation is interrupted while waiting for a response
+     */
+    private EsmObject transferObject(String action, String sourceBucketErn, String sourceKey, String targetBucketErn,
+                                     String targetKey) throws IOException, InterruptedException {
+        String body = OBJECT_MAPPER.writeValueAsString(CopyObjectRequest.builder()
+                .sourceBucketErn(sourceBucketErn).sourceKey(sourceKey)
+                .targetBucketErn(targetBucketErn).targetKey(targetKey).build());
+        HttpResponse<String> response = httpClient.post(baseUrl + "/", body, "esm", action,
+                requestHeaders(action, body));
+
+        if (response.statusCode() / 100 != 2) {
+            throw new EuclidServiceException("esm", action, response.statusCode(), response.body());
+        }
+
+        return toEsmObject(OBJECT_MAPPER.readTree(response.body()));
     }
 
     /**
@@ -1452,20 +1548,31 @@ public final class EuclidEsm {
         List<EsmObject> objects = new ArrayList<>();
         if (objectsNode != null && objectsNode.isArray()) {
             for (JsonNode objectNode : objectsNode) {
-                objects.add(new EsmObject(
-                        textOrNull(objectNode, "ern"),
-                        textOrNull(objectNode, "bucketErn"),
-                        textOrNull(objectNode, "key"),
-                        objectNode.path("size").asLong(0),
-                        textOrNull(objectNode, "status"),
-                        textOrNull(objectNode, "contentType"),
-                        textOrNull(objectNode, "md5Sum"),
-                        toVariantMap(objectNode.get("attributes")),
-                        textOrNull(objectNode, "created"),
-                        textOrNull(objectNode, "modified")));
+                objects.add(toEsmObject(objectNode));
             }
         }
         return objects;
+    }
+
+    /**
+     * Builds an {@link EsmObject} from one object's JSON, as it appears both inside a list-objects
+     * array and on its own as the answer to copy/move/rename-object.
+     *
+     * @param objectNode the JSON object describing the stored object
+     * @return the parsed object
+     */
+    private static EsmObject toEsmObject(JsonNode objectNode) {
+        return new EsmObject(
+                textOrNull(objectNode, "ern"),
+                textOrNull(objectNode, "bucketErn"),
+                textOrNull(objectNode, "key"),
+                objectNode.path("size").asLong(0),
+                textOrNull(objectNode, "status"),
+                textOrNull(objectNode, "contentType"),
+                textOrNull(objectNode, "md5Sum"),
+                toVariantMap(objectNode.get("attributes")),
+                textOrNull(objectNode, "created"),
+                textOrNull(objectNode, "modified"));
     }
 
     /**
