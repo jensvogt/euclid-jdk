@@ -201,7 +201,7 @@ public final class EuclidEes {
      * The filter is matched against the event payload at publish time, so it decides what the
      * subscriber accumulates rather than what it sees on receive - narrowing it later does not
      * remove events already stored. Watching one bucket means filtering
-     * {@code esm.object.modified} on that bucket's {@code bucketErn}.
+     * {@code esm.object.created} on that bucket's {@code bucketName}.
      *
      * @param name the subscriber name events are claimed under
      * @param eventTypes the event types to receive; one subscription is registered per type

@@ -10,7 +10,7 @@ import java.util.Map;
  * mid-work therefore loses nothing: the event becomes claimable again.
  *
  * @param eventId      the ID to acknowledge this event with
- * @param eventType    the event type, e.g. {@code "esm.object.modified"}
+ * @param eventType    the event type, e.g. {@code "esm.object.created"}
  * @param sourceModule the module that published it, e.g. {@code "esm"}
  * @param payload      the event body, whose shape depends on {@code eventType} - the same fields a
  *                     subscription filter matches against

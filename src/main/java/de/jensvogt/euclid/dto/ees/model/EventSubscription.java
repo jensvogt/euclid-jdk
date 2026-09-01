@@ -9,7 +9,7 @@ import java.util.Map;
  * @param subscriber the name events are claimed under. Instances of one application share it
  *                   deliberately, so an event is processed once between them; two different
  *                   applications watching the same thing each get their own copy
- * @param eventType  the event type subscribed to, e.g. {@code "esm.object.modified"}
+ * @param eventType  the event type subscribed to, e.g. {@code "esm.object.created"}
  * @param filter     exact-match key/value pairs an event payload must satisfy for this subscriber
  *                   to store it; empty means every event of this type
  * @param accountId  the account the subscriber belongs to - an event whose payload names a

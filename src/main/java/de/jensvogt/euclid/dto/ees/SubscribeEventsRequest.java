@@ -7,7 +7,7 @@ import java.util.Map;
  * Request to register a durable external subscription, or to update its filter.
  *
  * @param name       the subscriber name events are claimed under
- * @param eventTypes event types to receive, e.g. {@code "esm.object.modified"}
+ * @param eventTypes event types to receive, e.g. {@code "esm.object.created"}
  * @param filter     exact-match key/value pairs an event payload must satisfy; empty receives every event of these types
  * @param mode       "durable" to keep events until they are acknowledged, "live" to only receive them while connected, or {@code null} for the server's default (durable)
  */
@@ -39,7 +39,7 @@ public record SubscribeEventsRequest(String name, List<String> eventTypes, Map<S
         private String name;
 
         /**
-         * Event types to receive, e.g. {@code "esm.object.modified"}.
+         * Event types to receive, e.g. {@code "esm.object.created"}.
          */
         private List<String> eventTypes;
 
@@ -65,9 +65,9 @@ public record SubscribeEventsRequest(String name, List<String> eventTypes, Map<S
         }
 
         /**
-         * Sets event types to receive, e.g. {@code "esm.object.modified"}.
+         * Sets event types to receive, e.g. {@code "esm.object.created"}.
          *
-         * @param eventTypes event types to receive, e.g. {@code "esm.object.modified"}
+         * @param eventTypes event types to receive, e.g. {@code "esm.object.created"}
          * @return the builder instance
          */
         public Builder eventTypes(List<String> eventTypes) {
