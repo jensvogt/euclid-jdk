@@ -14,9 +14,10 @@ import java.util.Map;
  *                   to store it; empty means every event of this type
  * @param accountId  the account the subscriber belongs to - an event whose payload names a
  *                   different account is never stored for it
+ * @param mode       whether events are kept until acknowledged or only pushed while connected
  * @param created    when the subscription was first registered
  * @param lastSeen   when the subscriber last claimed events
  */
 public record EventSubscription(String subscriber, String eventType, Map<String, Object> filter, String accountId,
-                                String created, String lastSeen) {
+                                DeliveryMode mode, String created, String lastSeen) {
 }

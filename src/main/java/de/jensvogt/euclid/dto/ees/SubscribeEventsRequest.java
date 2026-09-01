@@ -9,8 +9,9 @@ import java.util.Map;
  * @param name       the subscriber name events are claimed under
  * @param eventTypes event types to receive, e.g. {@code "esm.object.modified"}
  * @param filter     exact-match key/value pairs an event payload must satisfy; empty receives every event of these types
+ * @param mode       "durable" to keep events until they are acknowledged, "live" to only receive them while connected, or {@code null} for the server's default (durable)
  */
-public record SubscribeEventsRequest(String name, List<String> eventTypes, Map<String, Object> filter) {
+public record SubscribeEventsRequest(String name, List<String> eventTypes, Map<String, Object> filter, String mode) {
 
     /**
      * Creates a new instance of the Builder for constructing a SubscribeEventsRequest object.
@@ -48,6 +49,11 @@ public record SubscribeEventsRequest(String name, List<String> eventTypes, Map<S
         private Map<String, Object> filter;
 
         /**
+         * Delivery mode, or {@code null} to leave it to the server.
+         */
+        private String mode;
+
+        /**
          * Sets the subscriber name events are claimed under.
          *
          * @param name the subscriber name events are claimed under
@@ -81,12 +87,23 @@ public record SubscribeEventsRequest(String name, List<String> eventTypes, Map<S
         }
 
         /**
+         * Sets the delivery mode.
+         *
+         * @param mode "durable", "live", or {@code null} for the server's default
+         * @return the builder instance
+         */
+        public Builder mode(String mode) {
+            this.mode = mode;
+            return this;
+        }
+
+        /**
          * Builds and returns a new instance of SubscribeEventsRequest using the properties set on the Builder.
          *
          * @return a new SubscribeEventsRequest instance.
          */
         public SubscribeEventsRequest build() {
-            return new SubscribeEventsRequest(name, eventTypes, filter);
+            return new SubscribeEventsRequest(name, eventTypes, filter, mode);
         }
     }
 }

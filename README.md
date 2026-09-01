@@ -55,6 +55,46 @@ sqs.deleteQueue(ern);
 Other supported operations include `listQueues`, `getQueueErn`, `getMessageCount`,
 `receiveAllMessages`, and `purgeAllQueues`.
 
+### Events
+
+Rather than polling for changes, an application can be called when they happen. A
+listener registers its subscription, attaches the websocket to it, and hands each
+event to a handler:
+
+```java
+EuclidEventStream stream = new EuclidEventStream(baseUrl, session.token(),
+        session.getRegion(), session.getAccountId(), session.userId(),
+        session.accessKeyId(), session.secretAccessKey(), null, "ees");
+
+try (EuclidEventListener listener = EuclidEventListener.builder()
+        .ees(session.ees())
+        .stream(stream)
+        .name("invoice-import")
+        .eventTypes(List.of("esm.object.created"))
+        .filter(Map.of("bucketName", "inbox"))
+        .handler(event -> importInvoice(event.payload()))
+        .build()) {
+
+    listener.start();
+    // events arrive on the handler until the listener is closed
+}
+```
+
+The subscription is **durable** by default: matching events are stored under the
+name and kept until they are acknowledged, so nothing is missed while the
+application restarts, and events that arrived meanwhile are handled at startup.
+An event is acknowledged only after the handler returns - if it throws, the event
+is delivered again rather than lost. Two instances sharing a name share the work,
+because each event is claimed by exactly one of them.
+
+Pass `.mode(DeliveryMode.LIVE)` for a subscription that stores nothing and only
+delivers while connected, which is what a view wants: a screen has no use for the
+hour of events it missed while nobody was looking at it.
+
+One stream can carry several listeners, and the same connection also still serves
+`stream.awaitEvent(topic, filter, timeoutMillis)` for the simple "wait for the
+next one" case.
+
 ### TLS
 
 When connecting to a server with a self-signed development certificate, point
