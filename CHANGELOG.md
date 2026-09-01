@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.12](https://github.com/jensvogt/euclid-jdk/compare/euclid-jdk-v0.1.11...euclid-jdk-v0.1.12) (2026-09-01)
+
+
+### Bug Fixes
+
+* use websocket for durable subscription ([c063444](https://github.com/jensvogt/euclid-jdk/commit/c0634441d1acb6e7a34a415498707b4f465767f8))
+
 ## [0.1.11](https://github.com/jensvogt/euclid-jdk/compare/euclid-jdk-v0.1.10...euclid-jdk-v0.1.11) (2026-09-01)
 
 
