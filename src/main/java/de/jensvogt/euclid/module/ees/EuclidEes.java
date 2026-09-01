@@ -15,6 +15,7 @@ import de.jensvogt.euclid.dto.ees.SubscribeEventsRequest;
 import de.jensvogt.euclid.dto.ees.SubscribeEventsResponse;
 import de.jensvogt.euclid.dto.ees.UnsubscribeEventsRequest;
 import de.jensvogt.euclid.dto.ees.UnsubscribeEventsResponse;
+import de.jensvogt.euclid.dto.ees.model.DeliveryMode;
 import de.jensvogt.euclid.dto.ees.model.Event;
 import de.jensvogt.euclid.dto.ees.model.EventSubscription;
 import de.jensvogt.euclid.exception.EuclidServiceException;
@@ -23,6 +24,7 @@ import de.jensvogt.euclid.http.EuclidHttpClient;
 import java.io.IOException;
 import java.net.URI;
 import java.net.http.HttpResponse;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -138,9 +140,18 @@ public final class EuclidEes {
     private final String nameSpace;
 
     /**
-     * The HTTP client used for every request, pre-configured with this session's TLS trust.
+     * The HTTP client used for every request except {@link #receiveEvents}, pre-configured with
+     * this session's TLS trust.
      */
     private final EuclidHttpClient httpClient;
+
+    /**
+     * The HTTP client used for {@link #receiveEvents}, whose request holds a gateway worker thread
+     * open for up to 20 seconds (the server's clamp on {@code waitTime}) - long enough that the
+     * default 10-second request timeout used by {@link #httpClient} would abort the request before
+     * the server ever gets to answer it.
+     */
+    private final EuclidHttpClient longPollHttpClient;
 
     /**
      * Constructs an EES client. Normally obtained from
@@ -167,6 +178,7 @@ public final class EuclidEes {
         this.secretAccessKey = secretAccessKey;
         this.nameSpace = nameSpace;
         this.httpClient = new EuclidHttpClient(caCertPath);
+        this.longPollHttpClient = new EuclidHttpClient(Duration.ofSeconds(30), caCertPath);
     }
 
     /**
@@ -200,8 +212,34 @@ public final class EuclidEes {
      */
     public SubscribeEventsResponse subscribeEvents(String name, List<String> eventTypes, Map<String, Object> filter)
             throws IOException, InterruptedException {
-        String body = OBJECT_MAPPER.writeValueAsString(
-                SubscribeEventsRequest.builder().name(name).eventTypes(eventTypes).filter(filter).build());
+        return subscribeEvents(name, eventTypes, filter, DeliveryMode.DURABLE);
+    }
+
+    /**
+     * Registers a subscription with an explicit delivery mode.
+     * <p>
+     * {@link DeliveryMode#DURABLE} keeps every matching event until it is acknowledged, so an
+     * application that was restarting still finds what happened meanwhile.
+     * {@link DeliveryMode#LIVE} stores nothing and only reaches websocket sessions attached to the
+     * name - what a view wants, since a screen has no use for the hour of events it missed while
+     * nobody was looking at it.
+     * <p>
+     * Subscribing again with the same name and event type replaces the subscription rather than
+     * adding a second one, so this is also how a mode or a filter is changed.
+     *
+     * @param name the subscriber name events are claimed under
+     * @param eventTypes the event types to receive; one subscription is registered per type
+     * @param filter exact-match key/value pairs an event payload must satisfy, or empty for all
+     * @param mode how the events should reach this subscriber
+     * @return the subscriptions the subscriber now holds
+     * @throws IOException if an I/O error occurs during the operation
+     * @throws InterruptedException if the operation is interrupted
+     */
+    public SubscribeEventsResponse subscribeEvents(String name, List<String> eventTypes, Map<String, Object> filter,
+                                                    DeliveryMode mode) throws IOException, InterruptedException {
+        String body = OBJECT_MAPPER.writeValueAsString(SubscribeEventsRequest.builder()
+                .name(name).eventTypes(eventTypes).filter(filter)
+                .mode(mode == null ? null : mode.wireValue()).build());
         JsonNode root = post("subscribe-events", body);
         return SubscribeEventsResponse.builder().subscriptions(toSubscriptions(root.get("subscriptions"))).build();
     }
@@ -284,7 +322,7 @@ public final class EuclidEes {
             throws IOException, InterruptedException {
         String body = OBJECT_MAPPER.writeValueAsString(ReceiveEventsRequest.builder().name(name)
                 .maxEvents(maxEvents).waitTime(waitTime).visibilityTimeout(visibilityTimeout).build());
-        JsonNode root = post("receive-events", body);
+        JsonNode root = post(longPollHttpClient, "receive-events", body);
 
         List<Event> events = new ArrayList<>();
         JsonNode eventsNode = root.get("events");
@@ -347,7 +385,16 @@ public final class EuclidEes {
      * @throws InterruptedException if the operation is interrupted while waiting for the response
      */
     private JsonNode post(String action, String body) throws IOException, InterruptedException {
-        HttpResponse<String> response = httpClient.post(baseUrl + "/", body, TARGET, action,
+        return post(httpClient, action, body);
+    }
+
+    /**
+     * Same as {@link #post(String, String)}, but issued through a specific client - so
+     * {@link #receiveEvents} can use {@link #longPollHttpClient}'s longer request timeout instead
+     * of {@link #httpClient}'s.
+     */
+    private JsonNode post(EuclidHttpClient client, String action, String body) throws IOException, InterruptedException {
+        HttpResponse<String> response = client.post(baseUrl + "/", body, TARGET, action,
                 requestHeaders(action, body));
 
         if (response.statusCode() / 100 != 2) {
@@ -372,6 +419,7 @@ public final class EuclidEes {
                         textOrNull(subscriptionNode, "eventType"),
                         toObjectMap(subscriptionNode.get("filter")),
                         textOrNull(subscriptionNode, "accountId"),
+                        DeliveryMode.fromWireValue(textOrNull(subscriptionNode, "mode")),
                         textOrNull(subscriptionNode, "created"),
                         textOrNull(subscriptionNode, "lastSeen")));
             }
