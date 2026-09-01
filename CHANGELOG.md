@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.13](https://github.com/jensvogt/euclid-jdk/compare/euclid-jdk-v0.1.12...euclid-jdk-v0.1.13) (2026-09-01)
+
+
+### Bug Fixes
+
+* websocket ping, timeout ([e2e4461](https://github.com/jensvogt/euclid-jdk/commit/e2e446179ebc6bd4cea3165f1ee907de1761c11d))
+
 ## [0.1.12](https://github.com/jensvogt/euclid-jdk/compare/euclid-jdk-v0.1.11...euclid-jdk-v0.1.12) (2026-09-01)
 
 
