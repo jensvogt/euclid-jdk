@@ -12,8 +12,11 @@ import java.io.IOException;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.WebSocket;
+import java.nio.ByteBuffer;
 import java.time.Duration;
+import java.util.Collections;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -23,8 +26,13 @@ import java.util.concurrent.CompletionStage;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.logging.Level;
+import java.util.logging.Logger;
 
 /**
  * One persistent WebSocket connection to the Euclid gateway's event stream: authenticates once
@@ -43,15 +51,34 @@ import java.util.concurrent.TimeoutException;
  * <p>
  * Connecting is lazy and best-effort: the first {@link #subscribe} or {@link #awaitEvent} call
  * attempts the handshake, and any failure (server has WebSocket support disabled, network error,
- * etc.) is surfaced as an {@link IOException} for the caller to fall back to polling. A dropped
- * connection is retried on the next call rather than reconnected automatically in the background.
+ * etc.) is surfaced as an {@link IOException} for the caller to fall back to polling.
+ * <p>
+ * A connection that drops is re-established in the background, and the subscriptions it carried
+ * are registered again on the new one - delivery is per-connection on the gateway
+ * ({@code GatewayWsRegistry}), so a reconnection that did not replay them would leave a connected
+ * client attached to nothing and silently receiving no events. Listeners are told with
+ * {@link EventStreamListener#onReconnected()} once that is done, because nothing could be pushed
+ * while the connection was gone. A keepalive ping goes out every {@link #PING_INTERVAL} so an
+ * otherwise idle connection is not closed by the gateway's idle timeout in the first place.
  */
 public final class EuclidEventStream implements AutoCloseable {
+
+    private static final Logger LOG = Logger.getLogger(EuclidEventStream.class.getName());
 
     private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
     private static final Duration CONNECT_TIMEOUT = Duration.ofSeconds(3);
     private static final Duration ACK_TIMEOUT = Duration.ofSeconds(3);
     private static final String ACTION = "event-stream";
+
+    /**
+     * How often a ping goes out on an idle connection. Comfortably inside the gateway's
+     * {@code euclid.gateway.websocket.idle-timeout-seconds} (300 by default), since the gateway
+     * uses Beast's suggested server-role timeouts, which do not send keepalive pings themselves.
+     */
+    private static final Duration PING_INTERVAL = Duration.ofSeconds(60);
+
+    private static final Duration RECONNECT_DELAY = Duration.ofSeconds(1);
+    private static final Duration MAX_RECONNECT_DELAY = Duration.ofSeconds(30);
 
     private final String baseUrl;
     private final String token;
@@ -70,9 +97,21 @@ public final class EuclidEventStream implements AutoCloseable {
     private final Map<String, String> ackNames = new ConcurrentHashMap<>();
     private volatile String subscriberName;
     private final Object sendLock = new Object();
-    private final StringBuilder frameBuffer = new StringBuilder();
     private final Object connectLock = new Object();
     private volatile WebSocket webSocket;
+
+    /**
+     * Every delivery registration made on this connection, in the order it was made, so that a
+     * replacement connection can be given the same ones. The gateway attaches a subscription to
+     * the session that asked for it, so this is what makes a reconnection deliver anything at all.
+     */
+    private final Set<Registration> registrations = Collections.synchronizedSet(new LinkedHashSet<>());
+
+    /** Runs the reconnect attempts and the keepalive; created once, on the first connection. */
+    private volatile ScheduledExecutorService maintenance;
+
+    private final AtomicBoolean reconnecting = new AtomicBoolean();
+    private volatile boolean closed;
 
     /**
      * Creates a stream targeting the given server; the connection itself is opened lazily by the
@@ -262,10 +301,16 @@ public final class EuclidEventStream implements AutoCloseable {
     }
 
     /**
-     * Closes the underlying websocket connection, if open. Safe to call even if never connected.
+     * Closes the underlying websocket connection, if open, and stops reconnecting. Safe to call
+     * even if never connected.
      */
     @Override
     public void close() {
+        closed = true;
+        ScheduledExecutorService executor = maintenance;
+        if (executor != null) {
+            executor.shutdownNow();
+        }
         WebSocket ws = webSocket;
         if (ws != null) {
             ws.sendClose(WebSocket.NORMAL_CLOSURE, "");
@@ -275,6 +320,25 @@ public final class EuclidEventStream implements AutoCloseable {
     private void sendControlFrame(String type, String topic, Map<String, String> filter, String name, DeliveryMode mode)
             throws IOException, InterruptedException {
         connect();
+        sendControlFrameOnCurrentConnection(type, topic, filter, name, mode);
+
+        // Remembered only once it was acknowledged, so a replay never re-sends something the
+        // gateway rejected, and dropped on unsubscribe so it is not resurrected by a reconnect.
+        Registration registration = new Registration(topic, Map.copyOf(filter), name, mode);
+        if ("subscribe".equals(type)) {
+            registrations.add(registration);
+        } else {
+            registrations.remove(registration);
+        }
+    }
+
+    private void sendControlFrameOnCurrentConnection(String type, String topic, Map<String, String> filter,
+                                                     String name, DeliveryMode mode)
+            throws IOException, InterruptedException {
+        WebSocket ws = webSocket;
+        if (ws == null) {
+            throw new IOException("event stream is not connected");
+        }
 
         String id = UUID.randomUUID().toString();
         CompletableFuture<Void> ackFuture = new CompletableFuture<>();
@@ -282,7 +346,7 @@ public final class EuclidEventStream implements AutoCloseable {
         try {
             String frame = buildControlFrame(type, id, topic, filter, name, mode);
             synchronized (sendLock) {
-                webSocket.sendText(frame, true).get(ACK_TIMEOUT.toMillis(), TimeUnit.MILLISECONDS);
+                ws.sendText(frame, true).get(ACK_TIMEOUT.toMillis(), TimeUnit.MILLISECONDS);
             }
             ackFuture.get(ACK_TIMEOUT.toMillis(), TimeUnit.MILLISECONDS);
             // The ack is where an unnamed subscription learns the name the gateway gave it, and
@@ -329,6 +393,9 @@ public final class EuclidEventStream implements AutoCloseable {
             if (webSocket != null) {
                 return;
             }
+            if (closed) {
+                throw new IOException("event stream is closed");
+            }
             URI uri = toWebSocketUri(baseUrl);
             WebSocket.Builder builder = httpClient.newWebSocketBuilder().connectTimeout(CONNECT_TIMEOUT);
             requestHeaders().forEach(builder::header);
@@ -339,6 +406,106 @@ public final class EuclidEventStream implements AutoCloseable {
             } catch (TimeoutException e) {
                 throw new IOException("timed out connecting event stream to " + uri);
             }
+            startMaintenance();
+        }
+    }
+
+    /**
+     * Starts the keepalive, once, on the first successful connection. A ping every
+     * {@link #PING_INTERVAL} is what keeps a connection that has nothing to say from being closed
+     * as idle - the gateway does not ping, and a client that only ever reads would look idle to it
+     * no matter how much it is subscribed to.
+     */
+    private void startMaintenance() {
+        if (maintenance != null) {
+            return;
+        }
+        maintenance = Executors.newSingleThreadScheduledExecutor(runnable -> {
+            Thread thread = new Thread(runnable, "euclid-event-stream");
+            thread.setDaemon(true);
+            return thread;
+        });
+        maintenance.scheduleWithFixedDelay(this::ping, PING_INTERVAL.toMillis(), PING_INTERVAL.toMillis(),
+                TimeUnit.MILLISECONDS);
+    }
+
+    private void ping() {
+        WebSocket ws = webSocket;
+        if (ws == null || closed) {
+            return;
+        }
+        try {
+            synchronized (sendLock) {
+                ws.sendPing(ByteBuffer.allocate(0)).get(ACK_TIMEOUT.toMillis(), TimeUnit.MILLISECONDS);
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        } catch (Exception e) {
+            // The connection is gone or going; onError/onClose is what reconnects, and a failed
+            // ping is how this one finds out a moment earlier.
+            LOG.log(Level.FINE, "event stream keepalive failed", e);
+            connectionLost();
+        }
+    }
+
+    /**
+     * Called when the connection has gone away, from whichever of onClose, onError or a failed
+     * ping notices first. Reconnecting happens on the maintenance thread rather than here, because
+     * two of those three callers are the websocket's own reading thread, which the handshake and
+     * the acknowledged control frames below would deadlock.
+     */
+    private void connectionLost() {
+        webSocket = null;
+        if (closed || !reconnecting.compareAndSet(false, true)) {
+            return;
+        }
+        ScheduledExecutorService executor = maintenance;
+        if (executor == null || executor.isShutdown()) {
+            reconnecting.set(false);
+            return;
+        }
+        executor.schedule(this::reconnect, RECONNECT_DELAY.toMillis(), TimeUnit.MILLISECONDS);
+    }
+
+    /**
+     * Re-establishes the connection and puts its subscriptions back, retrying with a backoff until
+     * it succeeds or the stream is closed. Delivery is per-connection on the gateway, so a
+     * reconnection without the replay would be a connected client attached to nothing.
+     */
+    private void reconnect() {
+        long delay = RECONNECT_DELAY.toMillis();
+        try {
+            while (!closed && !Thread.currentThread().isInterrupted()) {
+                try {
+                    connect();
+                    replayRegistrations();
+                    LOG.log(Level.INFO, () -> "event stream reconnected, " + registrations.size() + " subscription(s) restored");
+                    for (EventStreamListener listener : listeners) {
+                        listener.onReconnected();
+                    }
+                    return;
+                } catch (IOException e) {
+                    LOG.log(Level.FINE, "could not reconnect the event stream, retrying", e);
+                    webSocket = null;
+                    Thread.sleep(delay);
+                    delay = Math.min(delay * 2, MAX_RECONNECT_DELAY.toMillis());
+                }
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        } finally {
+            reconnecting.set(false);
+        }
+    }
+
+    private void replayRegistrations() throws IOException, InterruptedException {
+        List<Registration> replay;
+        synchronized (registrations) {
+            replay = List.copyOf(registrations);
+        }
+        for (Registration registration : replay) {
+            sendControlFrameOnCurrentConnection("subscribe", registration.topic(), registration.filter(),
+                    registration.name(), registration.mode());
         }
     }
 
@@ -482,10 +649,21 @@ public final class EuclidEventStream implements AutoCloseable {
     private record Subscription(String topic, Map<String, String> filter) {
     }
 
+    /**
+     * One delivery registration, in the form needed to make it again on a new connection: the
+     * arguments of the control frame that established it.
+     */
+    private record Registration(String topic, Map<String, String> filter, String name, DeliveryMode mode) {
+    }
+
     private record Waiter(String topic, Map<String, String> filter, CompletableFuture<Void> future) {
     }
 
     private final class EventListener implements WebSocket.Listener {
+
+        // Per connection rather than per stream: a reconnection starts a new listener, and a
+        // buffer shared with the dead one would prepend its half-read frame to the first new one.
+        private final StringBuilder frameBuffer = new StringBuilder();
 
         @Override
         public void onOpen(WebSocket webSocket) {
@@ -506,13 +684,15 @@ public final class EuclidEventStream implements AutoCloseable {
 
         @Override
         public CompletionStage<?> onClose(WebSocket webSocket, int statusCode, String reason) {
-            EuclidEventStream.this.webSocket = null;
+            LOG.log(Level.FINE, () -> "event stream closed by the gateway: " + statusCode + " " + reason);
+            connectionLost();
             return null;
         }
 
         @Override
         public void onError(WebSocket webSocket, Throwable error) {
-            EuclidEventStream.this.webSocket = null;
+            LOG.log(Level.FINE, "event stream failed", error);
+            connectionLost();
         }
     }
 }

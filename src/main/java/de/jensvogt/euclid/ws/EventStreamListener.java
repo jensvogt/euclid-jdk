@@ -16,6 +16,8 @@ import com.fasterxml.jackson.databind.JsonNode;
  *   <li>{@link #onLag} - the connection fell behind and events were dropped on the way out. For a
  *       durable subscription that is an instruction rather than a loss: the events are still in
  *       the store, so claim them.</li>
+ *   <li>{@link #onReconnected} - the connection went away and came back. Nothing was pushed while
+ *       it was gone, so it means the same thing as a lag: go and look.</li>
  * </ul>
  * Every method is called on the websocket's reading thread, which must not be blocked - anything
  * that talks to the server belongs on a thread of the listener's own. {@link EuclidEventListener}
@@ -46,5 +48,17 @@ public interface EventStreamListener {
      * @param dropped how many were dropped
      */
     default void onLag(long dropped) {
+    }
+
+    /**
+     * The connection was lost and re-established, and the subscriptions this connection had have
+     * been registered again on the new one.
+     * <p>
+     * Nothing could be pushed while it was down, so a durable subscription has to go and look
+     * rather than wait to be told - the same instruction {@link #onLag} carries, which is why that
+     * is what this does unless a listener says otherwise.
+     */
+    default void onReconnected() {
+        onLag(0);
     }
 }
