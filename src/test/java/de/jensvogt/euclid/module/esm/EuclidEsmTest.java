@@ -20,6 +20,7 @@ import de.jensvogt.euclid.dto.esm.ObjectAttributeResponse;
 import de.jensvogt.euclid.dto.esm.PurgeBucketResponse;
 import de.jensvogt.euclid.dto.esm.SubscribeResponse;
 import de.jensvogt.euclid.dto.esm.model.Bucket;
+import de.jensvogt.euclid.dto.esm.model.BucketEvent;
 import de.jensvogt.euclid.dto.esm.model.EsmObject;
 import de.jensvogt.euclid.exception.EuclidServiceException;
 import org.junit.jupiter.api.AfterEach;
@@ -44,6 +45,7 @@ import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -862,6 +864,45 @@ class EuclidEsmTest {
         assertEquals("copy-object", exception.action());
         assertEquals(409, exception.statusCode());
         assertTrue(exception.responseBody().contains("Object already exists"));
+    }
+
+    // A bucket subscription delivers its notification as the body of an ordinary queue or topic
+    // message, so the consumer's job is to turn that body into something typed.
+    @Test
+    void parseBucketEventReadsANotificationDeliveredToAQueue() throws Exception {
+        String messageBody = "{\"eventType\":\"esm:ObjectCreated:Put\","
+                + "\"bucketErn\":\"ern:esm:eu-central-1:863459426936:bucket/invoices\","
+                + "\"key\":\"invoices/2026/invoice-1.pdf\","
+                + "\"ern\":\"ern:esm:eu-central-1:863459426936:object/invoice-1.pdf\","
+                + "\"size\":1024,\"contentType\":\"application/pdf\",\"md5Sum\":\"abc\"}";
+
+        BucketEvent event = EuclidEsm.parseBucketEvent(messageBody);
+
+        assertEquals("esm:ObjectCreated:Put", event.eventType());
+        assertEquals("ern:esm:eu-central-1:863459426936:bucket/invoices", event.bucketErn());
+        assertEquals("invoices/2026/invoice-1.pdf", event.key());
+        assertEquals("ern:esm:eu-central-1:863459426936:object/invoice-1.pdf", event.ern());
+        assertEquals(1024, event.size());
+        assertEquals("application/pdf", event.contentType());
+        assertEquals("abc", event.md5Sum());
+    }
+
+    // A notification missing an optional field is still readable rather than throwing - a consumer
+    // draining a queue should not stop on one sparse message.
+    @Test
+    void parseBucketEventToleratesMissingFields() throws Exception {
+        BucketEvent event = EuclidEsm.parseBucketEvent(
+                "{\"eventType\":\"esm:ObjectCreated:Put\",\"key\":\"a.bin\"}");
+
+        assertEquals("esm:ObjectCreated:Put", event.eventType());
+        assertEquals("a.bin", event.key());
+        assertEquals(0, event.size());
+        assertNull(event.contentType());
+    }
+
+    @Test
+    void parseBucketEventRejectsABodyThatIsNotJson() {
+        assertThrows(IOException.class, () -> EuclidEsm.parseBucketEvent("not json at all"));
     }
 
     private EuclidEsm newClient() {

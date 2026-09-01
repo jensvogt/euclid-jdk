@@ -44,6 +44,7 @@ import de.jensvogt.euclid.dto.esm.SubscribeRequest;
 import de.jensvogt.euclid.dto.esm.SubscribeResponse;
 import de.jensvogt.euclid.dto.esm.UnsubscribeRequest;
 import de.jensvogt.euclid.dto.esm.model.Bucket;
+import de.jensvogt.euclid.dto.esm.model.BucketEvent;
 import de.jensvogt.euclid.dto.esm.model.EsmObject;
 import de.jensvogt.euclid.dto.esm.model.Subscription;
 import de.jensvogt.euclid.exception.EuclidServiceException;
@@ -751,8 +752,44 @@ public final class EuclidEsm {
     }
 
     /**
+     * Turns the body of a message delivered by a bucket subscription into a {@link BucketEvent}.
+     * <p>
+     * A subscription puts its notification into a queue or topic as an ordinary message, so the
+     * body arrives as JSON text through {@code EuclidEqs.receiveMessages} or an ENS topic read:
+     * <pre>{@code
+     * for (Message message : eqs.receiveMessages(queueErn).messages()) {
+     *     BucketEvent event = EuclidEsm.parseBucketEvent(message.body());
+     *     ...
+     *     eqs.deleteMessage(message.receiptHandle());
+     * }
+     * }</pre>
+     * Nothing about the message itself is special - it is received, acknowledged and deleted like
+     * any other.
+     *
+     * @param messageBody the message body a bucket subscription delivered
+     * @return the notification it carries
+     * @throws IOException if the body is not a bucket notification this client can read
+     */
+    public static BucketEvent parseBucketEvent(String messageBody) throws IOException {
+        JsonNode root = OBJECT_MAPPER.readTree(messageBody);
+        return new BucketEvent(
+                textOrNull(root, "eventType"),
+                textOrNull(root, "bucketErn"),
+                textOrNull(root, "key"),
+                textOrNull(root, "ern"),
+                root.path("size").asLong(0),
+                textOrNull(root, "contentType"),
+                textOrNull(root, "md5Sum"));
+    }
+
+    /**
      * Subscribes a queue or a topic to a bucket's object events, so an object created in that
      * bucket is announced to the target from then on.
+     * <p>
+     * What lands in the target is a {@link BucketEvent}, carried as the body of an ordinary
+     * message - see {@link #parseBucketEvent}. For richer, server-side-filterable events, subscribe
+     * to {@code esm.object.created} and friends through
+     * {@link de.jensvogt.euclid.module.ees.EuclidEes} instead.
      *
      * @param bucketErn the Euclid Resource Name (ERN) of the bucket whose events are subscribed to
      * @param type the target resource type, {@code "queue"} or {@code "topic"}

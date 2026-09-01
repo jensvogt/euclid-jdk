@@ -35,6 +35,7 @@ import de.jensvogt.euclid.dto.eam.model.Namespace;
 import de.jensvogt.euclid.dto.eam.model.User;
 import de.jensvogt.euclid.dto.eam.model.UserGroup;
 import de.jensvogt.euclid.module.eap.EuclidEap;
+import de.jensvogt.euclid.module.ees.EuclidEes;
 import de.jensvogt.euclid.module.ekm.EuclidEkm;
 import de.jensvogt.euclid.module.ens.EuclidEns;
 import de.jensvogt.euclid.module.eqs.EuclidEqs;
@@ -160,6 +161,22 @@ public record EuclidSession(String token, String userId, String accountId, Strin
      */
     public EuclidEap eap() {
         return new EuclidEap(baseUrl, token, region, accountId, userId, accessKeyId, secretAccessKey, caCertPath, nameSpace);
+    }
+
+    /**
+     * EES (event service) operations for this session - the event bus, for consumers that are not
+     * euclid modules. Requests are signed with SigV4 using
+     * {@link #accessKeyId()}/{@link #secretAccessKey()} when both are present, falling back to
+     * the bearer token otherwise - mirroring how euclid-cli authenticates service calls.
+     * <p>
+     * This is how an application watches what happens in ESM and the other modules: subscribe a
+     * durable name to an event type with a filter, then claim and acknowledge events. See
+     * {@link EuclidEes} for the ESM event types and their payloads.
+     *
+     * @return EuclidEes instance
+     */
+    public EuclidEes ees() {
+        return new EuclidEes(baseUrl, token, region, accountId, userId, accessKeyId, secretAccessKey, caCertPath, nameSpace);
     }
 
     /**

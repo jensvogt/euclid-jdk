@@ -53,8 +53,11 @@ public final class FakeGatewayServer implements AutoCloseable {
     private volatile boolean closed;
 
     /**
+     * Creates a new fake gateway server listening on a random port.
+     *
      * @param httpHandler receives the request headers and body of a plain (non-upgrade) request,
      *                    and returns the JSON body to answer with (always as a 200 OK)
+     * @throws IOException if the server socket cannot be opened
      */
     public FakeGatewayServer(BiFunction<Map<String, String>, String, String> httpHandler) throws IOException {
         this.httpHandler = httpHandler;
@@ -66,6 +69,11 @@ public final class FakeGatewayServer implements AutoCloseable {
         }).submit(this::acceptLoop);
     }
 
+    /**
+     * Returns the port the server is listening on.
+     *
+     * @return the port the server is listening on
+     */
     public int port() {
         return serverSocket.getLocalPort();
     }
@@ -73,6 +81,10 @@ public final class FakeGatewayServer implements AutoCloseable {
     /**
      * Blocks until at least one websocket handshake has completed, returning the headers the
      * client sent on its upgrade request.
+     *
+     * @param timeoutSeconds the maximum time to wait for the handshake to complete
+     * @return the headers sent by the client on the upgrade request, keyed by header name
+     * @throws InterruptedException if the thread is interrupted while waiting
      */
     public Map<String, String> awaitHandshake(long timeoutSeconds) throws InterruptedException {
         if (!handshakeLatch.await(timeoutSeconds, TimeUnit.SECONDS)) {
@@ -85,6 +97,10 @@ public final class FakeGatewayServer implements AutoCloseable {
      * Blocks until the given socket has at least one subscription matching {@code topic}, polling
      * at a short interval - used to avoid races where a test pushes an event before the client's
      * subscribe frame has been read and recorded.
+     *
+     * @param topic          the topic to wait for
+     * @param timeoutSeconds the maximum time to wait for the subscription to be received
+     * @throws InterruptedException if the thread is interrupted while waiting
      */
     public void awaitSubscription(String topic, long timeoutSeconds) throws InterruptedException {
         long deadline = System.currentTimeMillis() + timeoutSeconds * 1000;
@@ -103,6 +119,10 @@ public final class FakeGatewayServer implements AutoCloseable {
      * Sends an "event" frame for {@code topic}/{@code body} to every websocket client currently
      * subscribed to a matching topic/filter - mirroring {@code GatewayWsRegistry::Broadcast()}'s
      * opt-in delivery. A silent no-op for any socket with no matching subscription.
+     *
+     * @param topic the event topic to publish to, e.g. "eqs.create"
+     * @param body  the event body, keyed by the event's field names
+     * @throws IOException if the frame cannot be written to any connected websocket client
      */
     public void sendEventFrame(String topic, Map<String, String> body) throws IOException {
         String frame = buildEventFrame(topic, body);
@@ -118,6 +138,9 @@ public final class FakeGatewayServer implements AutoCloseable {
      * Sends a raw pre-built frame to every connected websocket client, bypassing subscription
      * matching entirely - for tests that need to prove the client's own defense-in-depth
      * filtering (rather than the fake server's) rejects a non-matching frame.
+     *
+     * @param json the raw frame to send, e.g. "{\"type\":\"subscribe\",\"id\":\"sub123\"}"
+     * @throws IOException if the frame cannot be written to any connected websocket client
      */
     public void sendRawFrame(String json) throws IOException {
         for (Socket socket : wsSockets) {
@@ -125,6 +148,12 @@ public final class FakeGatewayServer implements AutoCloseable {
         }
     }
 
+    /**
+     * Closes the fake gateway server and releases all associated resources.
+     * This includes closing all active websocket connections as well as the server socket.
+     *
+     * @throws IOException if an I/O error occurs while closing the server socket or any connected websocket.
+     */
     @Override
     public void close() throws IOException {
         closed = true;
