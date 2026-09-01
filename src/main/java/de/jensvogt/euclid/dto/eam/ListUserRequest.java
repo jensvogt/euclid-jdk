@@ -1,14 +1,15 @@
 package de.jensvogt.euclid.dto.eam;
 
 /**
- * Request to list users, optionally filtered and paged.
+ * Request to list users, optionally filtered by user ID prefix and paginated.
  *
- * @param prefix     only users whose ID starts with this prefix are returned
- * @param pageSize   the maximum number of users to return in a single page
- * @param pageIndex  the zero-based index of the page to return
- * @param sortColumn the name of the column results are sorted by
+ * @param prefix        user ID prefix
+ * @param pageSize      page size
+ * @param pageIndex     page index
+ * @param sortColumn    sorting column
+ * @param sortDirection sort direction, {@code "asc"} or {@code "desc"}
  */
-public record ListUserRequest(String prefix, long pageSize, long pageIndex, String sortColumn) {
+public record ListUserRequest(String prefix, long pageSize, long pageIndex, String sortColumn, String sortDirection) {
 
     /**
      * Creates a new instance of the Builder for constructing a ListUserRequest object.
@@ -23,6 +24,7 @@ public record ListUserRequest(String prefix, long pageSize, long pageIndex, Stri
      * Builder for constructing {@link ListUserRequest} instances.
      */
     public static final class Builder {
+
         /**
          * Creates an empty builder.
          */
@@ -30,29 +32,34 @@ public record ListUserRequest(String prefix, long pageSize, long pageIndex, Stri
         }
 
         /**
-         * Only users whose ID starts with this prefix are returned.
+         * User ID prefix.
          */
         private String prefix = "";
 
         /**
-         * The maximum number of users to return in a single page.
+         * Page size.
          */
         private long pageSize = 10;
 
         /**
-         * The zero-based index of the page to return.
+         * Page index.
          */
         private long pageIndex = 0;
 
         /**
-         * The name of the column results are sorted by.
+         * Sorting column.
          */
         private String sortColumn = "userId";
 
         /**
-         * Sets the prefix used to filter users by ID.
+         * Sort direction, {@code "asc"} or {@code "desc"}.
+         */
+        private String sortDirection = "asc";
+
+        /**
+         * Sets user ID prefix.
          *
-         * @param prefix only users whose ID starts with this prefix are returned
+         * @param prefix user ID prefix
          * @return the builder instance
          */
         public Builder prefix(String prefix) {
@@ -61,9 +68,9 @@ public record ListUserRequest(String prefix, long pageSize, long pageIndex, Stri
         }
 
         /**
-         * Sets the maximum number of users to return in a single page.
+         * Sets page size.
          *
-         * @param pageSize the page size
+         * @param pageSize page size
          * @return the builder instance
          */
         public Builder pageSize(long pageSize) {
@@ -72,9 +79,9 @@ public record ListUserRequest(String prefix, long pageSize, long pageIndex, Stri
         }
 
         /**
-         * Sets the zero-based index of the page to return.
+         * Sets page index.
          *
-         * @param pageIndex the page index
+         * @param pageIndex page index
          * @return the builder instance
          */
         public Builder pageIndex(long pageIndex) {
@@ -83,9 +90,9 @@ public record ListUserRequest(String prefix, long pageSize, long pageIndex, Stri
         }
 
         /**
-         * Sets the name of the column results are sorted by.
+         * Sets sorting column.
          *
-         * @param sortColumn the sort column name
+         * @param sortColumn sorting column
          * @return the builder instance
          */
         public Builder sortColumn(String sortColumn) {
@@ -94,12 +101,23 @@ public record ListUserRequest(String prefix, long pageSize, long pageIndex, Stri
         }
 
         /**
+         * Sets sort direction, {@code "asc"} or {@code "desc"}.
+         *
+         * @param sortDirection sort direction, {@code "asc"} or {@code "desc"}
+         * @return the builder instance
+         */
+        public Builder sortDirection(String sortDirection) {
+            this.sortDirection = sortDirection;
+            return this;
+        }
+
+        /**
          * Builds and returns a new instance of ListUserRequest using the properties set on the Builder.
          *
-         * @return a new ListUserRequest instance populated with the prefix, page size, page index and sort column values.
+         * @return a new ListUserRequest instance.
          */
         public ListUserRequest build() {
-            return new ListUserRequest(prefix, pageSize, pageIndex, sortColumn);
+            return new ListUserRequest(prefix, pageSize, pageIndex, sortColumn, sortDirection);
         }
     }
 }

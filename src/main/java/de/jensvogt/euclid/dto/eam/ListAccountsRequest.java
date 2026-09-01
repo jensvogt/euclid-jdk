@@ -3,12 +3,13 @@ package de.jensvogt.euclid.dto.eam;
 /**
  * Request to list accounts, optionally filtered by accountId prefix and paginated.
  *
- * @param prefix     account ID prefix
- * @param pageSize   page size
- * @param pageIndex  page index
- * @param sortColumn sorting column
+ * @param prefix        account ID prefix
+ * @param pageSize      page size
+ * @param pageIndex     page index
+ * @param sortColumn    sorting column
+ * @param sortDirection sort direction, {@code "asc"} or {@code "desc"}
  */
-public record ListAccountsRequest(String prefix, long pageSize, long pageIndex, String sortColumn) {
+public record ListAccountsRequest(String prefix, long pageSize, long pageIndex, String sortColumn, String sortDirection) {
 
     /**
      * Creates a new instance of the Builder for constructing a ListAccountsRequest object.
@@ -31,29 +32,34 @@ public record ListAccountsRequest(String prefix, long pageSize, long pageIndex, 
         }
 
         /**
-         * The account ID prefix.
+         * Account ID prefix.
          */
         private String prefix = "";
 
         /**
-         * The page size.
+         * Page size.
          */
         private long pageSize = 10;
 
         /**
-         * The page index.
+         * Page index.
          */
         private long pageIndex = 0;
 
         /**
-         * The sorting column.
+         * Sorting column.
          */
-        private String sortColumn = "accountId";
+        private String sortColumn = "name";
 
         /**
-         * Sets the account ID prefix.
+         * Sort direction, {@code "asc"} or {@code "desc"}.
+         */
+        private String sortDirection = "asc";
+
+        /**
+         * Sets account ID prefix.
          *
-         * @param prefix the account ID prefix
+         * @param prefix account ID prefix
          * @return the builder instance
          */
         public Builder prefix(String prefix) {
@@ -62,9 +68,9 @@ public record ListAccountsRequest(String prefix, long pageSize, long pageIndex, 
         }
 
         /**
-         * Sets the page size.
+         * Sets page size.
          *
-         * @param pageSize the page size
+         * @param pageSize page size
          * @return the builder instance
          */
         public Builder pageSize(long pageSize) {
@@ -73,9 +79,9 @@ public record ListAccountsRequest(String prefix, long pageSize, long pageIndex, 
         }
 
         /**
-         * Sets the page index.
+         * Sets page index.
          *
-         * @param pageIndex the page index
+         * @param pageIndex page index
          * @return the builder instance
          */
         public Builder pageIndex(long pageIndex) {
@@ -84,13 +90,24 @@ public record ListAccountsRequest(String prefix, long pageSize, long pageIndex, 
         }
 
         /**
-         * Sets the sorting column.
+         * Sets sorting column.
          *
-         * @param sortColumn the sorting column
+         * @param sortColumn sorting column
          * @return the builder instance
          */
         public Builder sortColumn(String sortColumn) {
             this.sortColumn = sortColumn;
+            return this;
+        }
+
+        /**
+         * Sets sort direction, {@code "asc"} or {@code "desc"}.
+         *
+         * @param sortDirection sort direction, {@code "asc"} or {@code "desc"}
+         * @return the builder instance
+         */
+        public Builder sortDirection(String sortDirection) {
+            this.sortDirection = sortDirection;
             return this;
         }
 
@@ -100,7 +117,7 @@ public record ListAccountsRequest(String prefix, long pageSize, long pageIndex, 
          * @return a new ListAccountsRequest instance.
          */
         public ListAccountsRequest build() {
-            return new ListAccountsRequest(prefix, pageSize, pageIndex, sortColumn);
+            return new ListAccountsRequest(prefix, pageSize, pageIndex, sortColumn, sortDirection);
         }
     }
 }

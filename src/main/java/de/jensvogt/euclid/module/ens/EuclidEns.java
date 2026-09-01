@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import de.jensvogt.euclid.auth.SigV4;
 import de.jensvogt.euclid.auth.SignableRequest;
+import de.jensvogt.euclid.dto.com.Variant;
 import de.jensvogt.euclid.dto.ens.AddTopicTagRequest;
 import de.jensvogt.euclid.dto.ens.CreateTopicRequest;
 import de.jensvogt.euclid.dto.ens.CreateTopicResponse;
@@ -22,6 +23,7 @@ import de.jensvogt.euclid.dto.ens.ListMessagesResponse;
 import de.jensvogt.euclid.dto.ens.ListSubscriptionsRequest;
 import de.jensvogt.euclid.dto.ens.ListSubscriptionsResponse;
 import de.jensvogt.euclid.dto.ens.ListTopicsRequest;
+import de.jensvogt.euclid.dto.ens.ListTopicsResponse;
 import de.jensvogt.euclid.dto.ens.PublishMessageRequest;
 import de.jensvogt.euclid.dto.ens.PublishMessageResponse;
 import de.jensvogt.euclid.dto.ens.PurgeAllTopicsRequest;
@@ -34,8 +36,7 @@ import de.jensvogt.euclid.dto.ens.UnsubscribeRequest;
 import de.jensvogt.euclid.dto.ens.model.Message;
 import de.jensvogt.euclid.dto.ens.model.Subscription;
 import de.jensvogt.euclid.dto.ens.model.Topic;
-import de.jensvogt.euclid.dto.eqs.model.Variant;
-import de.jensvogt.euclid.exception.EuclidAuthenticationException;
+import de.jensvogt.euclid.exception.EuclidServiceException;
 import de.jensvogt.euclid.http.EuclidHttpClient;
 
 import java.io.IOException;
@@ -63,6 +64,7 @@ public final class EuclidEns {
     private final String userId;
     private final String accessKeyId;
     private final String secretAccessKey;
+    private final String nameSpace;
     private final EuclidHttpClient httpClient;
 
     /**
@@ -78,15 +80,20 @@ public final class EuclidEns {
      * @param secretAccessKey the secret access key for SigV4 authentication
      * @param caCertPath      path to a custom Certificate Authority (CA) certificate file
      *                        for secure HTTPS connections
+     * @param nameSpace       the session's active namespace, or {@code null}/empty if unscoped -
+     *                        sent as {@code x-euclid-namespace}; without it, every topic this
+     *                        client creates or looks up lands in the unnamed/default namespace
+     *                        regardless of what namespace the session was scoped to at login
      */
     public EuclidEns(String baseUrl, String token, String region, String accountId, String userId,
-                      String accessKeyId, String secretAccessKey, String caCertPath) {
+                      String accessKeyId, String secretAccessKey, String caCertPath, String nameSpace) {
         this.baseUrl = baseUrl;
         this.token = token;
         this.region = region;
         this.accountId = accountId;
         this.userId = userId;
         this.accessKeyId = accessKeyId;
+        this.nameSpace = nameSpace;
         this.secretAccessKey = secretAccessKey;
         this.httpClient = new EuclidHttpClient(caCertPath);
     }
@@ -119,7 +126,7 @@ public final class EuclidEns {
                 requestHeaders("create-topic", body));
 
         if (response.statusCode() / 100 != 2) {
-            throw new EuclidAuthenticationException(response.statusCode(), response.body());
+            throw new EuclidServiceException("ens", "create-topic", response.statusCode(), response.body());
         }
 
         return extractCreateTopicResponse(response.body());
@@ -132,7 +139,7 @@ public final class EuclidEns {
      * @throws IOException if an I/O error occurs during the operation
      * @throws InterruptedException if the operation is interrupted
      */
-    public List<Topic> listTopics() throws IOException, InterruptedException {
+    public ListTopicsResponse listTopics() throws IOException, InterruptedException {
         return listTopics("", 10, 0, "name");
     }
 
@@ -147,19 +154,36 @@ public final class EuclidEns {
      * @throws IOException if an I/O error occurs during the operation
      * @throws InterruptedException if the operation is interrupted
      */
-    public List<Topic> listTopics(String prefix, long pageSize, long pageIndex, String sortColumn)
+    public ListTopicsResponse listTopics(String prefix, long pageSize, long pageIndex, String sortColumn)
             throws IOException, InterruptedException {
+        return listTopics(prefix, pageSize, pageIndex, sortColumn, "asc");
+    }
+
+    /**
+     * Lists topics, optionally filtered by name prefix and paginated, in a chosen sort direction.
+     *
+     * @param prefix only topics whose name starts with this prefix are returned
+     * @param pageSize the maximum number of topics to return in a single page
+     * @param pageIndex the zero-based index of the page to return
+     * @param sortColumn the column results are sorted by
+     * @param sortDirection the direction to sort in, {@code "asc"} or {@code "desc"}
+     * @return the matching topics
+     * @throws IOException if an I/O error occurs during the operation
+     * @throws InterruptedException if the operation is interrupted
+     */
+    public ListTopicsResponse listTopics(String prefix, long pageSize, long pageIndex, String sortColumn,
+                                  String sortDirection) throws IOException, InterruptedException {
         String body = OBJECT_MAPPER.writeValueAsString(
                 ListTopicsRequest.builder().prefix(prefix).pageSize(pageSize).pageIndex(pageIndex)
-                        .sortColumn(sortColumn).build());
+                        .sortColumn(sortColumn).sortDirection(sortDirection).build());
         HttpResponse<String> response = httpClient.post(baseUrl + "/", body, "ens", "list-topics",
                 requestHeaders("list-topics", body));
 
         if (response.statusCode() / 100 != 2) {
-            throw new EuclidAuthenticationException(response.statusCode(), response.body());
+            throw new EuclidServiceException("ens", "list-topics", response.statusCode(), response.body());
         }
 
-        return extractTopics(response.body());
+        return extractListTopicsResponse(response.body());
     }
 
     /**
@@ -176,7 +200,7 @@ public final class EuclidEns {
                 requestHeaders("get-topic-ern", body));
 
         if (response.statusCode() / 100 != 2) {
-            throw new EuclidAuthenticationException(response.statusCode(), response.body());
+            throw new EuclidServiceException("ens", "get-topic-ern", response.statusCode(), response.body());
         }
 
         return extractGetTopicErnResponse(response.body());
@@ -196,7 +220,7 @@ public final class EuclidEns {
                 requestHeaders("get-topic-metadata", body));
 
         if (response.statusCode() / 100 != 2) {
-            throw new EuclidAuthenticationException(response.statusCode(), response.body());
+            throw new EuclidServiceException("ens", "get-topic-metadata", response.statusCode(), response.body());
         }
 
         return extractGetTopicMetadataResponse(response.body());
@@ -215,7 +239,7 @@ public final class EuclidEns {
                 requestHeaders("delete-topic", body));
 
         if (response.statusCode() / 100 != 2) {
-            throw new EuclidAuthenticationException(response.statusCode(), response.body());
+            throw new EuclidServiceException("ens", "delete-topic", response.statusCode(), response.body());
         }
     }
 
@@ -232,7 +256,7 @@ public final class EuclidEns {
                 requestHeaders("purge-topic", body));
 
         if (response.statusCode() / 100 != 2) {
-            throw new EuclidAuthenticationException(response.statusCode(), response.body());
+            throw new EuclidServiceException("ens", "purge-topic", response.statusCode(), response.body());
         }
     }
 
@@ -275,7 +299,7 @@ public final class EuclidEns {
                 requestHeaders("purge-all-topics", body));
 
         if (response.statusCode() / 100 != 2) {
-            throw new EuclidAuthenticationException(response.statusCode(), response.body());
+            throw new EuclidServiceException("ens", "purge-all-topics", response.statusCode(), response.body());
         }
     }
 
@@ -310,7 +334,7 @@ public final class EuclidEns {
                 requestHeaders("publish-message", requestBody));
 
         if (response.statusCode() / 100 != 2) {
-            throw new EuclidAuthenticationException(response.statusCode(), response.body());
+            throw new EuclidServiceException("ens", "publish-message", response.statusCode(), response.body());
         }
 
         return extractPublishMessageResponse(response.body());
@@ -341,14 +365,31 @@ public final class EuclidEns {
      */
     public ListMessagesResponse listMessages(String topicErn, long pageSize, long pageIndex, String sortColumn)
             throws IOException, InterruptedException {
+        return listMessages(topicErn, pageSize, pageIndex, sortColumn, "asc");
+    }
+
+    /**
+     * Lists a topic's messages without receiving them, paginated, in a chosen sort direction.
+     *
+     * @param topicErn the ERN of the topic whose messages are listed
+     * @param pageSize the maximum number of messages to return in a single page
+     * @param pageIndex the zero-based index of the page to return
+     * @param sortColumn the column results are sorted by
+     * @param sortDirection the direction to sort in, {@code "asc"} or {@code "desc"}
+     * @return a {@code ListMessagesResponse} containing the messages and their total
+     * @throws IOException if an I/O error occurs during the operation
+     * @throws InterruptedException if the operation is interrupted
+     */
+    public ListMessagesResponse listMessages(String topicErn, long pageSize, long pageIndex, String sortColumn,
+                                             String sortDirection) throws IOException, InterruptedException {
         String body = OBJECT_MAPPER.writeValueAsString(
                 ListMessagesRequest.builder().topicErn(topicErn).pageSize(pageSize).pageIndex(pageIndex)
-                        .sortColumn(sortColumn).build());
+                        .sortColumn(sortColumn).sortDirection(sortDirection).build());
         HttpResponse<String> response = httpClient.post(baseUrl + "/", body, "ens", "list-messages",
                 requestHeaders("list-messages", body));
 
         if (response.statusCode() / 100 != 2) {
-            throw new EuclidAuthenticationException(response.statusCode(), response.body());
+            throw new EuclidServiceException("ens", "list-messages", response.statusCode(), response.body());
         }
 
         return extractListMessagesResponse(response.body());
@@ -368,7 +409,7 @@ public final class EuclidEns {
                 requestHeaders("get-message-count", body));
 
         if (response.statusCode() / 100 != 2) {
-            throw new EuclidAuthenticationException(response.statusCode(), response.body());
+            throw new EuclidServiceException("ens", "get-message-count", response.statusCode(), response.body());
         }
 
         return extractGetMessageCountResponse(response.body());
@@ -391,7 +432,7 @@ public final class EuclidEns {
                 requestHeaders("get-message-attribute", body));
 
         if (response.statusCode() / 100 != 2) {
-            throw new EuclidAuthenticationException(response.statusCode(), response.body());
+            throw new EuclidServiceException("ens", "get-message-attribute", response.statusCode(), response.body());
         }
 
         return extractGetMessageAttributeResponse(response.body());
@@ -415,7 +456,7 @@ public final class EuclidEns {
                 requestHeaders("set-message-attribute", body));
 
         if (response.statusCode() / 100 != 2) {
-            throw new EuclidAuthenticationException(response.statusCode(), response.body());
+            throw new EuclidServiceException("ens", "set-message-attribute", response.statusCode(), response.body());
         }
 
         return extractGetMessageAttributeResponse(response.body());
@@ -436,7 +477,7 @@ public final class EuclidEns {
                 requestHeaders("add-topic-tag", body));
 
         if (response.statusCode() / 100 != 2) {
-            throw new EuclidAuthenticationException(response.statusCode(), response.body());
+            throw new EuclidServiceException("ens", "add-topic-tag", response.statusCode(), response.body());
         }
     }
 
@@ -455,7 +496,7 @@ public final class EuclidEns {
                 requestHeaders("set-topic-tag", body));
 
         if (response.statusCode() / 100 != 2) {
-            throw new EuclidAuthenticationException(response.statusCode(), response.body());
+            throw new EuclidServiceException("ens", "set-topic-tag", response.statusCode(), response.body());
         }
     }
 
@@ -473,7 +514,7 @@ public final class EuclidEns {
                 requestHeaders("delete-topic-tag", body));
 
         if (response.statusCode() / 100 != 2) {
-            throw new EuclidAuthenticationException(response.statusCode(), response.body());
+            throw new EuclidServiceException("ens", "delete-topic-tag", response.statusCode(), response.body());
         }
     }
 
@@ -509,7 +550,7 @@ public final class EuclidEns {
                 requestHeaders("subscribe", body));
 
         if (response.statusCode() / 100 != 2) {
-            throw new EuclidAuthenticationException(response.statusCode(), response.body());
+            throw new EuclidServiceException("ens", "subscribe", response.statusCode(), response.body());
         }
 
         return extractSubscribeResponse(response.body());
@@ -529,7 +570,7 @@ public final class EuclidEns {
                 requestHeaders("unsubscribe", body));
 
         if (response.statusCode() / 100 != 2) {
-            throw new EuclidAuthenticationException(response.statusCode(), response.body());
+            throw new EuclidServiceException("ens", "unsubscribe", response.statusCode(), response.body());
         }
     }
 
@@ -547,7 +588,7 @@ public final class EuclidEns {
                 requestHeaders("list-subscriptions", body));
 
         if (response.statusCode() / 100 != 2) {
-            throw new EuclidAuthenticationException(response.statusCode(), response.body());
+            throw new EuclidServiceException("ens", "list-subscriptions", response.statusCode(), response.body());
         }
 
         return extractListSubscriptionsResponse(response.body());
@@ -572,8 +613,7 @@ public final class EuclidEns {
 
     private static PublishMessageResponse extractPublishMessageResponse(String responseBody) throws IOException {
         JsonNode root = OBJECT_MAPPER.readTree(responseBody);
-        return PublishMessageResponse.builder().messageId(textOrNull(root, "messageId"))
-                .md5Body(textOrNull(root, "md5Body")).md5Attributes(textOrNull(root, "md5Attributes")).build();
+        return PublishMessageResponse.builder().messageId(textOrNull(root, "messageId")).build();
     }
 
     private static ListMessagesResponse extractListMessagesResponse(String responseBody) throws IOException {
@@ -642,6 +682,9 @@ public final class EuclidEns {
         if (userId != null) {
             headers.put("x-euclid-user-id", userId);
         }
+        if (nameSpace != null && !nameSpace.isEmpty()) {
+            headers.put("x-euclid-namespace", nameSpace);
+        }
 
         if (accessKeyId != null && !accessKeyId.isEmpty() && secretAccessKey != null && !secretAccessKey.isEmpty()) {
             SignableRequest signable = new SignableRequest("POST", "/");
@@ -679,9 +722,7 @@ public final class EuclidEns {
                         textOrNull(messageNode, "messageId"),
                         textOrNull(messageNode, "status"),
                         textOrNull(messageNode, "body"),
-                        textOrNull(messageNode, "md5Body"),
                         toVariantMap(messageNode.get("attributes")),
-                        textOrNull(messageNode, "md5Attributes"),
                         textOrNull(messageNode, "lastReceived"),
                         textOrNull(messageNode, "created"),
                         textOrNull(messageNode, "modified")));
@@ -701,8 +742,9 @@ public final class EuclidEns {
         return map;
     }
 
-    private static List<Topic> extractTopics(String responseBody) throws IOException {
-        JsonNode topicsNode = OBJECT_MAPPER.readTree(responseBody).get("topics");
+    private static ListTopicsResponse extractListTopicsResponse(String responseBody) throws IOException {
+        JsonNode root = OBJECT_MAPPER.readTree(responseBody);
+        JsonNode topicsNode = root.get("topics");
         List<Topic> topics = new ArrayList<>();
         if (topicsNode != null && topicsNode.isArray()) {
             for (JsonNode topicNode : topicsNode) {
@@ -718,7 +760,7 @@ public final class EuclidEns {
                         textOrNull(topicNode, "modified")));
             }
         }
-        return topics;
+        return ListTopicsResponse.builder().topics(topics).total(root.path("total").asLong(0)).build();
     }
 
     private static Map<String, String> toStringMap(JsonNode node) {

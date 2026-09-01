@@ -1,14 +1,15 @@
 package de.jensvogt.euclid.dto.eqs;
 
 /**
- * Request to list messages in a queue, paged.
+ * Request to list the messages of a queue, paginated.
  *
- * @param queueErn   the ERN (Entity Resource Name) of the queue whose messages are listed
- * @param pageSize   the maximum number of messages to return in a single page
- * @param pageIndex  the zero-based index of the page to return
- * @param sortColumn the name of the column results are sorted by
+ * @param queueErn      the ERN of the queue whose messages are listed
+ * @param pageSize      the maximum number of messages to return in a single page
+ * @param pageIndex     the zero-based index of the page to return
+ * @param sortColumn    the name of the column results are sorted by
+ * @param sortDirection the sort direction, {@code "asc"} or {@code "desc"}
  */
-public record ListMessagesRequest(String queueErn, long pageSize, long pageIndex, String sortColumn) {
+public record ListMessagesRequest(String queueErn, long pageSize, long pageIndex, String sortColumn, String sortDirection) {
 
     /**
      * Creates a new instance of the Builder for constructing a ListMessagesRequest object.
@@ -23,6 +24,7 @@ public record ListMessagesRequest(String queueErn, long pageSize, long pageIndex
      * Builder for constructing {@link ListMessagesRequest} instances.
      */
     public static final class Builder {
+
         /**
          * Creates an empty builder.
          */
@@ -30,9 +32,9 @@ public record ListMessagesRequest(String queueErn, long pageSize, long pageIndex
         }
 
         /**
-         * The ERN (Entity Resource Name) of the queue whose messages are listed.
+         * The ERN of the queue whose messages are listed.
          */
-        private String queueErn;
+        private String queueErn = "";
 
         /**
          * The maximum number of messages to return in a single page.
@@ -50,9 +52,14 @@ public record ListMessagesRequest(String queueErn, long pageSize, long pageIndex
         private String sortColumn = "created";
 
         /**
+         * The sort direction, {@code "asc"} or {@code "desc"}.
+         */
+        private String sortDirection = "asc";
+
+        /**
          * Sets the ERN of the queue whose messages are listed.
          *
-         * @param queueErn the queue ERN
+         * @param queueErn the ERN of the queue whose messages are listed
          * @return the builder instance
          */
         public Builder queueErn(String queueErn) {
@@ -63,7 +70,7 @@ public record ListMessagesRequest(String queueErn, long pageSize, long pageIndex
         /**
          * Sets the maximum number of messages to return in a single page.
          *
-         * @param pageSize the page size
+         * @param pageSize the maximum number of messages to return in a single page
          * @return the builder instance
          */
         public Builder pageSize(long pageSize) {
@@ -74,7 +81,7 @@ public record ListMessagesRequest(String queueErn, long pageSize, long pageIndex
         /**
          * Sets the zero-based index of the page to return.
          *
-         * @param pageIndex the page index
+         * @param pageIndex the zero-based index of the page to return
          * @return the builder instance
          */
         public Builder pageIndex(long pageIndex) {
@@ -85,7 +92,7 @@ public record ListMessagesRequest(String queueErn, long pageSize, long pageIndex
         /**
          * Sets the name of the column results are sorted by.
          *
-         * @param sortColumn the sort column name
+         * @param sortColumn the name of the column results are sorted by
          * @return the builder instance
          */
         public Builder sortColumn(String sortColumn) {
@@ -94,12 +101,23 @@ public record ListMessagesRequest(String queueErn, long pageSize, long pageIndex
         }
 
         /**
+         * Sets the sort direction, {@code "asc"} or {@code "desc"}.
+         *
+         * @param sortDirection the sort direction, {@code "asc"} or {@code "desc"}
+         * @return the builder instance
+         */
+        public Builder sortDirection(String sortDirection) {
+            this.sortDirection = sortDirection;
+            return this;
+        }
+
+        /**
          * Builds and returns a new instance of ListMessagesRequest using the properties set on the Builder.
          *
-         * @return a new ListMessagesRequest instance populated with the queue ERN, page size, page index and sort column values.
+         * @return a new ListMessagesRequest instance.
          */
         public ListMessagesRequest build() {
-            return new ListMessagesRequest(queueErn, pageSize, pageIndex, sortColumn);
+            return new ListMessagesRequest(queueErn, pageSize, pageIndex, sortColumn, sortDirection);
         }
     }
 }

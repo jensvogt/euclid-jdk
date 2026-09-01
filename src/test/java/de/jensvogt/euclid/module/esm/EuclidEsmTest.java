@@ -6,14 +6,21 @@ import com.sun.net.httpserver.HttpHandler;
 import com.sun.net.httpserver.HttpServer;
 import de.jensvogt.euclid.auth.SigV4;
 import de.jensvogt.euclid.auth.SignableRequest;
+import de.jensvogt.euclid.dto.com.Variant;
 import de.jensvogt.euclid.dto.esm.CompleteUploadResponse;
 import de.jensvogt.euclid.dto.esm.CreateBucketResponse;
 import de.jensvogt.euclid.dto.esm.GetBucketErnResponse;
 import de.jensvogt.euclid.dto.esm.GetBucketSizeResponse;
+import de.jensvogt.euclid.dto.esm.GetObjectCountResponse;
+import de.jensvogt.euclid.dto.esm.ListBucketsResponse;
+import de.jensvogt.euclid.dto.esm.ListObjectAttributesResponse;
 import de.jensvogt.euclid.dto.esm.ListObjectsResponse;
+import de.jensvogt.euclid.dto.esm.ListSubscriptionsResponse;
+import de.jensvogt.euclid.dto.esm.ObjectAttributeResponse;
 import de.jensvogt.euclid.dto.esm.PurgeBucketResponse;
+import de.jensvogt.euclid.dto.esm.SubscribeResponse;
 import de.jensvogt.euclid.dto.esm.model.Bucket;
-import de.jensvogt.euclid.exception.EuclidAuthenticationException;
+import de.jensvogt.euclid.exception.EuclidServiceException;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -24,7 +31,9 @@ import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.Arrays;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.SortedMap;
 import java.util.TreeMap;
@@ -41,14 +50,15 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * Confirms EuclidEsm authenticates the way it claims to (SigV4-signed when an access key is
  * configured, bearer token otherwise, mirroring euclid-cli's HttpClient.cpp), routes every
  * bucket/object action to the right request with a correctly-shaped body, parses the
- * corresponding response, surfaces non-2xx responses as {@link EuclidAuthenticationException},
+ * corresponding response, surfaces non-2xx responses as {@link EuclidServiceException},
  * and - for {@code uploadFile} - correctly orchestrates create-upload/upload-part/complete-upload
  * including splitting, retrying, and always using the bearer token for the binary part uploads.
  */
 class EuclidEsmTest {
 
     private static final List<String> SIGNED_HEADERS = List.of("host", "x-amz-content-sha256", "x-amz-date",
-            "x-euclid-account-id", "x-euclid-action", "x-euclid-region", "x-euclid-target", "x-euclid-user-id");
+            "x-euclid-account-id", "x-euclid-action", "x-euclid-region", "x-euclid-target", "x-euclid-user-id",
+            "x-euclid-namespace");
 
     private HttpServer server;
 
@@ -71,7 +81,7 @@ class EuclidEsmTest {
         });
 
         EuclidEsm esm = new EuclidEsm(baseUrl(), "unused-token", "eu-central-1", "863459426936", "alice",
-                accessKeyId, secretAccessKey, null);
+                accessKeyId, secretAccessKey, null, null);
         esm.createBucket("photos");
 
         SignableRequest req = received.get();
@@ -92,7 +102,7 @@ class EuclidEsmTest {
         });
 
         EuclidEsm esm = new EuclidEsm(baseUrl(), "my-jwt-token", "eu-central-1", "863459426936", "alice",
-                null, null, null);
+                null, null, null, null);
         esm.createBucket("photos");
 
         assertEquals("Bearer my-jwt-token", received.get().header("authorization"));
@@ -135,17 +145,19 @@ class EuclidEsmTest {
             received.set(captureRequest(exchange));
             sendResponse(exchange, 200, "{\"buckets\":[{\"region\":\"eu-central-1\",\"owner\":\"alice\","
                     + "\"name\":\"photos\",\"ern\":\"bucket-ern\",\"size\":1024,\"objects\":3,"
-                    + "\"created\":\"2026-01-01\",\"modified\":\"2026-01-02\"}]}");
+                    + "\"created\":\"2026-01-01\",\"modified\":\"2026-01-02\"}],\"total\":1}");
         });
 
-        List<Bucket> buckets = newClient().listBuckets();
+        ListBucketsResponse response = newClient().listBuckets();
+        List<Bucket> buckets = response.buckets();
+        assertEquals(1, response.total(), "the server's total must survive rather than be dropped");
 
         assertEquals("list-buckets", received.get().header("x-euclid-action"));
         assertBodyContains(received.get().body(), "\"prefix\":\"\"", "\"pageSize\":10", "\"pageIndex\":0",
                 "\"sortColumn\":\"name\"");
         assertEquals(1, buckets.size());
-        assertEquals("photos", buckets.get(0).name());
-        assertEquals(3, buckets.get(0).objects());
+        assertEquals("photos", buckets.getFirst().name());
+        assertEquals(3, buckets.getFirst().objects());
     }
 
     @Test
@@ -156,7 +168,7 @@ class EuclidEsmTest {
             sendResponse(exchange, 200, "{\"buckets\":[]}");
         });
 
-        List<Bucket> buckets = newClient().listBuckets("pho", 25, 2, "created");
+        List<Bucket> buckets = newClient().listBuckets("pho", 25, 2, "created").buckets();
 
         assertBodyContains(received.get().body(), "\"prefix\":\"pho\"", "\"pageSize\":25", "\"pageIndex\":2",
                 "\"sortColumn\":\"created\"");
@@ -209,7 +221,7 @@ class EuclidEsmTest {
         assertBodyContains(received.get().body(), "\"bucketErn\":\"bucket-ern\"", "\"prefix\":\"\"",
                 "\"pageSize\":10", "\"pageIndex\":0", "\"sortColumn\":\"name\"");
         assertEquals(1, response.total());
-        assertEquals("a.txt", response.objects().get(0).key());
+        assertEquals("a.txt", response.objects().getFirst().key());
     }
 
     @Test
@@ -256,13 +268,15 @@ class EuclidEsmTest {
     }
 
     @Test
-    void nonSuccessResponseThrowsEuclidAuthenticationException() throws Exception {
+    void nonSuccessResponseThrowsEuclidServiceException() throws Exception {
         server = startServer(exchange -> sendResponse(exchange, 500, "{\"error\":\"boom\"}"));
 
         EuclidEsm esm = newClient();
-        EuclidAuthenticationException exception =
-                assertThrows(EuclidAuthenticationException.class, () -> esm.createBucket("photos"));
+        EuclidServiceException exception =
+                assertThrows(EuclidServiceException.class, () -> esm.createBucket("photos"));
 
+        assertEquals("esm", exception.service());
+        assertEquals("create-bucket", exception.action());
         assertEquals(500, exception.statusCode());
         assertTrue(exception.responseBody().contains("boom"));
     }
@@ -315,6 +329,71 @@ class EuclidEsmTest {
         assertBodyContains(completeUploadRequest.get().body(), "\"uploadId\":\"upload-1\"");
         assertEquals("obj-ern", response.ern());
         assertEquals(10, response.size());
+    }
+
+    // create-upload and complete-upload bracket every part of an upload, so a transient 5xx on
+    // either one discards the whole file - they retry on the same terms the parts between them do.
+    @Test
+    void uploadFileRetriesTransientServerErrorsOnCreateAndCompleteUpload(@TempDir Path tempDir) throws Exception {
+        Path file = tempDir.resolve("data.bin");
+        Files.writeString(file, "ABCD", StandardCharsets.US_ASCII);
+
+        AtomicInteger createUploadAttempts = new AtomicInteger();
+        AtomicInteger completeUploadAttempts = new AtomicInteger();
+
+        server = startServer(exchange -> {
+            String action = exchange.getRequestHeaders().getFirst("x-euclid-action");
+            exchange.getRequestBody().readAllBytes();
+            switch (action) {
+                case "create-upload" -> {
+                    if (createUploadAttempts.incrementAndGet() == 1) {
+                        sendResponse(exchange, 500, "{\"error\":\"internal server error\"}");
+                    } else {
+                        sendResponse(exchange, 200, "{\"uploadId\":\"upload-1\",\"bucketErn\":\"bucket-ern\",\"key\":\"data.bin\"}");
+                    }
+                }
+                case "upload-part" -> sendResponse(exchange, 200, "{}");
+                case "complete-upload" -> {
+                    if (completeUploadAttempts.incrementAndGet() == 1) {
+                        sendResponse(exchange, 500, "{\"error\":\"internal server error\"}");
+                    } else {
+                        sendResponse(exchange, 200, "{\"ern\":\"obj-ern\",\"bucketErn\":\"bucket-ern\",\"key\":\"data.bin\","
+                                + "\"size\":4,\"status\":\"AVAILABLE\",\"contentType\":\"application/octet-stream\",\"md5Sum\":\"abc\"}");
+                    }
+                }
+                default -> sendResponse(exchange, 500, "{\"error\":\"unexpected action " + action + "\"}");
+            }
+        });
+
+        CompleteUploadResponse response = newClient().uploadFile("bucket-ern", "data.bin", file, 4, 1);
+
+        assertEquals(2, createUploadAttempts.get(), "create-upload should have been retried once after the 500");
+        assertEquals(2, completeUploadAttempts.get(), "complete-upload should have been retried once after the 500");
+        assertEquals("obj-ern", response.ern());
+    }
+
+    // A 4xx says the request itself is wrong, so repeating it can only waste the caller's time.
+    @Test
+    void uploadFileDoesNotRetryClientErrorOnCreateUpload(@TempDir Path tempDir) throws Exception {
+        Path file = tempDir.resolve("data.bin");
+        Files.writeString(file, "ABCD", StandardCharsets.US_ASCII);
+
+        AtomicInteger createUploadAttempts = new AtomicInteger();
+        server = startServer(exchange -> {
+            createUploadAttempts.incrementAndGet();
+            exchange.getRequestBody().readAllBytes();
+            sendResponse(exchange, 404, "{\"error\":\"Bucket not found, ern: bucket-ern\"}");
+        });
+
+        EuclidEsm esm = newClient();
+        EuclidServiceException exception =
+                assertThrows(EuclidServiceException.class, () -> esm.uploadFile("bucket-ern", "data.bin", file, 4, 1));
+
+        assertEquals(1, createUploadAttempts.get(), "a 4xx should fail on the first attempt");
+        assertEquals("esm", exception.service());
+        assertEquals("create-upload", exception.action());
+        assertEquals(404, exception.statusCode());
+        assertTrue(exception.responseBody().contains("Bucket not found"));
     }
 
     @Test
@@ -441,15 +520,287 @@ class EuclidEsmTest {
         });
 
         EuclidEsm esm = new EuclidEsm(baseUrl(), "my-jwt-token", "eu-central-1", "863459426936", "alice",
-                "AKIDEXAMPLE", "wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY", null);
+                "AKIDEXAMPLE", "wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY", null, null);
         esm.uploadFile("bucket-ern", "data.bin", file, 1024, 1);
 
         assertTrue(createUploadAuth.get().startsWith("AWS4-HMAC-SHA256 "), "create-upload should be SigV4-signed");
         assertEquals("Bearer my-jwt-token", uploadPartAuth.get());
     }
 
+    @Test
+    void createBucketSendsNamespaceHeaderWhenConfigured() throws Exception {
+        AtomicReference<SignableRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(captureRequest(exchange));
+            sendResponse(exchange, 200, "{\"name\":\"photos\",\"ern\":\"bucket-ern\"}");
+        });
+
+        new EuclidEsm(baseUrl(), "test-token", "eu-central-1", "863459426936", "alice", null, null, null, "prod")
+                .createBucket("photos");
+
+        assertEquals("prod", received.get().header("x-euclid-namespace"));
+    }
+
+    @Test
+    void createBucketOmitsNamespaceHeaderWhenUnset() throws Exception {
+        AtomicReference<SignableRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(captureRequest(exchange));
+            sendResponse(exchange, 200, "{\"name\":\"photos\",\"ern\":\"bucket-ern\"}");
+        });
+
+        newClient().createBucket("photos");
+
+        assertEquals("", received.get().header("x-euclid-namespace"));
+    }
+
+    @Test
+    void getObjectCountSendsBucketErnAndPrefix() throws Exception {
+        AtomicReference<SignableRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(captureRequest(exchange));
+            sendResponse(exchange, 200, "{\"ern\":\"bucket-ern\",\"count\":42}");
+        });
+
+        GetObjectCountResponse response = newClient().getObjectCount("bucket-ern", "photos/");
+
+        assertBodyContains(received.get().body(), "\"ern\":\"bucket-ern\"", "\"prefix\":\"photos/\"");
+        assertEquals("bucket-ern", response.ern());
+        assertEquals(42, response.count());
+    }
+
+    @Test
+    void bucketTagActionsSendTheKeyAndValue() throws Exception {
+        Map<String, String> bodyByAction = new ConcurrentHashMap<>();
+        server = startServer(exchange -> {
+            String action = exchange.getRequestHeaders().getFirst("x-euclid-action");
+            bodyByAction.put(action, new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8));
+            sendResponse(exchange, 200, "{}");
+        });
+
+        EuclidEsm esm = newClient();
+        esm.addBucketTag("bucket-ern", "owner", "alice");
+        esm.setBucketTag("bucket-ern", "owner", "bob");
+        esm.deleteBucketTag("bucket-ern", "owner");
+
+        assertBodyContains(bodyByAction.get("add-bucket-tag"), "\"ern\":\"bucket-ern\"", "\"key\":\"owner\"", "\"value\":\"alice\"");
+        assertBodyContains(bodyByAction.get("set-bucket-tag"), "\"ern\":\"bucket-ern\"", "\"key\":\"owner\"", "\"value\":\"bob\"");
+        assertBodyContains(bodyByAction.get("delete-bucket-tag"), "\"ern\":\"bucket-ern\"", "\"key\":\"owner\"");
+    }
+
+    @Test
+    void objectAttributeActionsRoundTripTypedValues() throws Exception {
+        Map<String, String> bodyByAction = new ConcurrentHashMap<>();
+        server = startServer(exchange -> {
+            String action = exchange.getRequestHeaders().getFirst("x-euclid-action");
+            bodyByAction.put(action, new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8));
+            switch (action) {
+                case "add-object-attribute", "set-object-attribute" -> sendResponse(exchange, 200,
+                        "{\"ern\":\"obj-ern\",\"name\":\"revision\",\"value\":{\"type\":\"long\",\"value\":\"7\"}}");
+                case "list-object-attributes" -> sendResponse(exchange, 200,
+                        "{\"ern\":\"obj-ern\",\"total\":2,\"attributes\":{\"revision\":{\"type\":\"long\",\"value\":\"7\"},"
+                                + "\"source\":{\"type\":\"string\",\"value\":\"pim\"}}}");
+                default -> sendResponse(exchange, 200, "{}");
+            }
+        });
+
+        EuclidEsm esm = newClient();
+        ObjectAttributeResponse added = esm.addObjectAttribute("obj-ern", "revision", new Variant("long", 7L));
+        esm.setObjectAttribute("obj-ern", "revision", new Variant("long", 8L));
+        ListObjectAttributesResponse listed = esm.listObjectAttributes("obj-ern");
+        esm.deleteObjectAttribute("obj-ern", "revision");
+
+        assertBodyContains(bodyByAction.get("add-object-attribute"), "\"ern\":\"obj-ern\"", "\"name\":\"revision\"",
+                "\"value\":{\"type\":\"long\",\"value\":7}");
+        assertBodyContains(bodyByAction.get("set-object-attribute"), "\"value\":{\"type\":\"long\",\"value\":8}");
+        assertBodyContains(bodyByAction.get("delete-object-attribute"), "\"ern\":\"obj-ern\"", "\"name\":\"revision\"");
+
+        assertEquals("revision", added.name());
+        assertEquals("long", added.value().type());
+        assertEquals(2, listed.total());
+        assertEquals("pim", listed.attributes().get("source").value());
+        assertEquals("long", listed.attributes().get("revision").type());
+    }
+
+    @Test
+    void subscriptionActionsRoundTrip() throws Exception {
+        Map<String, String> bodyByAction = new ConcurrentHashMap<>();
+        server = startServer(exchange -> {
+            String action = exchange.getRequestHeaders().getFirst("x-euclid-action");
+            bodyByAction.put(action, new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8));
+            switch (action) {
+                case "subscribe" -> sendResponse(exchange, 200, "{\"ern\":\"sub-ern\",\"sourceErn\":\"bucket-ern\","
+                        + "\"type\":\"queue\",\"targetErn\":\"queue-ern\"}");
+                case "list-subscriptions" -> sendResponse(exchange, 200, "{\"total\":1,\"subscriptions\":[{"
+                        + "\"ern\":\"sub-ern\",\"sourceErn\":\"bucket-ern\",\"type\":\"queue\",\"targetErn\":\"queue-ern\","
+                        + "\"created\":\"2026-09-01T00:00:00Z\",\"modified\":\"2026-09-01T00:00:00Z\"}]}");
+                default -> sendResponse(exchange, 200, "{}");
+            }
+        });
+
+        EuclidEsm esm = newClient();
+        SubscribeResponse subscribed = esm.subscribe("bucket-ern", "queue", "queue-ern");
+        ListSubscriptionsResponse listed = esm.listSubscriptions("bucket-ern");
+        esm.unsubscribe(subscribed.ern());
+
+        assertBodyContains(bodyByAction.get("subscribe"), "\"sourceErn\":\"bucket-ern\"", "\"type\":\"queue\"",
+                "\"targetErn\":\"queue-ern\"");
+        assertBodyContains(bodyByAction.get("list-subscriptions"), "\"bucketErn\":\"bucket-ern\"");
+        // unsubscribe takes the subscription's own ERN, not the bucket's or the target's.
+        assertBodyContains(bodyByAction.get("unsubscribe"), "\"ern\":\"sub-ern\"");
+
+        assertEquals("sub-ern", subscribed.ern());
+        assertEquals(1, listed.total());
+        assertEquals("queue-ern", listed.subscriptions().getFirst().targetErn());
+    }
+
+    @Test
+    void putObjectSendsRawBytesWithBucketAndKeyHeaders() throws Exception {
+        AtomicReference<byte[]> body = new AtomicReference<>();
+        AtomicReference<Headers> headers = new AtomicReference<>();
+        server = startServer(exchange -> {
+            headers.set(exchange.getRequestHeaders());
+            body.set(exchange.getRequestBody().readAllBytes());
+            sendResponse(exchange, 200, "{}");
+        });
+
+        newClient().putObject("bucket-ern", "notes.txt", "hello".getBytes(StandardCharsets.US_ASCII));
+
+        assertArrayEquals("hello".getBytes(StandardCharsets.US_ASCII), body.get());
+        assertEquals("bucket-ern", headers.get().getFirst("x-euclid-bucket-ern"));
+        assertEquals("notes.txt", headers.get().getFirst("x-euclid-key"));
+        assertEquals("put-object", headers.get().getFirst("x-euclid-action"));
+    }
+
+    @Test
+    void getObjectReturnsRawBytes() throws Exception {
+        server = startServer(exchange -> {
+            exchange.getRequestBody().readAllBytes();
+            sendBinaryResponse(exchange, 200, "hello".getBytes(StandardCharsets.US_ASCII));
+        });
+
+        assertArrayEquals("hello".getBytes(StandardCharsets.US_ASCII),
+                newClient().getObject("bucket-ern", "notes.txt", 1024));
+    }
+
+    @Test
+    void downloadFileFetchesSmallObjectInOneRequest(@TempDir Path tempDir) throws Exception {
+        AtomicInteger requests = new AtomicInteger();
+        server = startServer(exchange -> {
+            requests.incrementAndGet();
+            exchange.getRequestBody().readAllBytes();
+            sendBinaryResponse(exchange, 200, "ABCDEFGHIJ".getBytes(StandardCharsets.US_ASCII));
+        });
+
+        Path file = tempDir.resolve("nested/data.bin");
+        long written = newClient().downloadFile("bucket-ern", "data.bin", file, 1024, 2);
+
+        assertEquals(10, written);
+        assertEquals(1, requests.get(), "an object that fits in one part should skip the multipart flow");
+        assertArrayEquals("ABCDEFGHIJ".getBytes(StandardCharsets.US_ASCII), Files.readAllBytes(file));
+    }
+
+    // A download's size isn't known until asked, so the single-request path is always tried first
+    // and HTTP 413 is what tells the client the object needs create-download/download-part instead.
+    @Test
+    void downloadFileFallsBackToMultipartWhenObjectIsTooLarge(@TempDir Path tempDir) throws Exception {
+        byte[] content = "ABCDEFGHIJ".getBytes(StandardCharsets.US_ASCII);
+        AtomicInteger completeDownloads = new AtomicInteger();
+        AtomicReference<String> createDownloadConcurrencyHeader = new AtomicReference<>();
+
+        server = startServer(exchange -> {
+            String action = exchange.getRequestHeaders().getFirst("x-euclid-action");
+            exchange.getRequestBody().readAllBytes();
+            switch (action) {
+                case "get-object" -> sendResponse(exchange, 413, "{\"error\":\"object too large\"}");
+                case "create-download" -> {
+                    createDownloadConcurrencyHeader.set(exchange.getRequestHeaders().getFirst("x-euclid-expected-concurrency"));
+                    sendResponse(exchange, 200, "{\"downloadId\":\"download-1\",\"bucketErn\":\"bucket-ern\","
+                            + "\"key\":\"data.bin\",\"ern\":\"obj-ern\",\"size\":10,\"contentType\":\"application/octet-stream\"}");
+                }
+                case "download-part" -> {
+                    int partNumber = Integer.parseInt(exchange.getRequestHeaders().getFirst("x-euclid-part-number"));
+                    int partSize = Integer.parseInt(exchange.getRequestHeaders().getFirst("x-euclid-part-size"));
+                    int from = (partNumber - 1) * partSize;
+                    int to = Math.min(from + partSize, content.length);
+                    sendBinaryResponse(exchange, 200, Arrays.copyOfRange(content, from, to));
+                }
+                case "complete-download" -> {
+                    completeDownloads.incrementAndGet();
+                    sendResponse(exchange, 200, "{}");
+                }
+                default -> sendResponse(exchange, 500, "{\"error\":\"unexpected action " + action + "\"}");
+            }
+        });
+
+        Path file = tempDir.resolve("data.bin");
+        long written = newClient().downloadFile("bucket-ern", "data.bin", file, 4, 2);
+
+        assertEquals(10, written);
+        assertEquals("2", createDownloadConcurrencyHeader.get());
+        assertEquals(1, completeDownloads.get());
+        assertArrayEquals(content, Files.readAllBytes(file), "parts should be reassembled in order");
+    }
+
+    @Test
+    void listRequestsCarrySortDirectionAndIncludeDirectories() throws Exception {
+        Map<String, String> bodyByAction = new ConcurrentHashMap<>();
+        server = startServer(exchange -> {
+            String action = exchange.getRequestHeaders().getFirst("x-euclid-action");
+            bodyByAction.put(action, new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8));
+            sendResponse(exchange, 200, "{\"total\":0,\"objects\":[],\"buckets\":[]}");
+        });
+
+        EuclidEsm esm = newClient();
+        esm.listObjects("bucket-ern", "", 10, 0, "name", "desc", true);
+        esm.listBuckets("", 10, 0, "name", "desc");
+
+        assertBodyContains(bodyByAction.get("list-objects"), "\"sortDirection\":\"desc\"", "\"includeDirectories\":true");
+        assertBodyContains(bodyByAction.get("list-buckets"), "\"sortDirection\":\"desc\"");
+    }
+
+    // Both defaults matter: the no-direction overloads have to keep sending something the server
+    // accepts rather than dropping the field, and directories stay out of a listing unless asked for.
+    @Test
+    void listRequestsDefaultToAscendingWithoutDirectories() throws Exception {
+        AtomicReference<SignableRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(captureRequest(exchange));
+            sendResponse(exchange, 200, "{\"total\":0,\"objects\":[]}");
+        });
+
+        newClient().listObjects("bucket-ern");
+
+        assertBodyContains(received.get().body(), "\"sortDirection\":\"asc\"", "\"includeDirectories\":false");
+    }
+
+    @Test
+    void listResponsesCarryBucketTagsAndObjectAttributes() throws Exception {
+        server = startServer(exchange -> {
+            String action = exchange.getRequestHeaders().getFirst("x-euclid-action");
+            exchange.getRequestBody().readAllBytes();
+            if ("list-buckets".equals(action)) {
+                sendResponse(exchange, 200, "{\"total\":1,\"buckets\":[{\"owner\":\"alice\",\"name\":\"photos\","
+                        + "\"ern\":\"bucket-ern\",\"size\":10,\"objects\":1,\"tags\":{\"team\":\"platform\"},"
+                        + "\"created\":\"2026-09-01T00:00:00Z\",\"modified\":\"2026-09-01T00:00:00Z\"}]}");
+            } else {
+                sendResponse(exchange, 200, "{\"total\":1,\"objects\":[{\"ern\":\"obj-ern\",\"bucketErn\":\"bucket-ern\","
+                        + "\"key\":\"a.bin\",\"size\":10,\"status\":\"COMPLETED\",\"contentType\":\"application/octet-stream\","
+                        + "\"md5Sum\":\"abc\",\"attributes\":{\"source\":{\"type\":\"string\",\"value\":\"pim\"}},"
+                        + "\"created\":\"2026-09-01T00:00:00Z\",\"modified\":\"2026-09-01T00:00:00Z\"}]}");
+            }
+        });
+
+        EuclidEsm esm = newClient();
+        List<Bucket> buckets = esm.listBuckets().buckets();
+        ListObjectsResponse objects = esm.listObjects("bucket-ern");
+
+        assertEquals("platform", buckets.getFirst().tags().get("team"));
+        assertEquals("pim", objects.objects().getFirst().attributes().get("source").value());
+    }
+
     private EuclidEsm newClient() {
-        return new EuclidEsm(baseUrl(), "test-token", "eu-central-1", "863459426936", "alice", null, null, null);
+        return new EuclidEsm(baseUrl(), "test-token", "eu-central-1", "863459426936", "alice", null, null, null, null);
     }
 
     private static void assertBodyContains(String body, String... fragments) {
@@ -489,6 +840,14 @@ class EuclidEsmTest {
     private static void sendResponse(HttpExchange exchange, int status, String body) throws IOException {
         byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
         exchange.getResponseHeaders().add("Content-Type", "application/json");
+        exchange.sendResponseHeaders(status, bytes.length);
+        try (var os = exchange.getResponseBody()) {
+            os.write(bytes);
+        }
+    }
+
+    private static void sendBinaryResponse(HttpExchange exchange, int status, byte[] bytes) throws IOException {
+        exchange.getResponseHeaders().add("Content-Type", "application/octet-stream");
         exchange.sendResponseHeaders(status, bytes.length);
         try (var os = exchange.getResponseBody()) {
             os.write(bytes);

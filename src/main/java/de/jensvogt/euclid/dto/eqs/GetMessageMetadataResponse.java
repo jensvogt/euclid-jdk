@@ -1,26 +1,23 @@
 package de.jensvogt.euclid.dto.eqs;
 
 /**
- * Response containing the metadata of a message, without its body.
+ * Response carrying a message's metadata, everything about it except the body itself.
  *
- * @param messageId         the id of the message
- * @param queueErn          the ERN (Entity Resource Name) of the queue the message belongs to
- * @param receiptHandle     handle to use for deleting or changing the visibility of this message
- * @param status            current status of the message
- * @param priority          the priority of the message
- * @param size              size in bytes of the message body
- * @param receivedCount     number of times this message has been received
- * @param visibilityTimeout the visibility timeout, in seconds, applied to this message
- * @param contentType       the content type of the message body
- * @param md5Body           MD5 checksum of the message body
- * @param md5Attributes     MD5 checksum of the message attributes
+ * @param messageId         the message ID
+ * @param queueErn          ERN of the queue the message belongs to
+ * @param receiptHandle     receipt handle from the last receive, empty if never received
+ * @param status            current message status
+ * @param priority          the message priority
+ * @param size              size of the message body in bytes
+ * @param receivedCount     number of times the message has been received
+ * @param visibilityTimeout seconds the message stays invisible after a receive
+ * @param contentType       the message body's content type
  * @param created           creation timestamp
  * @param modified          last-modified timestamp
  */
 public record GetMessageMetadataResponse(String messageId, String queueErn, String receiptHandle, String status,
-                                          String priority, long size, long receivedCount, long visibilityTimeout,
-                                          String contentType, String md5Body, String md5Attributes, String created,
-                                          String modified) {
+                                         String priority, long size, long receivedCount, long visibilityTimeout,
+                                         String contentType, String created, String modified) {
 
     /**
      * Creates a new instance of the Builder for constructing a GetMessageMetadataResponse object.
@@ -35,6 +32,7 @@ public record GetMessageMetadataResponse(String messageId, String queueErn, Stri
      * Builder for constructing {@link GetMessageMetadataResponse} instances.
      */
     public static final class Builder {
+
         /**
          * Creates an empty builder.
          */
@@ -42,59 +40,49 @@ public record GetMessageMetadataResponse(String messageId, String queueErn, Stri
         }
 
         /**
-         * The id of the message.
+         * The message ID.
          */
         private String messageId;
 
         /**
-         * The ERN (Entity Resource Name) of the queue the message belongs to.
+         * ERN of the queue the message belongs to.
          */
         private String queueErn;
 
         /**
-         * Handle to use for deleting or changing the visibility of this message.
+         * Receipt handle from the last receive, empty if never received.
          */
         private String receiptHandle;
 
         /**
-         * Current status of the message.
+         * Current message status.
          */
         private String status;
 
         /**
-         * The priority of the message.
+         * The message priority.
          */
         private String priority;
 
         /**
-         * Size in bytes of the message body.
+         * Size of the message body in bytes.
          */
-        private long size;
+        private long size = 0;
 
         /**
-         * Number of times this message has been received.
+         * Number of times the message has been received.
          */
-        private long receivedCount;
+        private long receivedCount = 0;
 
         /**
-         * The visibility timeout, in seconds, applied to this message.
+         * Seconds the message stays invisible after a receive.
          */
-        private long visibilityTimeout;
+        private long visibilityTimeout = 0;
 
         /**
-         * The content type of the message body.
+         * The message body's content type.
          */
         private String contentType;
-
-        /**
-         * MD5 checksum of the message body.
-         */
-        private String md5Body;
-
-        /**
-         * MD5 checksum of the message attributes.
-         */
-        private String md5Attributes;
 
         /**
          * Creation timestamp.
@@ -107,9 +95,9 @@ public record GetMessageMetadataResponse(String messageId, String queueErn, Stri
         private String modified;
 
         /**
-         * Sets the id of the message.
+         * Sets the message ID.
          *
-         * @param messageId the message id
+         * @param messageId the message ID
          * @return the builder instance
          */
         public Builder messageId(String messageId) {
@@ -118,9 +106,9 @@ public record GetMessageMetadataResponse(String messageId, String queueErn, Stri
         }
 
         /**
-         * Sets the ERN of the queue the message belongs to.
+         * Sets ERN of the queue the message belongs to.
          *
-         * @param queueErn the queue ERN
+         * @param queueErn ERN of the queue the message belongs to
          * @return the builder instance
          */
         public Builder queueErn(String queueErn) {
@@ -129,9 +117,9 @@ public record GetMessageMetadataResponse(String messageId, String queueErn, Stri
         }
 
         /**
-         * Sets the receipt handle of the message.
+         * Sets receipt handle from the last receive, empty if never received.
          *
-         * @param receiptHandle handle to use for deleting or changing the visibility of this message
+         * @param receiptHandle receipt handle from the last receive, empty if never received
          * @return the builder instance
          */
         public Builder receiptHandle(String receiptHandle) {
@@ -140,9 +128,9 @@ public record GetMessageMetadataResponse(String messageId, String queueErn, Stri
         }
 
         /**
-         * Sets the status of the message.
+         * Sets current message status.
          *
-         * @param status the message status
+         * @param status current message status
          * @return the builder instance
          */
         public Builder status(String status) {
@@ -151,7 +139,7 @@ public record GetMessageMetadataResponse(String messageId, String queueErn, Stri
         }
 
         /**
-         * Sets the priority of the message.
+         * Sets the message priority.
          *
          * @param priority the message priority
          * @return the builder instance
@@ -162,9 +150,9 @@ public record GetMessageMetadataResponse(String messageId, String queueErn, Stri
         }
 
         /**
-         * Sets the size in bytes of the message body.
+         * Sets size of the message body in bytes.
          *
-         * @param size the size in bytes
+         * @param size size of the message body in bytes
          * @return the builder instance
          */
         public Builder size(long size) {
@@ -173,9 +161,9 @@ public record GetMessageMetadataResponse(String messageId, String queueErn, Stri
         }
 
         /**
-         * Sets the number of times this message has been received.
+         * Sets number of times the message has been received.
          *
-         * @param receivedCount the received count
+         * @param receivedCount number of times the message has been received
          * @return the builder instance
          */
         public Builder receivedCount(long receivedCount) {
@@ -184,9 +172,9 @@ public record GetMessageMetadataResponse(String messageId, String queueErn, Stri
         }
 
         /**
-         * Sets the visibility timeout, in seconds, applied to this message.
+         * Sets seconds the message stays invisible after a receive.
          *
-         * @param visibilityTimeout the visibility timeout in seconds
+         * @param visibilityTimeout seconds the message stays invisible after a receive
          * @return the builder instance
          */
         public Builder visibilityTimeout(long visibilityTimeout) {
@@ -195,9 +183,9 @@ public record GetMessageMetadataResponse(String messageId, String queueErn, Stri
         }
 
         /**
-         * Sets the content type of the message body.
+         * Sets the message body's content type.
          *
-         * @param contentType the content type
+         * @param contentType the message body's content type
          * @return the builder instance
          */
         public Builder contentType(String contentType) {
@@ -206,31 +194,9 @@ public record GetMessageMetadataResponse(String messageId, String queueErn, Stri
         }
 
         /**
-         * Sets the MD5 checksum of the message body.
+         * Sets creation timestamp.
          *
-         * @param md5Body the MD5 checksum of the body
-         * @return the builder instance
-         */
-        public Builder md5Body(String md5Body) {
-            this.md5Body = md5Body;
-            return this;
-        }
-
-        /**
-         * Sets the MD5 checksum of the message attributes.
-         *
-         * @param md5Attributes the MD5 checksum of the attributes
-         * @return the builder instance
-         */
-        public Builder md5Attributes(String md5Attributes) {
-            this.md5Attributes = md5Attributes;
-            return this;
-        }
-
-        /**
-         * Sets the creation timestamp.
-         *
-         * @param created the creation timestamp
+         * @param created creation timestamp
          * @return the builder instance
          */
         public Builder created(String created) {
@@ -239,9 +205,9 @@ public record GetMessageMetadataResponse(String messageId, String queueErn, Stri
         }
 
         /**
-         * Sets the last-modified timestamp.
+         * Sets last-modified timestamp.
          *
-         * @param modified the last-modified timestamp
+         * @param modified last-modified timestamp
          * @return the builder instance
          */
         public Builder modified(String modified) {
@@ -252,11 +218,10 @@ public record GetMessageMetadataResponse(String messageId, String queueErn, Stri
         /**
          * Builds and returns a new instance of GetMessageMetadataResponse using the properties set on the Builder.
          *
-         * @return a new GetMessageMetadataResponse instance populated with the message metadata values.
+         * @return a new GetMessageMetadataResponse instance.
          */
         public GetMessageMetadataResponse build() {
-            return new GetMessageMetadataResponse(messageId, queueErn, receiptHandle, status, priority, size,
-                    receivedCount, visibilityTimeout, contentType, md5Body, md5Attributes, created, modified);
+            return new GetMessageMetadataResponse(messageId, queueErn, receiptHandle, status, priority, size, receivedCount, visibilityTimeout, contentType, created, modified);
         }
     }
 }

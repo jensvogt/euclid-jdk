@@ -2,6 +2,7 @@ package de.jensvogt.euclid.module.eam;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import de.jensvogt.euclid.dto.Metadata;
 import de.jensvogt.euclid.dto.eam.ChangeNamespaceRequest;
 import de.jensvogt.euclid.dto.eam.CreateAccessKeyResponse;
 import de.jensvogt.euclid.dto.eam.CreateAccountRequest;
@@ -14,15 +15,18 @@ import de.jensvogt.euclid.dto.eam.DeleteUserGroupRequest;
 import de.jensvogt.euclid.dto.eam.DeleteUserRequest;
 import de.jensvogt.euclid.dto.eam.GrantNamespaceAccessRequest;
 import de.jensvogt.euclid.dto.eam.ListAccountsRequest;
+import de.jensvogt.euclid.dto.eam.ListAccountsResponse;
 import de.jensvogt.euclid.dto.eam.ListNamespacesRequest;
+import de.jensvogt.euclid.dto.eam.ListNamespacesResponse;
 import de.jensvogt.euclid.dto.eam.ListUserGroupsRequest;
+import de.jensvogt.euclid.dto.eam.ListUserGroupsResponse;
 import de.jensvogt.euclid.dto.eam.ListUserRequest;
 import de.jensvogt.euclid.dto.eam.ListUserResponse;
 import de.jensvogt.euclid.dto.eam.RegisterRequest;
 import de.jensvogt.euclid.dto.eam.RevokeNamespaceAccessRequest;
 import de.jensvogt.euclid.dto.eam.UserGroupAddUserRequest;
 import de.jensvogt.euclid.dto.eam.UserGroupRemoveUserRequest;
-import de.jensvogt.euclid.exception.EuclidAuthenticationException;
+import de.jensvogt.euclid.exception.EuclidServiceException;
 import de.jensvogt.euclid.http.EuclidHttpClient;
 import de.jensvogt.euclid.dto.eam.model.Account;
 import de.jensvogt.euclid.dto.eam.model.AccessKey;
@@ -30,9 +34,11 @@ import de.jensvogt.euclid.dto.eam.model.AccountGrant;
 import de.jensvogt.euclid.dto.eam.model.Namespace;
 import de.jensvogt.euclid.dto.eam.model.User;
 import de.jensvogt.euclid.dto.eam.model.UserGroup;
+import de.jensvogt.euclid.module.ekm.EuclidEkm;
 import de.jensvogt.euclid.module.ens.EuclidEns;
 import de.jensvogt.euclid.module.eqs.EuclidEqs;
 import de.jensvogt.euclid.module.esm.EuclidEsm;
+import de.jensvogt.euclid.module.ets.EuclidEts;
 
 import java.io.IOException;
 import java.net.http.HttpResponse;
@@ -53,6 +59,10 @@ import java.util.Map;
  *                        otherwise provisioned on login. Empty if the server didn't return one.
  * @param secretAccessKey secret used to sign requests, paired with accessKeyId. Empty if the
  *                        server didn't return one.
+ * @param isAdmin         whether the logged-in user has administrator privileges. Carried alongside
+ *                        the token - as euclid-cli does - so admin-only work can be turned away
+ *                        locally without a round trip, though the server enforces this independently
+ *                        regardless.
  * @param rawResponse     the raw JSON response body, for callers that need fields
  *                        beyond the ones above
  * @param baseUrl         the server this session was issued by, used for follow-up requests
@@ -64,8 +74,8 @@ import java.util.Map;
  *                        subsequent request from this session, mirroring euclid-cli's HttpClient.cpp
  */
 public record EuclidSession(String token, String userId, String accountId, String region, String accessKeyId,
-                             String secretAccessKey, String rawResponse, String baseUrl, String caCertPath,
-                             String nameSpace) {
+                            String secretAccessKey, boolean isAdmin, String rawResponse, String baseUrl,
+                            String caCertPath, String nameSpace) {
 
     /**
      * A static and immutable instance of {@link ObjectMapper} used for JSON serialization
@@ -87,7 +97,7 @@ public record EuclidSession(String token, String userId, String accountId, Strin
      * @return EuclidEqs instance
      */
     public EuclidEqs eqs() {
-        return new EuclidEqs(baseUrl, token, region, accountId, userId, accessKeyId, secretAccessKey, caCertPath);
+        return new EuclidEqs(baseUrl, token, region, accountId, userId, accessKeyId, secretAccessKey, caCertPath, nameSpace);
     }
 
     /**
@@ -98,7 +108,7 @@ public record EuclidSession(String token, String userId, String accountId, Strin
      * @return EuclidEsm instance
      */
     public EuclidEsm esm() {
-        return new EuclidEsm(baseUrl, token, region, accountId, userId, accessKeyId, secretAccessKey, caCertPath);
+        return new EuclidEsm(baseUrl, token, region, accountId, userId, accessKeyId, secretAccessKey, caCertPath, nameSpace);
     }
 
     /**
@@ -109,7 +119,32 @@ public record EuclidSession(String token, String userId, String accountId, Strin
      * @return EuclidEns instance
      */
     public EuclidEns ens() {
-        return new EuclidEns(baseUrl, token, region, accountId, userId, accessKeyId, secretAccessKey, caCertPath);
+        return new EuclidEns(baseUrl, token, region, accountId, userId, accessKeyId, secretAccessKey, caCertPath, nameSpace);
+    }
+
+    /**
+     * EKM (key management) operations for this session. Requests are signed with SigV4 using
+     * {@link #accessKeyId()}/{@link #secretAccessKey()} when both are present, falling back to
+     * the bearer token otherwise - mirroring how euclid-cli authenticates service calls.
+     *
+     * @return EuclidEkm instance
+     */
+    public EuclidEkm ekm() {
+        return new EuclidEkm(baseUrl, token, region, accountId, userId, accessKeyId, secretAccessKey, caCertPath, nameSpace);
+    }
+
+    /**
+     * ETS (transfer server) operations for this session. Requests are signed with SigV4 using
+     * {@link #accessKeyId()}/{@link #secretAccessKey()} when both are present, falling back to
+     * the bearer token otherwise - mirroring how euclid-cli authenticates service calls.
+     * <p>
+     * Every ETS action is administrator-only server-side, so a session whose {@link #isAdmin()} is
+     * false gets HTTP 403 from all of them.
+     *
+     * @return EuclidEts instance
+     */
+    public EuclidEts ets() {
+        return new EuclidEts(baseUrl, token, region, accountId, userId, accessKeyId, secretAccessKey, caCertPath, nameSpace);
     }
 
     /**
@@ -133,11 +168,11 @@ public record EuclidSession(String token, String userId, String accountId, Strin
     /**
      * Retrieves a list of all available users using default filtering, pagination, and sorting parameters.
      *
-     * @return a {@code List} of {@code User} objects.
+     * @return a {@code ListUserResponse} carrying the users and how many exist in total.
      * @throws IOException           if an I/O error occurs during the operation.
      * @throws InterruptedException  if the operation is interrupted while waiting for a response.
      */
-    public List<User> listUsers() throws IOException, InterruptedException {
+    public ListUserResponse listUsers() throws IOException, InterruptedException {
         return listUsers("", 10, 0, "userId");
     }
 
@@ -148,23 +183,41 @@ public record EuclidSession(String token, String userId, String accountId, Strin
      * @param pageSize    the maximum number of users to retrieve per page
      * @param pageIndex   the index of the page to retrieve (zero-based)
      * @param sortColumn  the name of the column by which the user list should be sorted
-     * @return a {@code List} of {@code User} objects matching the specified criteria
+     * @return a {@code ListUserResponse} carrying the matching users and their total
      * @throws IOException              if an I/O error occurs when sending or receiving the HTTP request
      * @throws InterruptedException     if the operation is interrupted while waiting for the HTTP response
      */
-    public List<User> listUsers(String prefix, long pageSize, long pageIndex, String sortColumn)
+    public ListUserResponse listUsers(String prefix, long pageSize, long pageIndex, String sortColumn)
             throws IOException, InterruptedException {
+        return listUsers(prefix, pageSize, pageIndex, sortColumn, "asc");
+    }
+
+    /**
+     * Retrieves a list of users based on the provided filtering and pagination parameters, in a
+     * chosen sort direction.
+     *
+     * @param prefix        a string used to filter users whose identifiers start with the specified prefix
+     * @param pageSize      the maximum number of users to retrieve per page
+     * @param pageIndex     the index of the page to retrieve (zero-based)
+     * @param sortColumn    the name of the column by which the user list should be sorted
+     * @param sortDirection sort direction, {@code "asc"} or {@code "desc"}
+     * @return a {@code ListUserResponse} carrying the matching users and their total
+     * @throws IOException              if an I/O error occurs when sending or receiving the HTTP request
+     * @throws InterruptedException     if the operation is interrupted while waiting for the HTTP response
+     */
+    public ListUserResponse listUsers(String prefix, long pageSize, long pageIndex, String sortColumn,
+                                      String sortDirection) throws IOException, InterruptedException {
         String body = OBJECT_MAPPER.writeValueAsString(
                 ListUserRequest.builder().prefix(prefix).pageSize(pageSize).pageIndex(pageIndex)
-                        .sortColumn(sortColumn).build());
+                        .sortColumn(sortColumn).sortDirection(sortDirection).build());
         HttpResponse<String> response = new EuclidHttpClient(caCertPath).post(baseUrl + "/", body, "eam", "list-users",
                 requestHeaders(Map.of("Content-Type", "application/json", "Authorization", "Bearer " + token)));
 
         if (response.statusCode() / 100 != 2) {
-            throw new EuclidAuthenticationException(response.statusCode(), response.body());
+            throw new EuclidServiceException("eam", "list-users", response.statusCode(), response.body());
         }
 
-        return extractListUserResponse(response.body()).users();
+        return extractListUserResponse(response.body());
     }
 
     /**
@@ -187,7 +240,7 @@ public record EuclidSession(String token, String userId, String accountId, Strin
                 requestHeaders(Map.of("Content-Type", "application/json", "Authorization", "Bearer " + token)));
 
         if (response.statusCode() / 100 != 2) {
-            throw new EuclidAuthenticationException(response.statusCode(), response.body());
+            throw new EuclidServiceException("eam", "register", response.statusCode(), response.body());
         }
     }
 
@@ -205,7 +258,7 @@ public record EuclidSession(String token, String userId, String accountId, Strin
                 requestHeaders(Map.of("Content-Type", "application/json", "Authorization", "Bearer " + token)));
 
         if (response.statusCode() / 100 != 2) {
-            throw new EuclidAuthenticationException(response.statusCode(), response.body());
+            throw new EuclidServiceException("eam", "delete-user", response.statusCode(), response.body());
         }
     }
 
@@ -227,11 +280,11 @@ public record EuclidSession(String token, String userId, String accountId, Strin
                 requestHeaders(Map.of("Content-Type", "application/json", "Authorization", "Bearer " + token)));
 
         if (response.statusCode() / 100 != 2) {
-            throw new EuclidAuthenticationException(response.statusCode(), response.body());
+            throw new EuclidServiceException("eam", "change-namespace", response.statusCode(), response.body());
         }
 
         EuclidSession updated = new EuclidSession(token, userId, accountId, region, accessKeyId, secretAccessKey,
-                rawResponse, baseUrl, caCertPath, namespace);
+                isAdmin, rawResponse, baseUrl, caCertPath, namespace);
         EuclidEam.updateCachedNamespace(baseUrl, namespace);
         return updated;
     }
@@ -249,12 +302,13 @@ public record EuclidSession(String token, String userId, String accountId, Strin
                 requestHeaders(Map.of("Content-Type", "application/json", "Authorization", "Bearer " + token)));
 
         if (response.statusCode() / 100 != 2) {
-            throw new EuclidAuthenticationException(response.statusCode(), response.body());
+            throw new EuclidServiceException("eam", "create-access-key", response.statusCode(), response.body());
         }
 
         JsonNode root = OBJECT_MAPPER.readTree(response.body());
-        return CreateAccessKeyResponse.builder().accessKeyId(textOrNull(root, "accessKeyId"))
-                .secretAccessKey(textOrNull(root, "secretAccessKey")).createdAt(textOrNull(root, "createdAt")).build();
+        return CreateAccessKeyResponse.builder().metadata(toMetadata(root.get("metadata")))
+                .accessKeyId(textOrNull(root, "accessKeyId")).secretAccessKey(textOrNull(root, "secretAccessKey"))
+                .createdAt(textOrNull(root, "createdAt")).build();
     }
 
     /**
@@ -269,7 +323,7 @@ public record EuclidSession(String token, String userId, String accountId, Strin
                 requestHeaders(Map.of("Content-Type", "application/json", "Authorization", "Bearer " + token)));
 
         if (response.statusCode() / 100 != 2) {
-            throw new EuclidAuthenticationException(response.statusCode(), response.body());
+            throw new EuclidServiceException("eam", "list-access-keys", response.statusCode(), response.body());
         }
 
         List<AccessKey> keys = new ArrayList<>();
@@ -296,7 +350,7 @@ public record EuclidSession(String token, String userId, String accountId, Strin
                 requestHeaders(Map.of("Content-Type", "application/json", "Authorization", "Bearer " + token)));
 
         if (response.statusCode() / 100 != 2) {
-            throw new EuclidAuthenticationException(response.statusCode(), response.body());
+            throw new EuclidServiceException("eam", "delete-access-key", response.statusCode(), response.body());
         }
     }
 
@@ -316,7 +370,7 @@ public record EuclidSession(String token, String userId, String accountId, Strin
                 requestHeaders(Map.of("Content-Type", "application/json", "Authorization", "Bearer " + token)));
 
         if (response.statusCode() / 100 != 2) {
-            throw new EuclidAuthenticationException(response.statusCode(), response.body());
+            throw new EuclidServiceException("eam", "create-user-group", response.statusCode(), response.body());
         }
 
         return toUserGroup(OBJECT_MAPPER.readTree(response.body()).get("userGroup"));
@@ -329,7 +383,7 @@ public record EuclidSession(String token, String userId, String accountId, Strin
      * @throws IOException          if an I/O error occurs during the operation
      * @throws InterruptedException if the operation is interrupted while waiting for a response
      */
-    public List<UserGroup> listUserGroups() throws IOException, InterruptedException {
+    public ListUserGroupsResponse listUserGroups() throws IOException, InterruptedException {
         return listUserGroups("", 10, 0, "userId");
     }
 
@@ -340,30 +394,48 @@ public record EuclidSession(String token, String userId, String accountId, Strin
      * @param pageSize   page size
      * @param pageIndex  page index (zero-based)
      * @param sortColumn sorting column
-     * @return the matching user groups
+     * @return a {@code ListUserGroupsResponse} carrying the matching user groups and their total
      * @throws IOException          if an I/O error occurs during the operation
      * @throws InterruptedException if the operation is interrupted while waiting for a response
      */
-    public List<UserGroup> listUserGroups(String prefix, long pageSize, long pageIndex, String sortColumn)
+    public ListUserGroupsResponse listUserGroups(String prefix, long pageSize, long pageIndex, String sortColumn)
             throws IOException, InterruptedException {
+        return listUserGroups(prefix, pageSize, pageIndex, sortColumn, "asc");
+    }
+
+    /**
+     * Lists user groups, optionally filtered by name prefix and paginated, in a chosen sort direction.
+     *
+     * @param prefix        user group name prefix
+     * @param pageSize      page size
+     * @param pageIndex     page index (zero-based)
+     * @param sortColumn    sorting column
+     * @param sortDirection sort direction, {@code "asc"} or {@code "desc"}
+     * @return a {@code ListUserGroupsResponse} carrying the matching user groups and their total
+     * @throws IOException          if an I/O error occurs during the operation
+     * @throws InterruptedException if the operation is interrupted while waiting for a response
+     */
+    public ListUserGroupsResponse listUserGroups(String prefix, long pageSize, long pageIndex, String sortColumn,
+                                          String sortDirection) throws IOException, InterruptedException {
         String body = OBJECT_MAPPER.writeValueAsString(
                 ListUserGroupsRequest.builder().prefix(prefix).pageSize(pageSize).pageIndex(pageIndex)
-                        .sortColumn(sortColumn).build());
+                        .sortColumn(sortColumn).sortDirection(sortDirection).build());
         HttpResponse<String> response = new EuclidHttpClient(caCertPath).post(baseUrl + "/", body, "eam", "list-user-groups",
                 requestHeaders(Map.of("Content-Type", "application/json", "Authorization", "Bearer " + token)));
 
         if (response.statusCode() / 100 != 2) {
-            throw new EuclidAuthenticationException(response.statusCode(), response.body());
+            throw new EuclidServiceException("eam", "list-user-groups", response.statusCode(), response.body());
         }
 
         List<UserGroup> groups = new ArrayList<>();
-        JsonNode node = OBJECT_MAPPER.readTree(response.body()).get("userGroups");
+        JsonNode root = OBJECT_MAPPER.readTree(response.body());
+        JsonNode node = root.get("userGroups");
         if (node != null && node.isArray()) {
             for (JsonNode groupNode : node) {
                 groups.add(toUserGroup(groupNode));
             }
         }
-        return groups;
+        return ListUserGroupsResponse.builder().userGroups(groups).total(root.path("total").asLong(0)).build();
     }
 
     /**
@@ -381,7 +453,7 @@ public record EuclidSession(String token, String userId, String accountId, Strin
                 requestHeaders(Map.of("Content-Type", "application/json", "Authorization", "Bearer " + token)));
 
         if (response.statusCode() / 100 != 2) {
-            throw new EuclidAuthenticationException(response.statusCode(), response.body());
+            throw new EuclidServiceException("eam", "user-group-add-user", response.statusCode(), response.body());
         }
     }
 
@@ -400,7 +472,7 @@ public record EuclidSession(String token, String userId, String accountId, Strin
                 requestHeaders(Map.of("Content-Type", "application/json", "Authorization", "Bearer " + token)));
 
         if (response.statusCode() / 100 != 2) {
-            throw new EuclidAuthenticationException(response.statusCode(), response.body());
+            throw new EuclidServiceException("eam", "user-group-remove-user", response.statusCode(), response.body());
         }
     }
 
@@ -417,7 +489,7 @@ public record EuclidSession(String token, String userId, String accountId, Strin
                 requestHeaders(Map.of("Content-Type", "application/json", "Authorization", "Bearer " + token)));
 
         if (response.statusCode() / 100 != 2) {
-            throw new EuclidAuthenticationException(response.statusCode(), response.body());
+            throw new EuclidServiceException("eam", "delete-user-group", response.statusCode(), response.body());
         }
     }
 
@@ -438,7 +510,7 @@ public record EuclidSession(String token, String userId, String accountId, Strin
                 requestHeaders(Map.of("Content-Type", "application/json", "Authorization", "Bearer " + token)));
 
         if (response.statusCode() / 100 != 2) {
-            throw new EuclidAuthenticationException(response.statusCode(), response.body());
+            throw new EuclidServiceException("eam", "create-account", response.statusCode(), response.body());
         }
 
         return toAccount(OBJECT_MAPPER.readTree(response.body()).get("account"));
@@ -451,7 +523,7 @@ public record EuclidSession(String token, String userId, String accountId, Strin
      * @throws IOException          if an I/O error occurs during the operation
      * @throws InterruptedException if the operation is interrupted while waiting for a response
      */
-    public List<Account> listAccounts() throws IOException, InterruptedException {
+    public ListAccountsResponse listAccounts() throws IOException, InterruptedException {
         return listAccounts("", 10, 0, "accountId");
     }
 
@@ -462,30 +534,48 @@ public record EuclidSession(String token, String userId, String accountId, Strin
      * @param pageSize   page size
      * @param pageIndex  page index (zero-based)
      * @param sortColumn sorting column
-     * @return the matching accounts
+     * @return a {@code ListAccountsResponse} carrying the matching accounts and their total
      * @throws IOException          if an I/O error occurs during the operation
      * @throws InterruptedException if the operation is interrupted while waiting for a response
      */
-    public List<Account> listAccounts(String prefix, long pageSize, long pageIndex, String sortColumn)
+    public ListAccountsResponse listAccounts(String prefix, long pageSize, long pageIndex, String sortColumn)
             throws IOException, InterruptedException {
+        return listAccounts(prefix, pageSize, pageIndex, sortColumn, "asc");
+    }
+
+    /**
+     * Lists accounts, optionally filtered by accountId prefix and paginated, in a chosen sort direction.
+     *
+     * @param prefix        account ID prefix
+     * @param pageSize      page size
+     * @param pageIndex     page index (zero-based)
+     * @param sortColumn    sorting column
+     * @param sortDirection sort direction, {@code "asc"} or {@code "desc"}
+     * @return a {@code ListAccountsResponse} carrying the matching accounts and their total
+     * @throws IOException          if an I/O error occurs during the operation
+     * @throws InterruptedException if the operation is interrupted while waiting for a response
+     */
+    public ListAccountsResponse listAccounts(String prefix, long pageSize, long pageIndex, String sortColumn,
+                                      String sortDirection) throws IOException, InterruptedException {
         String body = OBJECT_MAPPER.writeValueAsString(
                 ListAccountsRequest.builder().prefix(prefix).pageSize(pageSize).pageIndex(pageIndex)
-                        .sortColumn(sortColumn).build());
+                        .sortColumn(sortColumn).sortDirection(sortDirection).build());
         HttpResponse<String> response = new EuclidHttpClient(caCertPath).post(baseUrl + "/", body, "eam", "list-accounts",
                 requestHeaders(Map.of("Content-Type", "application/json", "Authorization", "Bearer " + token)));
 
         if (response.statusCode() / 100 != 2) {
-            throw new EuclidAuthenticationException(response.statusCode(), response.body());
+            throw new EuclidServiceException("eam", "list-accounts", response.statusCode(), response.body());
         }
 
         List<Account> accounts = new ArrayList<>();
-        JsonNode node = OBJECT_MAPPER.readTree(response.body()).get("accounts");
+        JsonNode root = OBJECT_MAPPER.readTree(response.body());
+        JsonNode node = root.get("accounts");
         if (node != null && node.isArray()) {
             for (JsonNode accountNode : node) {
                 accounts.add(toAccount(accountNode));
             }
         }
-        return accounts;
+        return ListAccountsResponse.builder().accounts(accounts).total(root.path("total").asLong(0)).build();
     }
 
     /**
@@ -502,7 +592,7 @@ public record EuclidSession(String token, String userId, String accountId, Strin
                 requestHeaders(Map.of("Content-Type", "application/json", "Authorization", "Bearer " + token)));
 
         if (response.statusCode() / 100 != 2) {
-            throw new EuclidAuthenticationException(response.statusCode(), response.body());
+            throw new EuclidServiceException("eam", "delete-account", response.statusCode(), response.body());
         }
     }
 
@@ -523,7 +613,7 @@ public record EuclidSession(String token, String userId, String accountId, Strin
                 requestHeaders(Map.of("Content-Type", "application/json", "Authorization", "Bearer " + token)));
 
         if (response.statusCode() / 100 != 2) {
-            throw new EuclidAuthenticationException(response.statusCode(), response.body());
+            throw new EuclidServiceException("eam", "create-namespace", response.statusCode(), response.body());
         }
 
         return toNamespace(OBJECT_MAPPER.readTree(response.body()).get("namespace"));
@@ -537,7 +627,7 @@ public record EuclidSession(String token, String userId, String accountId, Strin
      * @throws IOException          if an I/O error occurs during the operation
      * @throws InterruptedException if the operation is interrupted while waiting for a response
      */
-    public List<Namespace> listNamespaces(String accountId) throws IOException, InterruptedException {
+    public ListNamespacesResponse listNamespaces(String accountId) throws IOException, InterruptedException {
         return listNamespaces(accountId, "", 10, 0, "name");
     }
 
@@ -549,30 +639,52 @@ public record EuclidSession(String token, String userId, String accountId, Strin
      * @param pageSize   page size
      * @param pageIndex  page index (zero-based)
      * @param sortColumn sorting column
-     * @return the matching namespaces
+     * @return a {@code ListNamespacesResponse} carrying the matching namespaces and their total
      * @throws IOException          if an I/O error occurs during the operation
      * @throws InterruptedException if the operation is interrupted while waiting for a response
      */
-    public List<Namespace> listNamespaces(String accountId, String prefix, long pageSize, long pageIndex, String sortColumn)
+    public ListNamespacesResponse listNamespaces(String accountId, String prefix, long pageSize, long pageIndex,
+                                                 String sortColumn)
+            throws IOException, InterruptedException {
+        return listNamespaces(accountId, prefix, pageSize, pageIndex, sortColumn, "asc");
+    }
+
+    /**
+     * Lists the namespaces of an account, optionally filtered by name prefix and paginated, in a
+     * chosen sort direction.
+     *
+     * @param accountId     only namespaces belonging to this account are returned
+     * @param prefix        namespace name prefix
+     * @param pageSize      page size
+     * @param pageIndex     page index (zero-based)
+     * @param sortColumn    sorting column
+     * @param sortDirection sort direction, {@code "asc"} or {@code "desc"}
+     * @return a {@code ListNamespacesResponse} carrying the matching namespaces and their total
+     * @throws IOException          if an I/O error occurs during the operation
+     * @throws InterruptedException if the operation is interrupted while waiting for a response
+     */
+    public ListNamespacesResponse listNamespaces(String accountId, String prefix, long pageSize, long pageIndex,
+                                          String sortColumn, String sortDirection)
             throws IOException, InterruptedException {
         String body = OBJECT_MAPPER.writeValueAsString(
                 ListNamespacesRequest.builder().accountId(accountId).prefix(prefix).pageSize(pageSize)
-                        .pageIndex(pageIndex).sortColumn(sortColumn).build());
+                        .pageIndex(pageIndex).sortColumn(sortColumn).sortDirection(sortDirection).build());
         HttpResponse<String> response = new EuclidHttpClient(caCertPath).post(baseUrl + "/", body, "eam", "list-namespaces",
                 requestHeaders(Map.of("Content-Type", "application/json", "Authorization", "Bearer " + token)));
 
         if (response.statusCode() / 100 != 2) {
-            throw new EuclidAuthenticationException(response.statusCode(), response.body());
+            throw new EuclidServiceException("eam", "list-namespaces", response.statusCode(), response.body());
         }
 
         List<Namespace> namespaces = new ArrayList<>();
-        JsonNode node = OBJECT_MAPPER.readTree(response.body()).get("namespaces");
+        JsonNode root = OBJECT_MAPPER.readTree(response.body());
+        JsonNode node = root.get("namespaces");
         if (node != null && node.isArray()) {
             for (JsonNode namespaceNode : node) {
                 namespaces.add(toNamespace(namespaceNode));
             }
         }
-        return namespaces;
+        return ListNamespacesResponse.builder().namespaces(namespaces).total(root.path("total").asLong(0)).build();
     }
 
     /**
@@ -591,7 +703,7 @@ public record EuclidSession(String token, String userId, String accountId, Strin
                 requestHeaders(Map.of("Content-Type", "application/json", "Authorization", "Bearer " + token)));
 
         if (response.statusCode() / 100 != 2) {
-            throw new EuclidAuthenticationException(response.statusCode(), response.body());
+            throw new EuclidServiceException("eam", "delete-namespace", response.statusCode(), response.body());
         }
     }
 
@@ -612,7 +724,7 @@ public record EuclidSession(String token, String userId, String accountId, Strin
                 requestHeaders(Map.of("Content-Type", "application/json", "Authorization", "Bearer " + token)));
 
         if (response.statusCode() / 100 != 2) {
-            throw new EuclidAuthenticationException(response.statusCode(), response.body());
+            throw new EuclidServiceException("eam", "grant-namespace-access", response.statusCode(), response.body());
         }
     }
 
@@ -633,7 +745,7 @@ public record EuclidSession(String token, String userId, String accountId, Strin
                 requestHeaders(Map.of("Content-Type", "application/json", "Authorization", "Bearer " + token)));
 
         if (response.statusCode() / 100 != 2) {
-            throw new EuclidAuthenticationException(response.statusCode(), response.body());
+            throw new EuclidServiceException("eam", "revoke-namespace-access", response.statusCode(), response.body());
         }
     }
 
@@ -788,5 +900,18 @@ public record EuclidSession(String token, String userId, String accountId, Strin
     private static String textOrNull(JsonNode node, String field) {
         JsonNode value = node.get(field);
         return value == null || value.isNull() ? null : value.asText();
+    }
+
+    /**
+     * Reads the nested {@code "metadata"} object a response carries the caller's identity in.
+     *
+     * @param node the metadata node, or {@code null} if the response has none
+     * @return the parsed metadata, or {@code null} if there was no metadata object
+     */
+    private static Metadata toMetadata(JsonNode node) {
+        if (node == null || !node.isObject()) {
+            return null;
+        }
+        return new Metadata(textOrNull(node, "region"), textOrNull(node, "accountId"), textOrNull(node, "user"));
     }
 }

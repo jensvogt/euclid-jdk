@@ -6,6 +6,7 @@ import com.sun.net.httpserver.HttpHandler;
 import com.sun.net.httpserver.HttpServer;
 import de.jensvogt.euclid.auth.SigV4;
 import de.jensvogt.euclid.auth.SignableRequest;
+import de.jensvogt.euclid.dto.com.Variant;
 import de.jensvogt.euclid.dto.eqs.CreateQueueResponse;
 import de.jensvogt.euclid.dto.eqs.GetMessageAttributeResponse;
 import de.jensvogt.euclid.dto.eqs.GetMessageCountResponse;
@@ -13,12 +14,13 @@ import de.jensvogt.euclid.dto.eqs.GetMessageMetadataResponse;
 import de.jensvogt.euclid.dto.eqs.GetQueueErnResponse;
 import de.jensvogt.euclid.dto.eqs.GetQueueMetadataResponse;
 import de.jensvogt.euclid.dto.eqs.ListMessagesResponse;
+import de.jensvogt.euclid.dto.eqs.ListQueueResponse;
 import de.jensvogt.euclid.dto.eqs.ReceiveMessagesResponse;
 import de.jensvogt.euclid.dto.eqs.SendMessageResponse;
 import de.jensvogt.euclid.dto.eqs.model.Message;
 import de.jensvogt.euclid.dto.eqs.model.Queue;
-import de.jensvogt.euclid.dto.eqs.model.Variant;
-import de.jensvogt.euclid.exception.EuclidAuthenticationException;
+import de.jensvogt.euclid.exception.EuclidServiceException;
+import de.jensvogt.euclid.testutil.FakeGatewayServer;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
@@ -28,6 +30,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -40,12 +43,13 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * Confirms EuclidEqs authenticates the way it claims to (SigV4-signed when an access key is
  * configured, bearer token otherwise, mirroring euclid-cli's HttpClient.cpp), routes every
  * operation to the right action with a correctly-shaped request body, parses the corresponding
- * response, and surfaces non-2xx responses as {@link EuclidAuthenticationException}.
+ * response, and surfaces non-2xx responses as {@link EuclidServiceException}.
  */
 class EuclidEqsTest {
 
     private static final List<String> SIGNED_HEADERS = List.of("host", "x-amz-content-sha256", "x-amz-date",
-            "x-euclid-account-id", "x-euclid-action", "x-euclid-region", "x-euclid-target", "x-euclid-user-id");
+            "x-euclid-account-id", "x-euclid-action", "x-euclid-region", "x-euclid-target", "x-euclid-user-id",
+            "x-euclid-namespace");
 
     private HttpServer server;
 
@@ -68,7 +72,7 @@ class EuclidEqsTest {
         });
 
         EuclidEqs sqs = new EuclidEqs(baseUrl(), "unused-token", "eu-central-1", "863459426936", "alice",
-                accessKeyId, secretAccessKey, null);
+                accessKeyId, secretAccessKey, null, null);
         sqs.sendMessage("ern:sqs:eu-central-1:863459426936:queue/test", "hello");
 
         SignableRequest req = received.get();
@@ -89,7 +93,7 @@ class EuclidEqsTest {
         });
 
         EuclidEqs sqs = new EuclidEqs(baseUrl(), "my-jwt-token", "eu-central-1", "863459426936", "alice",
-                null, null, null);
+                null, null, null, null);
         sqs.sendMessage("ern:sqs:eu-central-1:863459426936:queue/test", "hello");
 
         assertEquals("Bearer my-jwt-token", received.get().header("authorization"));
@@ -100,25 +104,30 @@ class EuclidEqsTest {
         AtomicReference<SignableRequest> received = new AtomicReference<>();
         server = startServer(exchange -> {
             received.set(captureRequest(exchange));
-            sendResponse(exchange, 200, "{\"queues\":[{\"region\":\"eu-central-1\",\"name\":\"orders\","
+            sendResponse(exchange, 200, "{\"queues\":[{\"name\":\"orders\","
                     + "\"owner\":\"alice\",\"ern\":\"ern:sqs:eu-central-1:863459426936:queue/orders\","
-                    + "\"tags\":{\"env\":\"prod\"},\"delay\":5,\"size\":100,\"messages\":3,\"delayed\":1,"
-                    + "\"busy\":0,\"visibility\":30,\"maxMessageLength\":1048576,\"maxReceiveCount\":3,"
-                    + "\"deadLetterQueueArn\":null,\"created\":\"2026-01-01\",\"modified\":\"2026-01-02\"}]}");
+                    + "\"tags\":{\"env\":\"prod\"},\"size\":100,\"delay\":5,\"available\":3,\"delayed\":1,"
+                    + "\"invisible\":0,\"visibility\":30,\"maxMessageLength\":1048576,\"maxReceiveCount\":3,"
+                    + "\"deadLetterQueueArn\":null,\"priority\":\"MIDDLE\",\"created\":\"2026-01-01\","
+                    + "\"modified\":\"2026-01-02\"}],\"total\":1}");
         });
 
-        List<Queue> queues = newClient().listQueues();
+        ListQueueResponse response = newClient().listQueues();
+        List<Queue> queues = response.queues();
+        assertEquals(1, response.total(), "the server's total must survive rather than be dropped");
 
         assertEquals("list-queues", received.get().header("x-euclid-action"));
         assertBodyContains(received.get().body(), "\"prefix\":\"\"", "\"pageSize\":10", "\"pageIndex\":0",
                 "\"sortColumn\":\"name\"");
 
         assertEquals(1, queues.size());
-        Queue queue = queues.get(0);
+        Queue queue = queues.getFirst();
         assertEquals("orders", queue.name());
         assertEquals("ern:sqs:eu-central-1:863459426936:queue/orders", queue.ern());
         assertEquals("prod", queue.tags().get("env"));
-        assertEquals(3, queue.messages());
+        assertEquals(3, queue.available());
+        assertEquals(1, queue.delayed());
+        assertEquals("MIDDLE", queue.priority());
         assertNullSafe(queue.deadLetterQueueArn());
     }
 
@@ -130,7 +139,7 @@ class EuclidEqsTest {
             sendResponse(exchange, 200, "{\"queues\":[]}");
         });
 
-        List<Queue> queues = newClient().listQueues("ord", 25, 2, "created");
+        List<Queue> queues = newClient().listQueues("ord", 25, 2, "created").queues();
 
         assertBodyContains(received.get().body(), "\"prefix\":\"ord\"", "\"pageSize\":25", "\"pageIndex\":2",
                 "\"sortColumn\":\"created\"");
@@ -151,7 +160,7 @@ class EuclidEqsTest {
         assertBodyContains(received.get().body(), "\"queueErn\":\"queue-ern\"", "\"pageSize\":10",
                 "\"pageIndex\":0", "\"sortColumn\":\"created\"");
         assertEquals(1, response.total());
-        assertEquals("msg-1", response.messages().get(0).messageId());
+        assertEquals("msg-1", response.messages().getFirst().messageId());
     }
 
     @Test
@@ -279,7 +288,7 @@ class EuclidEqsTest {
         AtomicReference<SignableRequest> received = new AtomicReference<>();
         server = startServer(exchange -> {
             received.set(captureRequest(exchange));
-            sendResponse(exchange, 200, "{\"messageId\":\"msg-1\",\"md5Body\":\"abc\",\"md5Attributes\":\"def\"}");
+            sendResponse(exchange, 200, "{\"messageId\":\"msg-1\"}");
         });
 
         SendMessageResponse response = newClient().sendMessage("queue-ern", "hello");
@@ -288,8 +297,6 @@ class EuclidEqsTest {
         assertBodyContains(received.get().body(), "\"ern\":\"queue-ern\"", "\"body\":\"hello\"",
                 "\"attributes\":{}", "\"priority\":\"MIDDLE\"");
         assertEquals("msg-1", response.messageId());
-        assertEquals("abc", response.md5Body());
-        assertEquals("def", response.md5Attributes());
     }
 
     @Test
@@ -345,8 +352,8 @@ class EuclidEqsTest {
 
         assertBodyContains(receiveRequest.get().body(), "\"maxCount\":5", "\"waitTime\":0");
         assertEquals(1, response.messages().size());
-        assertEquals("msg-1", response.messages().get(0).messageId());
-        assertEquals("rh-1", response.messages().get(0).receiptHandle());
+        assertEquals("msg-1", response.messages().getFirst().messageId());
+        assertEquals("rh-1", response.messages().getFirst().receiptHandle());
     }
 
     @Test
@@ -364,7 +371,41 @@ class EuclidEqsTest {
 
         assertTrue(callCount.get() >= 2, "should have polled more than once before a message showed up");
         assertEquals(1, response.messages().size());
-        assertEquals("msg-1", response.messages().get(0).messageId());
+        assertEquals("msg-1", response.messages().getFirst().messageId());
+    }
+
+    @Test
+    void receiveMessagesWakesEarlyOnMatchingWebSocketEvent() throws Exception {
+        AtomicInteger callCount = new AtomicInteger();
+        try (FakeGatewayServer gateway = new FakeGatewayServer((headers, body) -> {
+            if (callCount.getAndIncrement() == 0) {
+                return "{\"messages\":[],\"total\":0}";
+            }
+            return "{\"messages\":[" + messageJson("msg-1", "rh-1") + "],\"total\":1}";
+        })) {
+            Thread pusher = new Thread(() -> {
+                try {
+                    gateway.awaitSubscription("eqs.message.sent", 5);
+                    gateway.sendEventFrame("eqs.message.sent", Map.of("queueErn", "queue-ern", "messageId", "msg-1"));
+                } catch (Exception e) {
+                    throw new RuntimeException(e);
+                }
+            });
+            pusher.start();
+
+            EuclidEqs client = new EuclidEqs("http://localhost:" + gateway.port(), "test-token", "eu-central-1",
+                    "863459426936", "alice", null, null, null, null);
+
+            long start = System.currentTimeMillis();
+            ReceiveMessagesResponse response = client.receiveMessages("queue-ern", 10, 20);
+            long elapsedMillis = System.currentTimeMillis() - start;
+            pusher.join();
+
+            assertEquals(1, response.messages().size());
+            assertEquals("msg-1", response.messages().getFirst().messageId());
+            assertTrue(elapsedMillis < 400,
+                    "should have woken on the websocket event well within the 500ms poll interval, took " + elapsedMillis + "ms");
+        }
     }
 
     @Test
@@ -404,12 +445,105 @@ class EuclidEqsTest {
         assertBodyContains(received.get().body(), "\"receiptHandle\":\"rh-1\"");
     }
 
+    // Deleting by ID reaches a message that was never received - AVAILABLE or DELAYED - which the
+    // receipt-handle route cannot, since a handle only exists once a message has been received.
     @Test
-    void getMessageCountParsesResponseAndComputesTotal() throws Exception {
+    void deleteMessageByIdSendsMessageIdWithNoReceiptHandle() throws Exception {
         AtomicReference<SignableRequest> received = new AtomicReference<>();
         server = startServer(exchange -> {
             received.set(captureRequest(exchange));
-            sendResponse(exchange, 200, "{\"ern\":\"queue-ern\",\"available\":3,\"delayed\":2,\"invisible\":1}");
+            sendResponse(exchange, 200, "{}");
+        });
+
+        newClient().deleteMessageById("msg-1");
+
+        assertEquals("delete-message", received.get().header("x-euclid-action"));
+        assertBodyContains(received.get().body(), "\"messageId\":\"msg-1\"", "\"receiptHandle\":\"\"");
+    }
+
+    @Test
+    void createQueueSendsPriority() throws Exception {
+        AtomicReference<SignableRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(captureRequest(exchange));
+            sendResponse(exchange, 200, "{\"name\":\"orders\",\"ern\":\"queue-ern\"}");
+        });
+
+        newClient().createQueue("orders", 30, 3, 1024, "dlq", 5, "HIGH");
+
+        assertBodyContains(received.get().body(), "\"name\":\"orders\"", "\"priority\":\"HIGH\"",
+                "\"dlqName\":\"dlq\"", "\"delay\":5");
+    }
+
+    // The overloads without a priority still have to send one - the queue's default is set at
+    // creation and every message inherits it unless send-message overrides it.
+    @Test
+    void createQueueDefaultsToMiddlePriority() throws Exception {
+        AtomicReference<SignableRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(captureRequest(exchange));
+            sendResponse(exchange, 200, "{\"name\":\"orders\",\"ern\":\"queue-ern\"}");
+        });
+
+        newClient().createQueue("orders");
+
+        assertBodyContains(received.get().body(), "\"priority\":\"MIDDLE\"");
+    }
+
+    @Test
+    void listRequestsCarrySortDirection() throws Exception {
+        Map<String, String> bodyByAction = new ConcurrentHashMap<>();
+        server = startServer(exchange -> {
+            String action = exchange.getRequestHeaders().getFirst("x-euclid-action");
+            bodyByAction.put(action, new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8));
+            sendResponse(exchange, 200, "{\"total\":0,\"queues\":[],\"messages\":[]}");
+        });
+
+        EuclidEqs eqs = newClient();
+        eqs.listQueues("", 10, 0, "name", "desc");
+        eqs.listMessages("queue-ern", 10, 0, "created", "desc");
+
+        assertBodyContains(bodyByAction.get("list-queues"), "\"sortDirection\":\"desc\"");
+        assertBodyContains(bodyByAction.get("list-messages"), "\"sortDirection\":\"desc\"");
+    }
+
+    // The overloads without a direction have to keep sending one rather than dropping the field.
+    @Test
+    void listRequestsDefaultToAscending() throws Exception {
+        Map<String, String> bodyByAction = new ConcurrentHashMap<>();
+        server = startServer(exchange -> {
+            String action = exchange.getRequestHeaders().getFirst("x-euclid-action");
+            bodyByAction.put(action, new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8));
+            sendResponse(exchange, 200, "{\"total\":0,\"queues\":[],\"messages\":[]}");
+        });
+
+        EuclidEqs eqs = newClient();
+        eqs.listQueues();
+        eqs.listMessages("queue-ern");
+
+        assertBodyContains(bodyByAction.get("list-queues"), "\"sortDirection\":\"asc\"");
+        assertBodyContains(bodyByAction.get("list-messages"), "\"sortDirection\":\"asc\"");
+    }
+
+    @Test
+    void getQueueErnParsesTheResolvedName() throws Exception {
+        server = startServer(exchange -> {
+            captureRequest(exchange);
+            sendResponse(exchange, 200, "{\"name\":\"orders\",\"ern\":\"queue-ern\"}");
+        });
+
+        GetQueueErnResponse response = newClient().getQueueErn("orders");
+
+        assertEquals("orders", response.name());
+        assertEquals("queue-ern", response.ern());
+    }
+
+    @Test
+    void getMessageCountParsesResponse() throws Exception {
+        AtomicReference<SignableRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(captureRequest(exchange));
+            sendResponse(exchange, 200, "{\"ern\":\"queue-ern\",\"available\":3,\"delayed\":2,\"invisible\":1,\"total\":6}");
         });
 
         GetMessageCountResponse response = newClient().getMessageCount("queue-ern");
@@ -417,6 +551,9 @@ class EuclidEqsTest {
         assertEquals("get-message-count", received.get().header("x-euclid-action"));
         assertBodyContains(received.get().body(), "\"ern\":\"queue-ern\"");
         assertEquals(3, response.available());
+        assertEquals(2, response.delayed());
+        assertEquals(1, response.invisible());
+        // The server sends the total rather than the client re-deriving it from the three counts.
         assertEquals(6, response.total());
     }
 
@@ -535,19 +672,48 @@ class EuclidEqsTest {
     }
 
     @Test
-    void nonSuccessResponseThrowsEuclidAuthenticationException() throws Exception {
+    void nonSuccessResponseThrowsEuclidServiceException() throws Exception {
         server = startServer(exchange -> sendResponse(exchange, 500, "{\"error\":\"boom\"}"));
 
         EuclidEqs sqs = newClient();
-        EuclidAuthenticationException exception =
-                assertThrows(EuclidAuthenticationException.class, () -> sqs.createQueue("orders"));
+        EuclidServiceException exception =
+                assertThrows(EuclidServiceException.class, () -> sqs.createQueue("orders"));
 
+        assertEquals("eqs", exception.service());
+        assertEquals("create-queue", exception.action());
         assertEquals(500, exception.statusCode());
         assertTrue(exception.responseBody().contains("boom"));
     }
 
+    @Test
+    void createQueueSendsNamespaceHeaderWhenConfigured() throws Exception {
+        AtomicReference<SignableRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(captureRequest(exchange));
+            sendResponse(exchange, 200, "{\"name\":\"orders\",\"ern\":\"ern:orders\"}");
+        });
+
+        new EuclidEqs(baseUrl(), "test-token", "eu-central-1", "863459426936", "alice", null, null, null, "prod")
+                .createQueue("orders");
+
+        assertEquals("prod", received.get().header("x-euclid-namespace"));
+    }
+
+    @Test
+    void createQueueOmitsNamespaceHeaderWhenUnset() throws Exception {
+        AtomicReference<SignableRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(captureRequest(exchange));
+            sendResponse(exchange, 200, "{\"name\":\"orders\",\"ern\":\"ern:orders\"}");
+        });
+
+        newClient().createQueue("orders");
+
+        assertEquals("", received.get().header("x-euclid-namespace"));
+    }
+
     private EuclidEqs newClient() {
-        return new EuclidEqs(baseUrl(), "test-token", "eu-central-1", "863459426936", "alice", null, null, null);
+        return new EuclidEqs(baseUrl(), "test-token", "eu-central-1", "863459426936", "alice", null, null, null, null);
     }
 
     private static String messageJson(String messageId, String receiptHandle) {

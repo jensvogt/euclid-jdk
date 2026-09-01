@@ -1,6 +1,6 @@
 package de.jensvogt.euclid.dto.eqs;
 
-import de.jensvogt.euclid.dto.eqs.model.Variant;
+import de.jensvogt.euclid.dto.com.Variant;
 
 /**
  * Response containing a single attribute of a message.

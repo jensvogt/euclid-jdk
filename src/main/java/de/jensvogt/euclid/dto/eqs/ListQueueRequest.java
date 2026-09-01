@@ -1,14 +1,15 @@
 package de.jensvogt.euclid.dto.eqs;
 
 /**
- * Request to list queues, optionally filtered and paged.
+ * Request to list queues, optionally filtered by name prefix and paginated.
  *
- * @param prefix     only queues whose name starts with this prefix are returned
- * @param pageSize   the maximum number of queues to return in a single page
- * @param pageIndex  the zero-based index of the page to return
- * @param sortColumn the name of the column results are sorted by
+ * @param prefix        only queues whose name starts with this prefix are returned
+ * @param pageSize      the maximum number of queues to return in a single page
+ * @param pageIndex     the zero-based index of the page to return
+ * @param sortColumn    the name of the column results are sorted by
+ * @param sortDirection the sort direction, {@code "asc"} or {@code "desc"}
  */
-public record ListQueueRequest(String prefix, long pageSize, long pageIndex, String sortColumn) {
+public record ListQueueRequest(String prefix, long pageSize, long pageIndex, String sortColumn, String sortDirection) {
 
     /**
      * Creates a new instance of the Builder for constructing a ListQueueRequest object.
@@ -23,6 +24,7 @@ public record ListQueueRequest(String prefix, long pageSize, long pageIndex, Str
      * Builder for constructing {@link ListQueueRequest} instances.
      */
     public static final class Builder {
+
         /**
          * Creates an empty builder.
          */
@@ -47,10 +49,15 @@ public record ListQueueRequest(String prefix, long pageSize, long pageIndex, Str
         /**
          * The name of the column results are sorted by.
          */
-        private String sortColumn = "userId";
+        private String sortColumn = "name";
 
         /**
-         * Sets the prefix used to filter queues by name.
+         * The sort direction, {@code "asc"} or {@code "desc"}.
+         */
+        private String sortDirection = "asc";
+
+        /**
+         * Sets only queues whose name starts with this prefix are returned.
          *
          * @param prefix only queues whose name starts with this prefix are returned
          * @return the builder instance
@@ -63,7 +70,7 @@ public record ListQueueRequest(String prefix, long pageSize, long pageIndex, Str
         /**
          * Sets the maximum number of queues to return in a single page.
          *
-         * @param pageSize the page size
+         * @param pageSize the maximum number of queues to return in a single page
          * @return the builder instance
          */
         public Builder pageSize(long pageSize) {
@@ -74,7 +81,7 @@ public record ListQueueRequest(String prefix, long pageSize, long pageIndex, Str
         /**
          * Sets the zero-based index of the page to return.
          *
-         * @param pageIndex the page index
+         * @param pageIndex the zero-based index of the page to return
          * @return the builder instance
          */
         public Builder pageIndex(long pageIndex) {
@@ -85,7 +92,7 @@ public record ListQueueRequest(String prefix, long pageSize, long pageIndex, Str
         /**
          * Sets the name of the column results are sorted by.
          *
-         * @param sortColumn the sort column name
+         * @param sortColumn the name of the column results are sorted by
          * @return the builder instance
          */
         public Builder sortColumn(String sortColumn) {
@@ -94,12 +101,23 @@ public record ListQueueRequest(String prefix, long pageSize, long pageIndex, Str
         }
 
         /**
+         * Sets the sort direction, {@code "asc"} or {@code "desc"}.
+         *
+         * @param sortDirection the sort direction, {@code "asc"} or {@code "desc"}
+         * @return the builder instance
+         */
+        public Builder sortDirection(String sortDirection) {
+            this.sortDirection = sortDirection;
+            return this;
+        }
+
+        /**
          * Builds and returns a new instance of ListQueueRequest using the properties set on the Builder.
          *
-         * @return a new ListQueueRequest instance populated with the prefix, page size, page index and sort column values.
+         * @return a new ListQueueRequest instance.
          */
         public ListQueueRequest build() {
-            return new ListQueueRequest(prefix, pageSize, pageIndex, sortColumn);
+            return new ListQueueRequest(prefix, pageSize, pageIndex, sortColumn, sortDirection);
         }
     }
 }

@@ -1,53 +1,33 @@
 package de.jensvogt.euclid.dto.eqs;
 
 /**
- * Represents a request to create a new queue with specific attributes.
+ * Request to create a queue.
  *
- * The queue configuration includes the name of the queue, visibility timeout,
- * maximum number of retries, maximum message length, associated dead-letter queue name,
- * and a message delivery delay.
- *
- * The {@code CreateQueueRequest} class is implemented as a record, providing an immutable
- * data structure and a builder for constructing instances.
- *
- * Fields:
- * - {@code name}: The name of the queue.
- * - {@code visibility}: The visibility timeout for messages in the queue, defined in seconds.
- * - {@code maxRetries}: The maximum number of retries for processing a message.
- * - {@code maxMessageLength}: The maximum allowed size of a message in bytes.
- * - {@code dlqName}: The name of the dead-letter queue to which messages are sent after exceeding retries.
- * - {@code delay}: The delay in seconds for delivering messages to the queue.
- *
- * Methods:
- * - {@code builder()}: Returns a builder instance for creating {@code CreateQueueRequest} objects.
- *
- * Use the provided builder for creating customized instances of {@code CreateQueueRequest}.
- *
- * @param name The name of the queue.
- * @param visibility The visibility timeout for messages in the queue, defined in seconds.
- * @param maxRetries The maximum number of retries for processing a message.
- * @param maxMessageLength The maximum allowed size of a message in bytes.
- * @param dlqName The name of the dead-letter queue to which messages are sent after exceeding retries.
- * @param delay The delay in seconds for delivering messages to the queue.
+ * @param name             the name of the queue
+ * @param visibility       visibility timeout in seconds
+ * @param maxRetries       maximum number of receive attempts before a message goes to the dead letter queue
+ * @param maxMessageLength maximum allowed message length in bytes
+ * @param dlqName          name of the dead letter queue, or empty for none
+ * @param delay            seconds a new message stays delayed before becoming available
+ * @param priority         default priority for the queue's messages, overridable per send-message
  */
-public record CreateQueueRequest(String name, long visibility, long maxRetries, long maxMessageLength,
-                                  String dlqName, long delay) {
+public record CreateQueueRequest(String name, long visibility, long maxRetries, long maxMessageLength, String dlqName,
+                                 long delay, String priority) {
 
     /**
-     * Creates a new instance of the {@code Builder} for constructing a {@code CreateQueueRequest}.
+     * Creates a new instance of the Builder for constructing a CreateQueueRequest object.
      *
-     * @return a new {@code Builder} instance for building a {@code CreateQueueRequest}.
+     * @return a new Builder instance for constructing CreateQueueRequest.
      */
     public static Builder builder() {
         return new Builder();
     }
 
     /**
-     * A builder class for constructing instances of {@code CreateQueueRequest}.
-     * Provides a convenient and flexible way to configure the parameters of the
-     * {@code CreateQueueRequest} object before creating it.
+     * Builder for constructing {@link CreateQueueRequest} instances.
      */
     public static final class Builder {
+
         /**
          * Creates an empty builder.
          */
@@ -55,54 +35,44 @@ public record CreateQueueRequest(String name, long visibility, long maxRetries, 
         }
 
         /**
-         * The name of the queue to be created.
-         * Used to uniquely identify the queue within the system.
+         * The name of the queue.
          */
         private String name;
 
         /**
-         * Defines the default visibility timeout for a queue in seconds.
-         * This determines the time duration for which a message remains hidden
-         * from other consumers after being retrieved by a consumer.
+         * Visibility timeout in seconds.
          */
         private long visibility = 30;
 
         /**
-         * Specifies the maximum number of retry attempts that will be made
-         * if an operation fails. This value is intended to control retry
-         * logic and define a limit on how many times an operation can be
-         * retried before concluding it as a failure.
+         * Maximum number of receive attempts before a message goes to the dead letter queue.
          */
         private long maxRetries = 3;
 
         /**
-         * Specifies the maximum allowable size, in bytes, for a message in the queue.
-         * This value is used to enforce a limit on the size of messages that can be
-         * sent or processed within the system.
+         * Maximum allowed message length in bytes.
          */
         private long maxMessageLength = 1024 * 1024;
 
         /**
-         * Specifies the name of the dead-letter queue (DLQ) associated with the main queue.
-         * A dead-letter queue is used to store messages that cannot be successfully processed
-         * or delivered after a certain number of retry attempts or due to other processing issues.
+         * Name of the dead letter queue, or empty for none.
          */
         private String dlqName = "";
 
         /**
-         * Specifies the delay duration, in milliseconds, to be applied before processing a message.
-         * This delay determines the amount of time a message remains in a pending state
-         * before it becomes available for delivery or consumption.
-         *
-         * A value of {@code 0} indicates that no delay will be applied, and the message
-         * will be immediately eligible for processing.
+         * Seconds a new message stays delayed before becoming available.
          */
         private long delay = 0;
 
         /**
-         * Sets the name for the builder.
+         * Default priority for the queue's messages, overridable per send-message.
+         */
+        private String priority = "MIDDLE";
+
+        /**
+         * Sets the name of the queue.
          *
-         * @param name the name to set
+         * @param name the name of the queue
          * @return the builder instance
          */
         public Builder name(String name) {
@@ -111,9 +81,9 @@ public record CreateQueueRequest(String name, long visibility, long maxRetries, 
         }
 
         /**
-         * Sets the visibility parameter for the builder.
+         * Sets visibility timeout in seconds.
          *
-         * @param visibility the visibility value to set
+         * @param visibility visibility timeout in seconds
          * @return the builder instance
          */
         public Builder visibility(long visibility) {
@@ -122,9 +92,9 @@ public record CreateQueueRequest(String name, long visibility, long maxRetries, 
         }
 
         /**
-         * Sets the maximum number of retries for the builder.
+         * Sets maximum number of receive attempts before a message goes to the dead letter queue.
          *
-         * @param maxRetries the maximum number of retries to set
+         * @param maxRetries maximum number of receive attempts before a message goes to the dead letter queue
          * @return the builder instance
          */
         public Builder maxRetries(long maxRetries) {
@@ -133,9 +103,9 @@ public record CreateQueueRequest(String name, long visibility, long maxRetries, 
         }
 
         /**
-         * Sets the maximum allowable message length for the builder.
+         * Sets maximum allowed message length in bytes.
          *
-         * @param maxMessageLength the maximum length of a message in bytes
+         * @param maxMessageLength maximum allowed message length in bytes
          * @return the builder instance
          */
         public Builder maxMessageLength(long maxMessageLength) {
@@ -144,9 +114,9 @@ public record CreateQueueRequest(String name, long visibility, long maxRetries, 
         }
 
         /**
-         * Sets the dead-letter queue (DLQ) name for the builder.
+         * Sets name of the dead letter queue, or empty for none.
          *
-         * @param dlqName the name of the dead-letter queue to set
+         * @param dlqName name of the dead letter queue, or empty for none
          * @return the builder instance
          */
         public Builder dlqName(String dlqName) {
@@ -155,9 +125,9 @@ public record CreateQueueRequest(String name, long visibility, long maxRetries, 
         }
 
         /**
-         * Sets the delay parameter for the builder.
+         * Sets seconds a new message stays delayed before becoming available.
          *
-         * @param delay the delay value to set, in milliseconds
+         * @param delay seconds a new message stays delayed before becoming available
          * @return the builder instance
          */
         public Builder delay(long delay) {
@@ -166,15 +136,23 @@ public record CreateQueueRequest(String name, long visibility, long maxRetries, 
         }
 
         /**
-         * Builds and returns a {@code CreateQueueRequest} using the parameters
-         * that have been set on the builder instance.
+         * Sets default priority for the queue's messages, overridable per send-message.
          *
-         * @return a new {@code CreateQueueRequest} instance initialized with the
-         *         configured properties such as name, visibility, maxRetries,
-         *         maxMessageLength, dlqName, and delay.
+         * @param priority default priority for the queue's messages, overridable per send-message
+         * @return the builder instance
+         */
+        public Builder priority(String priority) {
+            this.priority = priority;
+            return this;
+        }
+
+        /**
+         * Builds and returns a new instance of CreateQueueRequest using the properties set on the Builder.
+         *
+         * @return a new CreateQueueRequest instance.
          */
         public CreateQueueRequest build() {
-            return new CreateQueueRequest(name, visibility, maxRetries, maxMessageLength, dlqName, delay);
+            return new CreateQueueRequest(name, visibility, maxRetries, maxMessageLength, dlqName, delay, priority);
         }
     }
 }

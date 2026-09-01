@@ -3,12 +3,13 @@ package de.jensvogt.euclid.dto.ens;
 /**
  * Request to list topics, optionally filtered by name prefix and paginated.
  *
- * @param prefix     topic name prefix
- * @param pageSize   page size
- * @param pageIndex  page index
- * @param sortColumn sorting column
+ * @param prefix        only topics whose name starts with this prefix are returned
+ * @param pageSize      the maximum number of topics to return in a single page
+ * @param pageIndex     the zero-based index of the page to return
+ * @param sortColumn    the name of the column results are sorted by
+ * @param sortDirection the sort direction, {@code "asc"} or {@code "desc"}
  */
-public record ListTopicsRequest(String prefix, long pageSize, long pageIndex, String sortColumn) {
+public record ListTopicsRequest(String prefix, long pageSize, long pageIndex, String sortColumn, String sortDirection) {
 
     /**
      * Creates a new instance of the Builder for constructing a ListTopicsRequest object.
@@ -31,29 +32,34 @@ public record ListTopicsRequest(String prefix, long pageSize, long pageIndex, St
         }
 
         /**
-         * The topic name prefix.
+         * Only topics whose name starts with this prefix are returned.
          */
         private String prefix = "";
 
         /**
-         * The page size.
+         * The maximum number of topics to return in a single page.
          */
         private long pageSize = 10;
 
         /**
-         * The page index.
+         * The zero-based index of the page to return.
          */
         private long pageIndex = 0;
 
         /**
-         * The sorting column.
+         * The name of the column results are sorted by.
          */
         private String sortColumn = "name";
 
         /**
-         * Sets the topic name prefix.
+         * The sort direction, {@code "asc"} or {@code "desc"}.
+         */
+        private String sortDirection = "asc";
+
+        /**
+         * Sets only topics whose name starts with this prefix are returned.
          *
-         * @param prefix the topic name prefix
+         * @param prefix only topics whose name starts with this prefix are returned
          * @return the builder instance
          */
         public Builder prefix(String prefix) {
@@ -62,9 +68,9 @@ public record ListTopicsRequest(String prefix, long pageSize, long pageIndex, St
         }
 
         /**
-         * Sets the page size.
+         * Sets the maximum number of topics to return in a single page.
          *
-         * @param pageSize the page size
+         * @param pageSize the maximum number of topics to return in a single page
          * @return the builder instance
          */
         public Builder pageSize(long pageSize) {
@@ -73,9 +79,9 @@ public record ListTopicsRequest(String prefix, long pageSize, long pageIndex, St
         }
 
         /**
-         * Sets the page index.
+         * Sets the zero-based index of the page to return.
          *
-         * @param pageIndex the page index
+         * @param pageIndex the zero-based index of the page to return
          * @return the builder instance
          */
         public Builder pageIndex(long pageIndex) {
@@ -84,13 +90,24 @@ public record ListTopicsRequest(String prefix, long pageSize, long pageIndex, St
         }
 
         /**
-         * Sets the sorting column.
+         * Sets the name of the column results are sorted by.
          *
-         * @param sortColumn the sorting column
+         * @param sortColumn the name of the column results are sorted by
          * @return the builder instance
          */
         public Builder sortColumn(String sortColumn) {
             this.sortColumn = sortColumn;
+            return this;
+        }
+
+        /**
+         * Sets the sort direction, {@code "asc"} or {@code "desc"}.
+         *
+         * @param sortDirection the sort direction, {@code "asc"} or {@code "desc"}
+         * @return the builder instance
+         */
+        public Builder sortDirection(String sortDirection) {
+            this.sortDirection = sortDirection;
             return this;
         }
 
@@ -100,7 +117,7 @@ public record ListTopicsRequest(String prefix, long pageSize, long pageIndex, St
          * @return a new ListTopicsRequest instance.
          */
         public ListTopicsRequest build() {
-            return new ListTopicsRequest(prefix, pageSize, pageIndex, sortColumn);
+            return new ListTopicsRequest(prefix, pageSize, pageIndex, sortColumn, sortDirection);
         }
     }
 }

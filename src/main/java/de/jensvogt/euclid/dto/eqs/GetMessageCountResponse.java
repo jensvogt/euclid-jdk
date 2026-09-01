@@ -7,17 +7,9 @@ package de.jensvogt.euclid.dto.eqs;
  * @param available number of messages currently available for receipt
  * @param delayed   number of messages currently delayed
  * @param invisible number of messages currently invisible (being processed)
+ * @param total     total number of messages, the sum of the three counts above
  */
-public record GetMessageCountResponse(String ern, long available, long delayed, long invisible) {
-
-    /**
-     * Calculates the total count of messages by summing up available, delayed, and invisible messages.
-     *
-     * @return the total number of messages
-     */
-    public long total() {
-        return available + delayed + invisible;
-    }
+public record GetMessageCountResponse(String ern, long available, long delayed, long invisible, long total) {
 
     /**
      * Creates a new instance of the Builder for constructing a GetMessageCountResponse object.
@@ -47,22 +39,27 @@ public record GetMessageCountResponse(String ern, long available, long delayed, 
         /**
          * Number of messages currently available for receipt.
          */
-        private long available;
+        private long available = 0;
 
         /**
          * Number of messages currently delayed.
          */
-        private long delayed;
+        private long delayed = 0;
 
         /**
          * Number of messages currently invisible (being processed).
          */
-        private long invisible;
+        private long invisible = 0;
 
         /**
-         * Sets the ERN of the queue.
+         * Total number of messages, the sum of the three counts above.
+         */
+        private long total = 0;
+
+        /**
+         * Sets the ERN (Entity Resource Name) of the queue.
          *
-         * @param ern the ERN of the queue
+         * @param ern the ERN (Entity Resource Name) of the queue
          * @return the builder instance
          */
         public Builder ern(String ern) {
@@ -71,9 +68,9 @@ public record GetMessageCountResponse(String ern, long available, long delayed, 
         }
 
         /**
-         * Sets the number of messages currently available for receipt.
+         * Sets number of messages currently available for receipt.
          *
-         * @param available the number of available messages
+         * @param available number of messages currently available for receipt
          * @return the builder instance
          */
         public Builder available(long available) {
@@ -82,9 +79,9 @@ public record GetMessageCountResponse(String ern, long available, long delayed, 
         }
 
         /**
-         * Sets the number of messages currently delayed.
+         * Sets number of messages currently delayed.
          *
-         * @param delayed the number of delayed messages
+         * @param delayed number of messages currently delayed
          * @return the builder instance
          */
         public Builder delayed(long delayed) {
@@ -93,9 +90,9 @@ public record GetMessageCountResponse(String ern, long available, long delayed, 
         }
 
         /**
-         * Sets the number of messages currently invisible (being processed).
+         * Sets number of messages currently invisible (being processed).
          *
-         * @param invisible the number of invisible messages
+         * @param invisible number of messages currently invisible (being processed)
          * @return the builder instance
          */
         public Builder invisible(long invisible) {
@@ -104,12 +101,23 @@ public record GetMessageCountResponse(String ern, long available, long delayed, 
         }
 
         /**
+         * Sets total number of messages, the sum of the three counts above.
+         *
+         * @param total total number of messages, the sum of the three counts above
+         * @return the builder instance
+         */
+        public Builder total(long total) {
+            this.total = total;
+            return this;
+        }
+
+        /**
          * Builds and returns a new instance of GetMessageCountResponse using the properties set on the Builder.
          *
-         * @return a new GetMessageCountResponse instance populated with the ERN and message count values.
+         * @return a new GetMessageCountResponse instance.
          */
         public GetMessageCountResponse build() {
-            return new GetMessageCountResponse(ern, available, delayed, invisible);
+            return new GetMessageCountResponse(ern, available, delayed, invisible, total);
         }
     }
 }

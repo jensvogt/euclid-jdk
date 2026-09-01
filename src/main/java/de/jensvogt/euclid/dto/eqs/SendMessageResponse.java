@@ -1,13 +1,11 @@
 package de.jensvogt.euclid.dto.eqs;
 
 /**
- * Response returned after successfully sending a message.
+ * Response returned after a message has been accepted by a queue.
  *
- * @param messageId     the id of the sent message
- * @param md5Body       MD5 checksum of the message body
- * @param md5Attributes MD5 checksum of the message attributes
+ * @param messageId the ID assigned to the new message
  */
-public record SendMessageResponse(String messageId, String md5Body, String md5Attributes) {
+public record SendMessageResponse(String messageId) {
 
     /**
      * Creates a new instance of the Builder for constructing a SendMessageResponse object.
@@ -22,6 +20,7 @@ public record SendMessageResponse(String messageId, String md5Body, String md5At
      * Builder for constructing {@link SendMessageResponse} instances.
      */
     public static final class Builder {
+
         /**
          * Creates an empty builder.
          */
@@ -29,24 +28,14 @@ public record SendMessageResponse(String messageId, String md5Body, String md5At
         }
 
         /**
-         * The id of the sent message.
+         * The ID assigned to the new message.
          */
         private String messageId;
 
         /**
-         * MD5 checksum of the message body.
-         */
-        private String md5Body;
-
-        /**
-         * MD5 checksum of the message attributes.
-         */
-        private String md5Attributes;
-
-        /**
-         * Sets the id of the sent message.
+         * Sets the ID assigned to the new message.
          *
-         * @param messageId the message id
+         * @param messageId the ID assigned to the new message
          * @return the builder instance
          */
         public Builder messageId(String messageId) {
@@ -55,34 +44,12 @@ public record SendMessageResponse(String messageId, String md5Body, String md5At
         }
 
         /**
-         * Sets the MD5 checksum of the message body.
-         *
-         * @param md5Body the MD5 checksum of the body
-         * @return the builder instance
-         */
-        public Builder md5Body(String md5Body) {
-            this.md5Body = md5Body;
-            return this;
-        }
-
-        /**
-         * Sets the MD5 checksum of the message attributes.
-         *
-         * @param md5Attributes the MD5 checksum of the attributes
-         * @return the builder instance
-         */
-        public Builder md5Attributes(String md5Attributes) {
-            this.md5Attributes = md5Attributes;
-            return this;
-        }
-
-        /**
          * Builds and returns a new instance of SendMessageResponse using the properties set on the Builder.
          *
-         * @return a new SendMessageResponse instance populated with the message id and MD5 checksum values.
+         * @return a new SendMessageResponse instance.
          */
         public SendMessageResponse build() {
-            return new SendMessageResponse(messageId, md5Body, md5Attributes);
+            return new SendMessageResponse(messageId);
         }
     }
 }

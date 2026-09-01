@@ -248,6 +248,58 @@ public class EuclidHttpClient {
     }
 
     /**
+     * Sends a POST request with a raw binary body and reads the response as raw bytes, mirroring
+     * euclid-cli's {@code HttpClient::PostBinaryForBinary()}: used by EKM's encrypt and decrypt,
+     * where opaque bytes go out and opaque bytes come back, and the key the transform uses travels
+     * in {@code headers}.
+     * <p>
+     * An error response is bytes too, holding the server's JSON error body - the caller decodes it
+     * once it has seen a non-2xx status.
+     *
+     * @param url     the URL to send the POST request to
+     * @param data    the binary data to be sent in the request body
+     * @param target  the target endpoint or resource identifier
+     * @param action  the action to be performed by the request
+     * @param headers a map of headers to include in the POST request
+     * @return the HTTP response with the body as a byte array
+     * @throws IOException          if an I/O error occurs during the request
+     * @throws InterruptedException if the operation is interrupted while waiting for the response
+     */
+    public HttpResponse<byte[]> postBinaryForBinary(String url, byte[] data, String target, String action,
+                                                    Map<String, String> headers)
+            throws IOException, InterruptedException {
+        HttpRequest request = newRequestBuilder(url, target, action, headers)
+                .POST(HttpRequest.BodyPublishers.ofByteArray(data))
+                .build();
+        return client.send(request, HttpResponse.BodyHandlers.ofByteArray());
+    }
+
+    /**
+     * Sends a POST request with no body and reads the response as raw bytes, mirroring euclid-cli's
+     * {@code HttpClient::PostForBinary()}: used by ESM's get-object and download-part, where the
+     * request is fully described by {@code headers} and the response is object bytes rather than
+     * JSON.
+     * <p>
+     * An error response is bytes too, holding the server's JSON error body - the caller decodes it
+     * once it has seen a non-2xx status.
+     *
+     * @param url     the URL to send the POST request to
+     * @param target  the target endpoint or resource identifier
+     * @param action  the action to be performed by the request
+     * @param headers a map of headers to include in the POST request
+     * @return the HTTP response with the body as a byte array
+     * @throws IOException          if an I/O error occurs during the request
+     * @throws InterruptedException if the operation is interrupted while waiting for the response
+     */
+    public HttpResponse<byte[]> postForBinary(String url, String target, String action, Map<String, String> headers)
+            throws IOException, InterruptedException {
+        HttpRequest request = newRequestBuilder(url, target, action, headers)
+                .POST(HttpRequest.BodyPublishers.noBody())
+                .build();
+        return client.send(request, HttpResponse.BodyHandlers.ofByteArray());
+    }
+
+    /**
      * Sends an HTTP PUT request to the specified URL with the given request body
      * and optional headers.
      *
@@ -439,6 +491,19 @@ public class EuclidHttpClient {
                 .DELETE()
                 .build();
         return send(request);
+    }
+
+    /**
+     * The underlying {@link HttpClient}, already configured with this instance's TLS trust
+     * settings (system store plus, if configured, the additional PEM CA certificate). Exposed so
+     * callers that need capabilities beyond simple request/response - e.g. opening a
+     * {@link java.net.http.WebSocket} - can reuse the same TLS configuration instead of
+     * duplicating it.
+     *
+     * @return the underlying, pre-configured {@link HttpClient}
+     */
+    public HttpClient httpClient() {
+        return client;
     }
 
     /**

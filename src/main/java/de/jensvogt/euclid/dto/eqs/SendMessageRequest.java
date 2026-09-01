@@ -1,6 +1,6 @@
 package de.jensvogt.euclid.dto.eqs;
 
-import de.jensvogt.euclid.dto.eqs.model.Variant;
+import de.jensvogt.euclid.dto.com.Variant;
 
 import java.util.LinkedHashMap;
 import java.util.Map;

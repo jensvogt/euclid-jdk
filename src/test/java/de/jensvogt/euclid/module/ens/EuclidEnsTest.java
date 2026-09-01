@@ -6,6 +6,7 @@ import com.sun.net.httpserver.HttpHandler;
 import com.sun.net.httpserver.HttpServer;
 import de.jensvogt.euclid.auth.SigV4;
 import de.jensvogt.euclid.auth.SignableRequest;
+import de.jensvogt.euclid.dto.com.Variant;
 import de.jensvogt.euclid.dto.ens.CreateTopicResponse;
 import de.jensvogt.euclid.dto.ens.GetMessageAttributeResponse;
 import de.jensvogt.euclid.dto.ens.GetMessageCountResponse;
@@ -13,11 +14,11 @@ import de.jensvogt.euclid.dto.ens.GetTopicErnResponse;
 import de.jensvogt.euclid.dto.ens.GetTopicMetadataResponse;
 import de.jensvogt.euclid.dto.ens.ListMessagesResponse;
 import de.jensvogt.euclid.dto.ens.ListSubscriptionsResponse;
+import de.jensvogt.euclid.dto.ens.ListTopicsResponse;
 import de.jensvogt.euclid.dto.ens.PublishMessageResponse;
 import de.jensvogt.euclid.dto.ens.SubscribeResponse;
 import de.jensvogt.euclid.dto.ens.model.Topic;
-import de.jensvogt.euclid.dto.eqs.model.Variant;
-import de.jensvogt.euclid.exception.EuclidAuthenticationException;
+import de.jensvogt.euclid.exception.EuclidServiceException;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
@@ -27,6 +28,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -37,17 +39,13 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * Confirms EuclidEns authenticates the way it claims to (SigV4-signed when an access key is
  * configured, bearer token otherwise, mirroring euclid-cli's HttpClient.cpp), routes every
  * topic/message/subscription action to the right request with a correctly-shaped body, parses
- * the corresponding response, and surfaces non-2xx responses as {@link EuclidAuthenticationException}.
- * <p>
- * Note on delete-topic-tag: euclid-cli's EnsCli.cpp has a copy-paste bug that posts it to
- * eqs/delete-queue-tag instead of ens/delete-topic-tag. The Euclid server only registers
- * ens/delete-topic-tag (see EnsServer.cpp), so EuclidEns.deleteTopicTag() uses the correct
- * target/action rather than replicating the CLI's bug.
+ * the corresponding response, and surfaces non-2xx responses as {@link EuclidServiceException}.
  */
 class EuclidEnsTest {
 
     private static final List<String> SIGNED_HEADERS = List.of("host", "x-amz-content-sha256", "x-amz-date",
-            "x-euclid-account-id", "x-euclid-action", "x-euclid-region", "x-euclid-target", "x-euclid-user-id");
+            "x-euclid-account-id", "x-euclid-action", "x-euclid-region", "x-euclid-target", "x-euclid-user-id",
+            "x-euclid-namespace");
 
     private HttpServer server;
 
@@ -70,7 +68,7 @@ class EuclidEnsTest {
         });
 
         EuclidEns ens = new EuclidEns(baseUrl(), "unused-token", "eu-central-1", "863459426936", "alice",
-                accessKeyId, secretAccessKey, null);
+                accessKeyId, secretAccessKey, null, null);
         ens.publishMessage("ern:ens:eu-central-1:863459426936:topic/test", "hello");
 
         SignableRequest req = received.get();
@@ -91,7 +89,7 @@ class EuclidEnsTest {
         });
 
         EuclidEns ens = new EuclidEns(baseUrl(), "my-jwt-token", "eu-central-1", "863459426936", "alice",
-                null, null, null);
+                null, null, null, null);
         ens.publishMessage("ern:ens:eu-central-1:863459426936:topic/test", "hello");
 
         assertEquals("Bearer my-jwt-token", received.get().header("authorization"));
@@ -134,10 +132,12 @@ class EuclidEnsTest {
             sendResponse(exchange, 200, "{\"topics\":[{\"name\":\"orders\",\"owner\":\"alice\","
                     + "\"ern\":\"ern:ens:eu-central-1:863459426936:topic/orders\",\"tags\":{\"env\":\"prod\"},"
                     + "\"size\":100,\"messages\":3,\"maxMessageLength\":1048576,"
-                    + "\"created\":\"2026-01-01\",\"modified\":\"2026-01-02\"}]}");
+                    + "\"created\":\"2026-01-01\",\"modified\":\"2026-01-02\"}],\"total\":1}");
         });
 
-        List<Topic> topics = newClient().listTopics();
+        ListTopicsResponse response = newClient().listTopics();
+        List<Topic> topics = response.topics();
+        assertEquals(1, response.total(), "the server's total must survive rather than be dropped");
 
         assertEquals("list-topics", received.get().header("x-euclid-action"));
         assertBodyContains(received.get().body(), "\"prefix\":\"\"", "\"pageSize\":10", "\"pageIndex\":0",
@@ -157,7 +157,7 @@ class EuclidEnsTest {
             sendResponse(exchange, 200, "{\"topics\":[]}");
         });
 
-        List<Topic> topics = newClient().listTopics("ord", 25, 2, "created");
+        List<Topic> topics = newClient().listTopics("ord", 25, 2, "created").topics();
 
         assertBodyContains(received.get().body(), "\"prefix\":\"ord\"", "\"pageSize\":25", "\"pageIndex\":2",
                 "\"sortColumn\":\"created\"");
@@ -273,7 +273,7 @@ class EuclidEnsTest {
         AtomicReference<SignableRequest> received = new AtomicReference<>();
         server = startServer(exchange -> {
             received.set(captureRequest(exchange));
-            sendResponse(exchange, 200, "{\"messageId\":\"msg-1\",\"md5Body\":\"abc\",\"md5Attributes\":\"def\"}");
+            sendResponse(exchange, 200, "{\"messageId\":\"msg-1\"}");
         });
 
         PublishMessageResponse response = newClient().publishMessage("topic-ern", "hello");
@@ -281,8 +281,6 @@ class EuclidEnsTest {
         assertEquals("publish-message", received.get().header("x-euclid-action"));
         assertBodyContains(received.get().body(), "\"ern\":\"topic-ern\"", "\"body\":\"hello\"", "\"attributes\":{}");
         assertEquals("msg-1", response.messageId());
-        assertEquals("abc", response.md5Body());
-        assertEquals("def", response.md5Attributes());
     }
 
     @Test
@@ -486,25 +484,89 @@ class EuclidEnsTest {
     }
 
     @Test
-    void nonSuccessResponseThrowsEuclidAuthenticationException() throws Exception {
+    void nonSuccessResponseThrowsEuclidServiceException() throws Exception {
         server = startServer(exchange -> sendResponse(exchange, 500, "{\"error\":\"boom\"}"));
 
         EuclidEns ens = newClient();
-        EuclidAuthenticationException exception =
-                assertThrows(EuclidAuthenticationException.class, () -> ens.createTopic("orders"));
+        EuclidServiceException exception =
+                assertThrows(EuclidServiceException.class, () -> ens.createTopic("orders"));
 
+        assertEquals("ens", exception.service());
+        assertEquals("create-topic", exception.action());
         assertEquals(500, exception.statusCode());
         assertTrue(exception.responseBody().contains("boom"));
     }
 
+    @Test
+    void createTopicSendsNamespaceHeaderWhenConfigured() throws Exception {
+        AtomicReference<SignableRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(captureRequest(exchange));
+            sendResponse(exchange, 200, "{\"name\":\"orders\",\"ern\":\"ern:orders\"}");
+        });
+
+        new EuclidEns(baseUrl(), "test-token", "eu-central-1", "863459426936", "alice", null, null, null, "prod")
+                .createTopic("orders");
+
+        assertEquals("prod", received.get().header("x-euclid-namespace"));
+    }
+
+    @Test
+    void createTopicOmitsNamespaceHeaderWhenUnset() throws Exception {
+        AtomicReference<SignableRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(captureRequest(exchange));
+            sendResponse(exchange, 200, "{\"name\":\"orders\",\"ern\":\"ern:orders\"}");
+        });
+
+        newClient().createTopic("orders");
+
+        assertEquals("", received.get().header("x-euclid-namespace"));
+    }
+
+    @Test
+    void listRequestsCarrySortDirection() throws Exception {
+        Map<String, String> bodyByAction = new ConcurrentHashMap<>();
+        server = startServer(exchange -> {
+            String action = exchange.getRequestHeaders().getFirst("x-euclid-action");
+            bodyByAction.put(action, new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8));
+            sendResponse(exchange, 200, "{\"total\":0,\"topics\":[],\"messages\":[]}");
+        });
+
+        EuclidEns ens = newClient();
+        ens.listTopics("", 10, 0, "name", "desc");
+        ens.listMessages("topic-ern", 10, 0, "created", "desc");
+
+        assertBodyContains(bodyByAction.get("list-topics"), "\"sortDirection\":\"desc\"");
+        assertBodyContains(bodyByAction.get("list-messages"), "\"sortDirection\":\"desc\"");
+    }
+
+    // The overloads without a direction have to keep sending one rather than dropping the field.
+    @Test
+    void listRequestsDefaultToAscending() throws Exception {
+        Map<String, String> bodyByAction = new ConcurrentHashMap<>();
+        server = startServer(exchange -> {
+            String action = exchange.getRequestHeaders().getFirst("x-euclid-action");
+            bodyByAction.put(action, new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8));
+            sendResponse(exchange, 200, "{\"total\":0,\"topics\":[],\"messages\":[]}");
+        });
+
+        EuclidEns ens = newClient();
+        ens.listTopics();
+        ens.listMessages("topic-ern");
+
+        assertBodyContains(bodyByAction.get("list-topics"), "\"sortDirection\":\"asc\"");
+        assertBodyContains(bodyByAction.get("list-messages"), "\"sortDirection\":\"asc\"");
+    }
+
     private EuclidEns newClient() {
-        return new EuclidEns(baseUrl(), "test-token", "eu-central-1", "863459426936", "alice", null, null, null);
+        return new EuclidEns(baseUrl(), "test-token", "eu-central-1", "863459426936", "alice", null, null, null, null);
     }
 
     private static String messageJson(String messageId) {
         return "{\"ern\":\"msg-ern\",\"topicErn\":\"topic-ern\",\"messageId\":\"" + messageId + "\","
-                + "\"status\":\"AVAILABLE\",\"body\":\"hello\",\"md5Body\":\"abc\",\"attributes\":{},"
-                + "\"md5Attributes\":\"def\",\"lastReceived\":null,\"created\":\"2026-01-01\",\"modified\":\"2026-01-02\"}";
+                + "\"status\":\"AVAILABLE\",\"body\":\"hello\",\"attributes\":{},"
+                + "\"lastReceived\":null,\"created\":\"2026-01-01\",\"modified\":\"2026-01-02\"}";
     }
 
     private static void assertBodyContains(String body, String... fragments) {

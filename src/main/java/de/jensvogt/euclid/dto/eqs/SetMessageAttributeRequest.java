@@ -1,6 +1,6 @@
 package de.jensvogt.euclid.dto.eqs;
 
-import de.jensvogt.euclid.dto.eqs.model.Variant;
+import de.jensvogt.euclid.dto.com.Variant;
 
 /**
  * Request to set the value of a single message attribute, creating it if it doesn't exist yet.

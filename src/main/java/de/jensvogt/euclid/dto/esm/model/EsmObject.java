@@ -1,5 +1,9 @@
 package de.jensvogt.euclid.dto.esm.model;
 
+import de.jensvogt.euclid.dto.com.Variant;
+
+import java.util.Map;
+
 /**
  * Mirrors {@code Euclid::Dto::ESM::Object} from the Euclid server (named {@code EsmObject} here
  * rather than {@code Object} to avoid shadowing {@code java.lang.Object}).
@@ -11,9 +15,10 @@ package de.jensvogt.euclid.dto.esm.model;
  * @param status      current object status
  * @param contentType the object's content type
  * @param md5Sum      MD5 checksum of the object's content
+ * @param attributes  the object's user-defined attributes, keyed by attribute name
  * @param created     creation timestamp
  * @param modified    last-modified timestamp
  */
 public record EsmObject(String ern, String bucketErn, String key, long size, String status, String contentType,
-                         String md5Sum, String created, String modified) {
+                        String md5Sum, Map<String, Variant> attributes, String created, String modified) {
 }

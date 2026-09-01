@@ -3,13 +3,15 @@ package de.jensvogt.euclid.dto.eam;
 /**
  * Request to list namespaces under an account, optionally filtered by name prefix and paginated.
  *
- * @param accountId  only namespaces belonging to this account are returned
- * @param prefix     namespace name prefix
- * @param pageSize   page size
- * @param pageIndex  page index
- * @param sortColumn sorting column
+ * @param accountId     only namespaces belonging to this account are returned
+ * @param prefix        namespace name prefix
+ * @param pageSize      page size
+ * @param pageIndex     page index
+ * @param sortColumn    sorting column
+ * @param sortDirection sort direction, {@code "asc"} or {@code "desc"}
  */
-public record ListNamespacesRequest(String accountId, String prefix, long pageSize, long pageIndex, String sortColumn) {
+public record ListNamespacesRequest(String accountId, String prefix, long pageSize, long pageIndex, String sortColumn,
+                                    String sortDirection) {
 
     /**
      * Creates a new instance of the Builder for constructing a ListNamespacesRequest object.
@@ -34,32 +36,37 @@ public record ListNamespacesRequest(String accountId, String prefix, long pageSi
         /**
          * Only namespaces belonging to this account are returned.
          */
-        private String accountId;
+        private String accountId = "";
 
         /**
-         * The namespace name prefix.
+         * Namespace name prefix.
          */
         private String prefix = "";
 
         /**
-         * The page size.
+         * Page size.
          */
         private long pageSize = 10;
 
         /**
-         * The page index.
+         * Page index.
          */
         private long pageIndex = 0;
 
         /**
-         * The sorting column.
+         * Sorting column.
          */
         private String sortColumn = "name";
 
         /**
-         * Sets the account namespaces are listed for.
+         * Sort direction, {@code "asc"} or {@code "desc"}.
+         */
+        private String sortDirection = "asc";
+
+        /**
+         * Sets only namespaces belonging to this account are returned.
          *
-         * @param accountId the account ID
+         * @param accountId only namespaces belonging to this account are returned
          * @return the builder instance
          */
         public Builder accountId(String accountId) {
@@ -68,9 +75,9 @@ public record ListNamespacesRequest(String accountId, String prefix, long pageSi
         }
 
         /**
-         * Sets the namespace name prefix.
+         * Sets namespace name prefix.
          *
-         * @param prefix the namespace name prefix
+         * @param prefix namespace name prefix
          * @return the builder instance
          */
         public Builder prefix(String prefix) {
@@ -79,9 +86,9 @@ public record ListNamespacesRequest(String accountId, String prefix, long pageSi
         }
 
         /**
-         * Sets the page size.
+         * Sets page size.
          *
-         * @param pageSize the page size
+         * @param pageSize page size
          * @return the builder instance
          */
         public Builder pageSize(long pageSize) {
@@ -90,9 +97,9 @@ public record ListNamespacesRequest(String accountId, String prefix, long pageSi
         }
 
         /**
-         * Sets the page index.
+         * Sets page index.
          *
-         * @param pageIndex the page index
+         * @param pageIndex page index
          * @return the builder instance
          */
         public Builder pageIndex(long pageIndex) {
@@ -101,13 +108,24 @@ public record ListNamespacesRequest(String accountId, String prefix, long pageSi
         }
 
         /**
-         * Sets the sorting column.
+         * Sets sorting column.
          *
-         * @param sortColumn the sorting column
+         * @param sortColumn sorting column
          * @return the builder instance
          */
         public Builder sortColumn(String sortColumn) {
             this.sortColumn = sortColumn;
+            return this;
+        }
+
+        /**
+         * Sets sort direction, {@code "asc"} or {@code "desc"}.
+         *
+         * @param sortDirection sort direction, {@code "asc"} or {@code "desc"}
+         * @return the builder instance
+         */
+        public Builder sortDirection(String sortDirection) {
+            this.sortDirection = sortDirection;
             return this;
         }
 
@@ -117,7 +135,7 @@ public record ListNamespacesRequest(String accountId, String prefix, long pageSi
          * @return a new ListNamespacesRequest instance.
          */
         public ListNamespacesRequest build() {
-            return new ListNamespacesRequest(accountId, prefix, pageSize, pageIndex, sortColumn);
+            return new ListNamespacesRequest(accountId, prefix, pageSize, pageIndex, sortColumn, sortDirection);
         }
     }
 }
