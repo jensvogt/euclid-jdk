@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.1.10](https://github.com/jensvogt/euclid-jdk/compare/euclid-jdk-v0.1.9...euclid-jdk-v0.1.10) (2026-09-01)
+
+
+### Bug Fixes
+
+* sync all modules with the server ([2624584](https://github.com/jensvogt/euclid-jdk/commit/262458466e2daf4d584ca945c2cbec39d3ce7986))
+* sync all modules with the server ([989dd03](https://github.com/jensvogt/euclid-jdk/commit/989dd03252b3ccc207d4220e0d9b052569b54cde))
+* sync all modules with the server ([8e7a1bc](https://github.com/jensvogt/euclid-jdk/commit/8e7a1bc4d2c3f593d0f77a155090b6651948efaa))
+* sync all modules with the server ([6e9379a](https://github.com/jensvogt/euclid-jdk/commit/6e9379ad009e4d62874fdaf9c76ec04d1bc5dacd))
+* sync ENS with euclid server development ([fdced87](https://github.com/jensvogt/euclid-jdk/commit/fdced87d60c0d8ebb75435822647dc7fd534edbd))
+* sync with euclid development ([a5ff8e3](https://github.com/jensvogt/euclid-jdk/commit/a5ff8e35a10b74670d0ab9bf7364cfa90396ede3))
+
 ## [0.1.9](https://github.com/jensvogt/euclid-jdk/compare/euclid-jdk-v0.1.8...euclid-jdk-v0.1.9) (2026-08-27)
 
 
