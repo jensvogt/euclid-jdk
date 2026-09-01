@@ -1,11 +1,11 @@
 package de.jensvogt.euclid.dto.ens;
 
 /**
- * Response returned after successfully publishing a message.
+ * Response returned after a message has been accepted by a topic.
  *
- * @param messageId     the newly published message's ID
- * @param md5Body       MD5 checksum of the message body
- * @param md5Attributes MD5 checksum of the message attributes
+ * @param messageId     the ID assigned to the new message
+ * @param md5Body       MD5 checksum of the message body, for verifying it arrived intact
+ * @param md5Attributes MD5 checksum of the message's attributes
  */
 public record PublishMessageResponse(String messageId, String md5Body, String md5Attributes) {
 
@@ -30,24 +30,24 @@ public record PublishMessageResponse(String messageId, String md5Body, String md
         }
 
         /**
-         * The message ID.
+         * The ID assigned to the new message.
          */
         private String messageId;
 
         /**
-         * MD5 checksum of the message body.
+         * MD5 checksum of the message body, for verifying it arrived intact.
          */
         private String md5Body;
 
         /**
-         * MD5 checksum of the message attributes.
+         * MD5 checksum of the message's attributes.
          */
         private String md5Attributes;
 
         /**
-         * Sets the message ID.
+         * Sets the ID assigned to the new message.
          *
-         * @param messageId the message ID
+         * @param messageId the ID assigned to the new message
          * @return the builder instance
          */
         public Builder messageId(String messageId) {
@@ -56,9 +56,9 @@ public record PublishMessageResponse(String messageId, String md5Body, String md
         }
 
         /**
-         * Sets the MD5 checksum of the message body.
+         * Sets MD5 checksum of the message body, for verifying it arrived intact.
          *
-         * @param md5Body the MD5 checksum
+         * @param md5Body MD5 checksum of the message body, for verifying it arrived intact
          * @return the builder instance
          */
         public Builder md5Body(String md5Body) {
@@ -67,9 +67,9 @@ public record PublishMessageResponse(String messageId, String md5Body, String md
         }
 
         /**
-         * Sets the MD5 checksum of the message attributes.
+         * Sets MD5 checksum of the message's attributes.
          *
-         * @param md5Attributes the MD5 checksum
+         * @param md5Attributes MD5 checksum of the message's attributes
          * @return the builder instance
          */
         public Builder md5Attributes(String md5Attributes) {

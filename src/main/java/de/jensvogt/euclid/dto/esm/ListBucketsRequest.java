@@ -3,12 +3,13 @@ package de.jensvogt.euclid.dto.esm;
 /**
  * Request to list buckets, optionally filtered and paged.
  *
- * @param prefix     only buckets whose name starts with this prefix are returned
- * @param pageSize   the maximum number of buckets to return in a single page
- * @param pageIndex  the zero-based index of the page to return
- * @param sortColumn the name of the column results are sorted by
+ * @param prefix        only buckets whose name starts with this prefix are returned
+ * @param pageSize      the maximum number of buckets to return in a single page
+ * @param pageIndex     the zero-based index of the page to return
+ * @param sortColumn    the name of the column results are sorted by
+ * @param sortDirection the sort direction, {@code "asc"} or {@code "desc"}
  */
-public record ListBucketsRequest(String prefix, long pageSize, long pageIndex, String sortColumn) {
+public record ListBucketsRequest(String prefix, long pageSize, long pageIndex, String sortColumn, String sortDirection) {
 
     /**
      * Creates a new instance of the Builder for constructing a ListBucketsRequest object.
@@ -23,6 +24,7 @@ public record ListBucketsRequest(String prefix, long pageSize, long pageIndex, S
      * Builder for constructing {@link ListBucketsRequest} instances.
      */
     public static final class Builder {
+
         /**
          * Creates an empty builder.
          */
@@ -50,7 +52,12 @@ public record ListBucketsRequest(String prefix, long pageSize, long pageIndex, S
         private String sortColumn = "name";
 
         /**
-         * Sets the prefix used to filter buckets by name.
+         * The sort direction, {@code "asc"} or {@code "desc"}.
+         */
+        private String sortDirection = "asc";
+
+        /**
+         * Sets only buckets whose name starts with this prefix are returned.
          *
          * @param prefix only buckets whose name starts with this prefix are returned
          * @return the builder instance
@@ -63,7 +70,7 @@ public record ListBucketsRequest(String prefix, long pageSize, long pageIndex, S
         /**
          * Sets the maximum number of buckets to return in a single page.
          *
-         * @param pageSize the page size
+         * @param pageSize the maximum number of buckets to return in a single page
          * @return the builder instance
          */
         public Builder pageSize(long pageSize) {
@@ -74,7 +81,7 @@ public record ListBucketsRequest(String prefix, long pageSize, long pageIndex, S
         /**
          * Sets the zero-based index of the page to return.
          *
-         * @param pageIndex the page index
+         * @param pageIndex the zero-based index of the page to return
          * @return the builder instance
          */
         public Builder pageIndex(long pageIndex) {
@@ -85,7 +92,7 @@ public record ListBucketsRequest(String prefix, long pageSize, long pageIndex, S
         /**
          * Sets the name of the column results are sorted by.
          *
-         * @param sortColumn the sort column name
+         * @param sortColumn the name of the column results are sorted by
          * @return the builder instance
          */
         public Builder sortColumn(String sortColumn) {
@@ -94,12 +101,23 @@ public record ListBucketsRequest(String prefix, long pageSize, long pageIndex, S
         }
 
         /**
+         * Sets the sort direction, {@code "asc"} or {@code "desc"}.
+         *
+         * @param sortDirection the sort direction, {@code "asc"} or {@code "desc"}
+         * @return the builder instance
+         */
+        public Builder sortDirection(String sortDirection) {
+            this.sortDirection = sortDirection;
+            return this;
+        }
+
+        /**
          * Builds and returns a new instance of ListBucketsRequest using the properties set on the Builder.
          *
-         * @return a new ListBucketsRequest instance populated with the prefix, page size, page index and sort column values.
+         * @return a new ListBucketsRequest instance.
          */
         public ListBucketsRequest build() {
-            return new ListBucketsRequest(prefix, pageSize, pageIndex, sortColumn);
+            return new ListBucketsRequest(prefix, pageSize, pageIndex, sortColumn, sortDirection);
         }
     }
 }

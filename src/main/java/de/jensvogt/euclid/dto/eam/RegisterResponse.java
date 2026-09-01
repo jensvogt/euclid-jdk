@@ -1,13 +1,15 @@
 package de.jensvogt.euclid.dto.eam;
 
+import de.jensvogt.euclid.dto.Metadata;
 import de.jensvogt.euclid.dto.eam.model.User;
 
 /**
  * Response returned after successfully registering a user.
  *
- * @param user the newly registered user
+ * @param metadata the caller identity the server resolved the request to
+ * @param user     the newly registered user
  */
-public record RegisterResponse(User user) {
+public record RegisterResponse(Metadata metadata, User user) {
 
     /**
      * Creates a new instance of the Builder for constructing a RegisterResponse object.
@@ -22,6 +24,7 @@ public record RegisterResponse(User user) {
      * Builder for constructing {@link RegisterResponse} instances.
      */
     public static final class Builder {
+
         /**
          * Creates an empty builder.
          */
@@ -29,12 +32,28 @@ public record RegisterResponse(User user) {
         }
 
         /**
+         * The caller identity the server resolved the request to.
+         */
+        private Metadata metadata;
+
+        /**
          * The newly registered user.
          */
         private User user;
 
         /**
-         * Sets the registered user.
+         * Sets the caller identity the server resolved the request to.
+         *
+         * @param metadata the caller identity the server resolved the request to
+         * @return the builder instance
+         */
+        public Builder metadata(Metadata metadata) {
+            this.metadata = metadata;
+            return this;
+        }
+
+        /**
+         * Sets the newly registered user.
          *
          * @param user the newly registered user
          * @return the builder instance
@@ -47,10 +66,10 @@ public record RegisterResponse(User user) {
         /**
          * Builds and returns a new instance of RegisterResponse using the properties set on the Builder.
          *
-         * @return a new RegisterResponse instance populated with the user value.
+         * @return a new RegisterResponse instance.
          */
         public RegisterResponse build() {
-            return new RegisterResponse(user);
+            return new RegisterResponse(metadata, user);
         }
     }
 }

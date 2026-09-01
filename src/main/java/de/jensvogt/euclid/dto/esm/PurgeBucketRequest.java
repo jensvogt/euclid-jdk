@@ -1,11 +1,13 @@
 package de.jensvogt.euclid.dto.esm;
 
 /**
- * Request to purge (delete all objects from) a bucket.
+ * Request to purge a bucket, deleting its objects while leaving the bucket itself in place,
+ * optionally restricted to a key prefix.
  *
- * @param ern the ERN (Entity Resource Name) of the bucket to purge
+ * @param ern    the ERN of the bucket to purge
+ * @param prefix only objects whose key starts with this prefix are deleted
  */
-public record PurgeBucketRequest(String ern) {
+public record PurgeBucketRequest(String ern, String prefix) {
 
     /**
      * Creates a new instance of the Builder for constructing a PurgeBucketRequest object.
@@ -20,6 +22,7 @@ public record PurgeBucketRequest(String ern) {
      * Builder for constructing {@link PurgeBucketRequest} instances.
      */
     public static final class Builder {
+
         /**
          * Creates an empty builder.
          */
@@ -27,14 +30,19 @@ public record PurgeBucketRequest(String ern) {
         }
 
         /**
-         * The ERN (Entity Resource Name) of the bucket to purge.
+         * The ERN of the bucket to purge.
          */
-        private String ern;
+        private String ern = "";
+
+        /**
+         * Only objects whose key starts with this prefix are deleted.
+         */
+        private String prefix = "";
 
         /**
          * Sets the ERN of the bucket to purge.
          *
-         * @param ern the ERN of the bucket
+         * @param ern the ERN of the bucket to purge
          * @return the builder instance
          */
         public Builder ern(String ern) {
@@ -43,12 +51,23 @@ public record PurgeBucketRequest(String ern) {
         }
 
         /**
+         * Sets only objects whose key starts with this prefix are deleted.
+         *
+         * @param prefix only objects whose key starts with this prefix are deleted
+         * @return the builder instance
+         */
+        public Builder prefix(String prefix) {
+            this.prefix = prefix;
+            return this;
+        }
+
+        /**
          * Builds and returns a new instance of PurgeBucketRequest using the properties set on the Builder.
          *
-         * @return a new PurgeBucketRequest instance populated with the ERN value.
+         * @return a new PurgeBucketRequest instance.
          */
         public PurgeBucketRequest build() {
-            return new PurgeBucketRequest(ern);
+            return new PurgeBucketRequest(ern, prefix);
         }
     }
 }

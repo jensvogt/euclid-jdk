@@ -2,6 +2,9 @@ package de.jensvogt.euclid.module.eam;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import de.jensvogt.euclid.dto.Metadata;
+import de.jensvogt.euclid.dto.eam.LoginRequest;
+import de.jensvogt.euclid.dto.eam.LoginResponse;
 import de.jensvogt.euclid.exception.EuclidAuthenticationException;
 import de.jensvogt.euclid.http.EuclidHttpClient;
 
@@ -33,10 +36,10 @@ public final class EuclidEam {
      * This class provides functionality to serialize Java objects to JSON and
      * deserialize JSON to Java objects. It is configured to be reused across
      * the application wherever JSON parsing or generation is required.
-     *
+     * <p>
      * The {@code ObjectMapper} is part of the Jackson library, commonly used
      * for working with JSON data in Java applications.
-     *
+     * <p>
      * As a static and final field, this instance is initialized once and
      * remains immutable, ensuring consistent and efficient JSON handling
      * throughout the lifetime of the application.
@@ -44,21 +47,29 @@ public final class EuclidEam {
     private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
 
     /**
-     * The file system path to the credentials file used for storing authentication details.
-     * By default, the path is located within the user's home directory under the ".euclid" folder.
-     * This variable is immutable and shared across instances of the {@code EuclidEam} class.
+     * The file system path to the credentials file used for storing authentication details:
+     * {@code $HOME/.euclid/credentials}, the same file euclid-cli reads and writes, so a login from
+     * either client is picked up by the other.
+     * <p>
+     * Resolved per call rather than captured once at class load, mirroring euclid-cli's
+     * {@code Credentials::FilePath()} - the home directory is read when the file is actually
+     * touched, so a process that changes it is not left talking to a stale path.
+     *
+     * @return the path to the credentials file
      */
-    private static final Path CREDENTIALS_PATH = Path.of(System.getProperty("user.home"), ".euclid", "credentials");
+    private static Path credentialsPath() {
+        return Path.of(System.getProperty("user.home"), ".euclid", "credentials");
+    }
 
     /**
      * Constant representing the default file path to the certificate authority (CA) certificate
      * used for server authentication in Euclid deployments. This path aligns with the default
      * value used by the Euclid command-line interface (`euclid-cli`).
-     *
+     * <p>
      * The certificate at this path is only applied if the file exists. If the file is not found,
      * the system trust store is used instead, effectively making this configuration a no-op on
      * machines without an Euclid deployment.
-     *
+     * <p>
      * Users can override this value by explicitly setting a different certificate path via the
      * {@code caCertPath(String caCertPath)} method or opt out entirely.
      */
@@ -68,7 +79,7 @@ public final class EuclidEam {
      * The base URL of the server to which the {@code EuclidEam} client will connect.
      * This URL serves as the root endpoint for all API interactions, and defines the
      * base address against which relative paths for specific API calls are constructed.
-     *
+     * <p>
      * It is a required configuration parameter and must be properly set to ensure the
      * client can communicate with the server.
      */
@@ -88,10 +99,16 @@ public final class EuclidEam {
     private String username;
 
     /**
+     * Email address to authenticate with when no username is set. The server resolves the user by
+     * user ID first and falls back to this, so exactly one of the two identifies the account.
+     */
+    private String email;
+
+    /**
      * Stores the password used for authentication.
      * The password is intended to be set and managed securely
      * within the lifecycle of the {@code EuclidEam} instance.
-     *
+     * <p>
      * Note: This field should never be directly exposed or logged
      * to ensure the security of sensitive authentication data.
      */
@@ -213,6 +230,19 @@ public final class EuclidEam {
     }
 
     /**
+     * Sets the email address to authenticate with instead of a username. The server looks the user
+     * up by user ID first and only falls back to the email when no user ID was given, so set one or
+     * the other - a username set alongside an email wins.
+     *
+     * @param email the email address to log in with
+     * @return the current instance of {@code EuclidEam}
+     */
+    public EuclidEam email(String email) {
+        this.email = email;
+        return this;
+    }
+
+    /**
      * Sets the namespace to make active for the session once login succeeds - validated and
      * applied via a follow-up {@link EuclidSession#changeNamespace(String)} call, mirroring
      * euclid-cli's "eam login --namespace" option. Every namespace-scoped command run afterward
@@ -256,7 +286,8 @@ public final class EuclidEam {
      * @return an active {@code EuclidSession} object representing the authenticated session
      * @throws IOException if an error occurs during network communication or while processing the server response
      * @throws InterruptedException if the operation is interrupted during execution
-     * @throws NullPointerException if either the username or password is not set before calling this method
+     * @throws NullPointerException if the password, or both the username and email, are not set
+     *                               before calling this method
      * @throws EuclidAuthenticationException if the server responds with an authentication failure
      */
     public EuclidSession login() throws IOException, InterruptedException {
@@ -265,10 +296,16 @@ public final class EuclidEam {
             return cached;
         }
 
-        Objects.requireNonNull(username, "username must be set before calling login()");
+        if ((username == null || username.isEmpty()) && (email == null || email.isEmpty())) {
+            throw new NullPointerException("username or email must be set before calling login()");
+        }
         Objects.requireNonNull(password, "password must be set before calling login()");
 
-        String body = OBJECT_MAPPER.writeValueAsString(new LoginRequest(username, password));
+        // Only one identifier is sent: the server takes the user ID when it is present and only
+        // falls back to the email otherwise, so sending both would silently ignore the email.
+        String body = OBJECT_MAPPER.writeValueAsString(LoginRequest.builder()
+                .userId(username == null ? "" : username).password(password)
+                .email(username == null || username.isEmpty() ? (email == null ? "" : email) : "").build());
         Map<String, String> headers = Map.of("Content-Type", "application/json");
         HttpResponse<String> response = new EuclidHttpClient(caCertPath).post(baseUrl + loginPath, body, "eam", "login", headers);
 
@@ -294,18 +331,19 @@ public final class EuclidEam {
      *         {@code null} otherwise
      */
     private EuclidSession loadCachedSession() {
-        if (!Files.isReadable(CREDENTIALS_PATH)) {
+        if (!Files.isReadable(credentialsPath())) {
             return null;
         }
         try {
-            JsonNode root = OBJECT_MAPPER.readTree(Files.readString(CREDENTIALS_PATH));
+            JsonNode root = OBJECT_MAPPER.readTree(Files.readString(credentialsPath()));
             String token = textOrNull(root, "token");
             if (token == null || !baseUrl.equals(textOrNull(root, "baseUrl")) || !isTokenValid(token)) {
                 return null;
             }
             return new EuclidSession(token, textOrNull(root, "userId"), textOrNull(root, "accountId"),
                     textOrNull(root, "region"), textOrNull(root, "accessKeyId"), textOrNull(root, "secretAccessKey"),
-                    root.toString(), baseUrl, caCertPath, textOrNull(root, "nameSpace"));
+                    root.path("isAdmin").asBoolean(false), root.toString(), baseUrl, caCertPath,
+                    textOrNull(root, "namespace"));
         } catch (IOException ignored) {
             return null;
         }
@@ -323,19 +361,25 @@ public final class EuclidEam {
      * @throws IOException if an error occurs while writing to the file system
      */
     private void storeCredentials(EuclidSession session) throws IOException {
-        Files.createDirectories(CREDENTIALS_PATH.getParent());
-        Map<String, String> credentials = new LinkedHashMap<>();
+        Files.createDirectories(credentialsPath().getParent());
+        // Field names and shape are euclid-cli's Credentials::Save(), since both clients read and
+        // write the same $HOME/.euclid/credentials: the namespace key is "namespace" (not
+        // "nameSpace"), isAdmin travels alongside the token, and an absent namespace is written as
+        // an empty string rather than null so the CLI's string reader can take it. "baseUrl" is the
+        // one field only this client writes - the CLI has no equivalent check.
+        Map<String, Object> credentials = new LinkedHashMap<>();
         credentials.put("token", session.token());
         credentials.put("userId", session.userId());
         credentials.put("accountId", session.accountId());
         credentials.put("region", session.region());
         credentials.put("accessKeyId", session.accessKeyId());
         credentials.put("secretAccessKey", session.secretAccessKey());
+        credentials.put("isAdmin", session.isAdmin());
         credentials.put("baseUrl", baseUrl);
-        credentials.put("nameSpace", session.nameSpace());
-        Files.writeString(CREDENTIALS_PATH, OBJECT_MAPPER.writeValueAsString(credentials));
+        credentials.put("namespace", session.nameSpace() == null ? "" : session.nameSpace());
+        Files.writeString(credentialsPath(), OBJECT_MAPPER.writeValueAsString(credentials));
         try {
-            Files.setPosixFilePermissions(CREDENTIALS_PATH, PosixFilePermissions.fromString("rw-------"));
+            Files.setPosixFilePermissions(credentialsPath(), PosixFilePermissions.fromString("rw-------"));
         } catch (UnsupportedOperationException ignored) {
             // best-effort; not every filesystem supports POSIX permissions
         }
@@ -352,24 +396,25 @@ public final class EuclidEam {
      * @param namespace the namespace to record
      */
     static void updateCachedNamespace(String baseUrl, String namespace) {
-        if (!Files.isReadable(CREDENTIALS_PATH)) {
+        if (!Files.isReadable(credentialsPath())) {
             return;
         }
         try {
-            JsonNode root = OBJECT_MAPPER.readTree(Files.readString(CREDENTIALS_PATH));
+            JsonNode root = OBJECT_MAPPER.readTree(Files.readString(credentialsPath()));
             if (!baseUrl.equals(textOrNull(root, "baseUrl"))) {
                 return;
             }
-            Map<String, String> credentials = new LinkedHashMap<>();
+            Map<String, Object> credentials = new LinkedHashMap<>();
             credentials.put("token", textOrNull(root, "token"));
             credentials.put("userId", textOrNull(root, "userId"));
             credentials.put("accountId", textOrNull(root, "accountId"));
             credentials.put("region", textOrNull(root, "region"));
             credentials.put("accessKeyId", textOrNull(root, "accessKeyId"));
             credentials.put("secretAccessKey", textOrNull(root, "secretAccessKey"));
+            credentials.put("isAdmin", root.path("isAdmin").asBoolean(false));
             credentials.put("baseUrl", baseUrl);
-            credentials.put("nameSpace", namespace);
-            Files.writeString(CREDENTIALS_PATH, OBJECT_MAPPER.writeValueAsString(credentials));
+            credentials.put("namespace", namespace == null ? "" : namespace);
+            Files.writeString(credentialsPath(), OBJECT_MAPPER.writeValueAsString(credentials));
         } catch (IOException ignored) {
             // best-effort; nothing cached to patch
         }
@@ -421,12 +466,32 @@ public final class EuclidEam {
      * @throws IOException if an error occurs while reading or parsing the response body
      */
     private static EuclidSession extractSession(String responseBody, String baseUrl, String caCertPath) throws IOException {
+        LoginResponse login = extractLoginResponse(responseBody);
+        Metadata metadata = login.metadata();
+        return new EuclidSession(login.token(), metadata == null ? null : metadata.user(),
+                metadata == null ? null : metadata.accountId(), metadata == null ? null : metadata.region(),
+                login.accessKeyId(), login.secretAccessKey(), login.isAdmin(), responseBody, baseUrl,
+                caCertPath, null);
+    }
+
+    /**
+     * Parses a login response. The caller's identity travels in a nested {@code "metadata"} object,
+     * so the account and region a session is scoped to come from there rather than the top level.
+     *
+     * @param responseBody the JSON response body
+     * @return the parsed login response
+     * @throws IOException if the response body cannot be parsed
+     */
+    private static LoginResponse extractLoginResponse(String responseBody) throws IOException {
         JsonNode root = OBJECT_MAPPER.readTree(responseBody);
         JsonNode metadata = root.get("metadata");
-        return new EuclidSession(textOrNull(root, "token"), textOrNull(metadata, "user"),
-                textOrNull(metadata, "accountId"), textOrNull(metadata, "region"),
-                textOrNull(root, "accessKeyId"), textOrNull(root, "secretAccessKey"), responseBody, baseUrl,
-                caCertPath, null);
+        return LoginResponse.builder()
+                .metadata(metadata == null || !metadata.isObject() ? null
+                        : new Metadata(textOrNull(metadata, "region"), textOrNull(metadata, "accountId"),
+                                textOrNull(metadata, "user")))
+                .token(textOrNull(root, "token")).accessKeyId(textOrNull(root, "accessKeyId"))
+                .secretAccessKey(textOrNull(root, "secretAccessKey")).createdAt(textOrNull(root, "createdAt"))
+                .isAdmin(root.path("isAdmin").asBoolean(false)).build();
     }
 
     /**
@@ -453,6 +518,4 @@ public final class EuclidEam {
         return url.endsWith("/") ? url.substring(0, url.length() - 1) : url;
     }
 
-    private record LoginRequest(String userId, String password) {
-    }
 }

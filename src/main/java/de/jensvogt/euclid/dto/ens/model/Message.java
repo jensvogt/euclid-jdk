@@ -1,6 +1,6 @@
 package de.jensvogt.euclid.dto.ens.model;
 
-import de.jensvogt.euclid.dto.eqs.model.Variant;
+import de.jensvogt.euclid.dto.com.Variant;
 
 import java.util.Map;
 
@@ -22,6 +22,6 @@ import java.util.Map;
  * @param modified      last-modified timestamp
  */
 public record Message(String ern, String topicErn, String messageId, String status, String body, String md5Body,
-                       Map<String, Variant> attributes, String md5Attributes, String lastReceived, String created,
-                       String modified) {
+                      Map<String, Variant> attributes, String md5Attributes, String lastReceived, String created,
+                      String modified) {
 }

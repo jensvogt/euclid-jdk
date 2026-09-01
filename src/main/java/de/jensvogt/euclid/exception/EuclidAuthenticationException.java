@@ -2,23 +2,13 @@ package de.jensvogt.euclid.exception;
 
 /**
  * Thrown when the Euclid server rejects a login attempt.
+ * <p>
+ * Reserved for the login itself. Every other action reports a non-2xx response as a plain
+ * {@link EuclidServiceException}, which this extends - a failed bucket creation or queue read is
+ * not an authentication failure, and reporting it as one only obscures what the server actually
+ * said.
  */
-public class EuclidAuthenticationException extends RuntimeException {
-
-    /**
-     * The HTTP status code returned by the Euclid server when a login attempt is rejected.
-     * This field provides information about the nature of the rejection, allowing for
-     * further handling and debugging of authentication failures.
-     */
-    private final int statusCode;
-
-    /**
-     * Represents the body of the HTTP response returned by the Euclid server
-     * when a login attempt is rejected. This field contains additional details
-     * about the rejection, which can assist in understanding the cause of the
-     * authentication failure.
-     */
-    private final String responseBody;
+public class EuclidAuthenticationException extends EuclidServiceException {
 
     /**
      * Constructs a new {@code EuclidAuthenticationException} with the specified HTTP status code
@@ -28,31 +18,6 @@ public class EuclidAuthenticationException extends RuntimeException {
      * @param responseBody the body of the HTTP response providing additional details about the failure
      */
     public EuclidAuthenticationException(int statusCode, String responseBody) {
-        super("Login failed with status " + statusCode + ": " + responseBody);
-        this.statusCode = statusCode;
-        this.responseBody = responseBody;
-    }
-
-    /**
-     * Retrieves the HTTP status code associated with the authentication failure
-     * returned by the Euclid server. This status code indicates the type of
-     * error that occurred during a login attempt.
-     *
-     * @return the HTTP status code representing the nature of the login failure
-     */
-    public int statusCode() {
-        return statusCode;
-    }
-
-    /**
-     * Retrieves the body of the HTTP response returned by the Euclid server
-     * when a login attempt is rejected. This provides additional details
-     * about the reason for the rejection, which can aid in diagnosing
-     * authentication issues.
-     *
-     * @return the HTTP response body containing details about the login failure
-     */
-    public String responseBody() {
-        return responseBody;
+        super("Login failed with status " + statusCode + ": " + responseBody, "eam", "login", statusCode, responseBody);
     }
 }

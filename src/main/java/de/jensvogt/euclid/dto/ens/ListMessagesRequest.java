@@ -1,14 +1,15 @@
 package de.jensvogt.euclid.dto.ens;
 
 /**
- * Request to list a topic's messages without receiving them, optionally paginated.
+ * Request to list a topic's messages without receiving them, paginated.
  *
- * @param topicErn   ERN of the topic whose messages are listed
- * @param pageSize   page size
- * @param pageIndex  page index
- * @param sortColumn sorting column
+ * @param topicErn      the ERN of the topic whose messages are listed
+ * @param pageSize      the maximum number of messages to return in a single page
+ * @param pageIndex     the zero-based index of the page to return
+ * @param sortColumn    the name of the column results are sorted by
+ * @param sortDirection the sort direction, {@code "asc"} or {@code "desc"}
  */
-public record ListMessagesRequest(String topicErn, long pageSize, long pageIndex, String sortColumn) {
+public record ListMessagesRequest(String topicErn, long pageSize, long pageIndex, String sortColumn, String sortDirection) {
 
     /**
      * Creates a new instance of the Builder for constructing a ListMessagesRequest object.
@@ -33,27 +34,32 @@ public record ListMessagesRequest(String topicErn, long pageSize, long pageIndex
         /**
          * The ERN of the topic whose messages are listed.
          */
-        private String topicErn;
+        private String topicErn = "";
 
         /**
-         * The page size.
+         * The maximum number of messages to return in a single page.
          */
         private long pageSize = 10;
 
         /**
-         * The page index.
+         * The zero-based index of the page to return.
          */
         private long pageIndex = 0;
 
         /**
-         * The sorting column.
+         * The name of the column results are sorted by.
          */
         private String sortColumn = "created";
 
         /**
+         * The sort direction, {@code "asc"} or {@code "desc"}.
+         */
+        private String sortDirection = "asc";
+
+        /**
          * Sets the ERN of the topic whose messages are listed.
          *
-         * @param topicErn the topic ERN
+         * @param topicErn the ERN of the topic whose messages are listed
          * @return the builder instance
          */
         public Builder topicErn(String topicErn) {
@@ -62,9 +68,9 @@ public record ListMessagesRequest(String topicErn, long pageSize, long pageIndex
         }
 
         /**
-         * Sets the page size.
+         * Sets the maximum number of messages to return in a single page.
          *
-         * @param pageSize the page size
+         * @param pageSize the maximum number of messages to return in a single page
          * @return the builder instance
          */
         public Builder pageSize(long pageSize) {
@@ -73,9 +79,9 @@ public record ListMessagesRequest(String topicErn, long pageSize, long pageIndex
         }
 
         /**
-         * Sets the page index.
+         * Sets the zero-based index of the page to return.
          *
-         * @param pageIndex the page index
+         * @param pageIndex the zero-based index of the page to return
          * @return the builder instance
          */
         public Builder pageIndex(long pageIndex) {
@@ -84,13 +90,24 @@ public record ListMessagesRequest(String topicErn, long pageSize, long pageIndex
         }
 
         /**
-         * Sets the sorting column.
+         * Sets the name of the column results are sorted by.
          *
-         * @param sortColumn the sorting column
+         * @param sortColumn the name of the column results are sorted by
          * @return the builder instance
          */
         public Builder sortColumn(String sortColumn) {
             this.sortColumn = sortColumn;
+            return this;
+        }
+
+        /**
+         * Sets the sort direction, {@code "asc"} or {@code "desc"}.
+         *
+         * @param sortDirection the sort direction, {@code "asc"} or {@code "desc"}
+         * @return the builder instance
+         */
+        public Builder sortDirection(String sortDirection) {
+            this.sortDirection = sortDirection;
             return this;
         }
 
@@ -100,7 +117,7 @@ public record ListMessagesRequest(String topicErn, long pageSize, long pageIndex
          * @return a new ListMessagesRequest instance.
          */
         public ListMessagesRequest build() {
-            return new ListMessagesRequest(topicErn, pageSize, pageIndex, sortColumn);
+            return new ListMessagesRequest(topicErn, pageSize, pageIndex, sortColumn, sortDirection);
         }
     }
 }

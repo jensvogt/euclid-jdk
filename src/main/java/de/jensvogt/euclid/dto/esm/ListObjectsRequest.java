@@ -3,13 +3,16 @@ package de.jensvogt.euclid.dto.esm;
 /**
  * Request to list objects in a bucket, optionally filtered and paged.
  *
- * @param bucketErn  the ERN (Entity Resource Name) of the bucket whose objects are listed
- * @param prefix     only objects whose key starts with this prefix are returned
- * @param pageSize   the maximum number of objects to return in a single page
- * @param pageIndex  the zero-based index of the page to return
- * @param sortColumn the name of the column results are sorted by
+ * @param bucketErn          the ERN (Entity Resource Name) of the bucket whose objects are listed
+ * @param prefix             only objects whose key starts with this prefix are returned
+ * @param pageSize           the maximum number of objects to return in a single page
+ * @param pageIndex          the zero-based index of the page to return
+ * @param sortColumn         the name of the column results are sorted by
+ * @param sortDirection      the sort direction, {@code "asc"} or {@code "desc"}
+ * @param includeDirectories whether directory keys are listed alongside real objects
  */
-public record ListObjectsRequest(String bucketErn, String prefix, long pageSize, long pageIndex, String sortColumn) {
+public record ListObjectsRequest(String bucketErn, String prefix, long pageSize, long pageIndex, String sortColumn,
+                                 String sortDirection, boolean includeDirectories) {
 
     /**
      * Creates a new instance of the Builder for constructing a ListObjectsRequest object.
@@ -24,6 +27,7 @@ public record ListObjectsRequest(String bucketErn, String prefix, long pageSize,
      * Builder for constructing {@link ListObjectsRequest} instances.
      */
     public static final class Builder {
+
         /**
          * Creates an empty builder.
          */
@@ -56,9 +60,19 @@ public record ListObjectsRequest(String bucketErn, String prefix, long pageSize,
         private String sortColumn = "name";
 
         /**
-         * Sets the ERN of the bucket whose objects are listed.
+         * The sort direction, {@code "asc"} or {@code "desc"}.
+         */
+        private String sortDirection = "asc";
+
+        /**
+         * Whether directory keys are listed alongside real objects.
+         */
+        private boolean includeDirectories = false;
+
+        /**
+         * Sets the ERN (Entity Resource Name) of the bucket whose objects are listed.
          *
-         * @param bucketErn the bucket ERN
+         * @param bucketErn the ERN (Entity Resource Name) of the bucket whose objects are listed
          * @return the builder instance
          */
         public Builder bucketErn(String bucketErn) {
@@ -67,7 +81,7 @@ public record ListObjectsRequest(String bucketErn, String prefix, long pageSize,
         }
 
         /**
-         * Sets the prefix used to filter objects by key.
+         * Sets only objects whose key starts with this prefix are returned.
          *
          * @param prefix only objects whose key starts with this prefix are returned
          * @return the builder instance
@@ -80,7 +94,7 @@ public record ListObjectsRequest(String bucketErn, String prefix, long pageSize,
         /**
          * Sets the maximum number of objects to return in a single page.
          *
-         * @param pageSize the page size
+         * @param pageSize the maximum number of objects to return in a single page
          * @return the builder instance
          */
         public Builder pageSize(long pageSize) {
@@ -91,7 +105,7 @@ public record ListObjectsRequest(String bucketErn, String prefix, long pageSize,
         /**
          * Sets the zero-based index of the page to return.
          *
-         * @param pageIndex the page index
+         * @param pageIndex the zero-based index of the page to return
          * @return the builder instance
          */
         public Builder pageIndex(long pageIndex) {
@@ -102,7 +116,7 @@ public record ListObjectsRequest(String bucketErn, String prefix, long pageSize,
         /**
          * Sets the name of the column results are sorted by.
          *
-         * @param sortColumn the sort column name
+         * @param sortColumn the name of the column results are sorted by
          * @return the builder instance
          */
         public Builder sortColumn(String sortColumn) {
@@ -111,12 +125,34 @@ public record ListObjectsRequest(String bucketErn, String prefix, long pageSize,
         }
 
         /**
+         * Sets the sort direction, {@code "asc"} or {@code "desc"}.
+         *
+         * @param sortDirection the sort direction, {@code "asc"} or {@code "desc"}
+         * @return the builder instance
+         */
+        public Builder sortDirection(String sortDirection) {
+            this.sortDirection = sortDirection;
+            return this;
+        }
+
+        /**
+         * Sets whether directory keys are listed alongside real objects.
+         *
+         * @param includeDirectories whether directory keys are listed alongside real objects
+         * @return the builder instance
+         */
+        public Builder includeDirectories(boolean includeDirectories) {
+            this.includeDirectories = includeDirectories;
+            return this;
+        }
+
+        /**
          * Builds and returns a new instance of ListObjectsRequest using the properties set on the Builder.
          *
-         * @return a new ListObjectsRequest instance populated with the bucket ERN, prefix, page size, page index and sort column values.
+         * @return a new ListObjectsRequest instance.
          */
         public ListObjectsRequest build() {
-            return new ListObjectsRequest(bucketErn, prefix, pageSize, pageIndex, sortColumn);
+            return new ListObjectsRequest(bucketErn, prefix, pageSize, pageIndex, sortColumn, sortDirection, includeDirectories);
         }
     }
 }

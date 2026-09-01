@@ -2,6 +2,7 @@ package de.jensvogt.euclid.module.eqs;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import de.jensvogt.euclid.dto.com.Variant;
 import de.jensvogt.euclid.dto.eqs.AddQueueTagRequest;
 import de.jensvogt.euclid.dto.eqs.CreateQueueRequest;
 import de.jensvogt.euclid.dto.eqs.CreateQueueResponse;
@@ -21,6 +22,7 @@ import de.jensvogt.euclid.dto.eqs.GetQueueMetadataResponse;
 import de.jensvogt.euclid.dto.eqs.ListMessagesRequest;
 import de.jensvogt.euclid.dto.eqs.ListMessagesResponse;
 import de.jensvogt.euclid.dto.eqs.ListQueueRequest;
+import de.jensvogt.euclid.dto.eqs.ListQueueResponse;
 import de.jensvogt.euclid.dto.eqs.PurgeAllQueuesRequest;
 import de.jensvogt.euclid.dto.eqs.PurgeQueueRequest;
 import de.jensvogt.euclid.dto.eqs.ReceiveMessagesRequest;
@@ -32,9 +34,9 @@ import de.jensvogt.euclid.dto.eqs.SetMessageVisibilityRequest;
 import de.jensvogt.euclid.dto.eqs.SetQueueTagRequest;
 import de.jensvogt.euclid.dto.eqs.model.Message;
 import de.jensvogt.euclid.dto.eqs.model.Queue;
-import de.jensvogt.euclid.dto.eqs.model.Variant;
 import de.jensvogt.euclid.http.EuclidHttpClient;
-import de.jensvogt.euclid.exception.EuclidAuthenticationException;
+import de.jensvogt.euclid.ws.EuclidEventStream;
+import de.jensvogt.euclid.exception.EuclidServiceException;
 import de.jensvogt.euclid.auth.SigV4;
 import de.jensvogt.euclid.auth.SignableRequest;
 
@@ -165,6 +167,37 @@ public final class EuclidEqs {
     private final EuclidHttpClient httpClient;
 
     /**
+     * Path to a custom Certificate Authority (CA) certificate file for secure HTTPS connections,
+     * retained (rather than only handed to {@link #httpClient}) so a {@link EuclidEventStream}
+     * can be built lazily with the same TLS trust settings the first time {@link #receiveMessages}
+     * needs one.
+     */
+    private final String caCertPath;
+
+    /**
+     * The session's active namespace, or {@code null}/empty if unscoped. Sent as the
+     * {@code x-euclid-namespace} header on every request, exactly as {@link
+     * de.jensvogt.euclid.module.eam.EuclidSession} does for its own EAM calls - without it, every
+     * queue this client creates or looks up lands in the unnamed/default namespace regardless of
+     * what namespace the session was scoped to at login.
+     */
+    private final String nameSpace;
+
+    /**
+     * Lazily-created websocket connection used by {@link #receiveMessages} to wake up as soon as
+     * an "eqs.message.sent" event arrives for the queue being waited on, instead of only polling
+     * every {@link #RECEIVE_POLL_INTERVAL_MS}. {@code null} until first needed.
+     */
+    private volatile EuclidEventStream eventStream;
+
+    /**
+     * Set once a websocket connection attempt fails, so {@link #receiveMessages} falls back to
+     * plain polling for the rest of this instance's lifetime instead of retrying (and paying the
+     * connect timeout) on every wait iteration.
+     */
+    private volatile boolean webSocketUnavailable;
+
+    /**
      * Constructs an instance of the EuclidEqs class with the specified parameters for
      * interacting with the Euclid API.
      *
@@ -177,9 +210,10 @@ public final class EuclidEqs {
      * @param secretAccessKey The secret access key for SigV4 authentication.
      * @param caCertPath     Path to a custom Certificate Authority (CA) certificate file
      *                       for secure HTTPS connections.
+     * @param nameSpace      The session's active namespace, or {@code null}/empty if unscoped.
      */
     public EuclidEqs(String baseUrl, String token, String region, String accountId, String userId,
-                     String accessKeyId, String secretAccessKey, String caCertPath) {
+                     String accessKeyId, String secretAccessKey, String caCertPath, String nameSpace) {
         this.baseUrl = baseUrl;
         this.token = token;
         this.region = region;
@@ -187,6 +221,8 @@ public final class EuclidEqs {
         this.userId = userId;
         this.accessKeyId = accessKeyId;
         this.secretAccessKey = secretAccessKey;
+        this.caCertPath = caCertPath;
+        this.nameSpace = nameSpace;
         this.httpClient = new EuclidHttpClient(caCertPath);
     }
 
@@ -197,7 +233,7 @@ public final class EuclidEqs {
      * @throws IOException If an I/O error occurs during the operation.
      * @throws InterruptedException If the operation is interrupted.
      */
-    public List<Queue> listQueues() throws IOException, InterruptedException {
+    public ListQueueResponse listQueues() throws IOException, InterruptedException {
         return listQueues("", 10, 0, "name");
     }
 
@@ -212,19 +248,37 @@ public final class EuclidEqs {
      * @throws IOException If an I/O error occurs during the request.
      * @throws InterruptedException If the operation is interrupted while waiting for a response.
      */
-    public List<Queue> listQueues(String prefix, long pageSize, long pageIndex, String sortColumn)
+    public ListQueueResponse listQueues(String prefix, long pageSize, long pageIndex, String sortColumn)
+            throws IOException, InterruptedException {
+        return listQueues(prefix, pageSize, pageIndex, sortColumn, "asc");
+    }
+
+    /**
+     * Retrieves a paginated and optionally filtered list of queues, in a chosen sort direction.
+     *
+     * @param prefix A string to filter queues by their prefix. Use null or an empty string for no filtering.
+     * @param pageSize The number of queues to include in each page of the result.
+     * @param pageIndex The index of the page to retrieve, starting from 0.
+     * @param sortColumn The field by which the queues should be sorted. Use null or an empty string for default sorting.
+     * @param sortDirection The direction to sort in, {@code "asc"} or {@code "desc"}.
+     * @return A list of {@code Queue} objects representing the queues matching the specified criteria.
+     * @throws IOException If an I/O error occurs during the request.
+     * @throws InterruptedException If the operation is interrupted while waiting for a response.
+     */
+    public ListQueueResponse listQueues(String prefix, long pageSize, long pageIndex, String sortColumn,
+                                        String sortDirection)
             throws IOException, InterruptedException {
         String body = OBJECT_MAPPER.writeValueAsString(
                 ListQueueRequest.builder().prefix(prefix).pageSize(pageSize).pageIndex(pageIndex)
-                        .sortColumn(sortColumn).build());
+                        .sortColumn(sortColumn).sortDirection(sortDirection).build());
         HttpResponse<String> response = httpClient.post(baseUrl + "/", body, "eqs", "list-queues",
                 requestHeaders("list-queues", body));
 
         if (response.statusCode() / 100 != 2) {
-            throw new EuclidAuthenticationException(response.statusCode(), response.body());
+            throw new EuclidServiceException("eqs", "list-queues", response.statusCode(), response.body());
         }
 
-        return extractQueues(response.body());
+        return extractListQueueResponse(response.body());
     }
 
     /**
@@ -252,14 +306,31 @@ public final class EuclidEqs {
      */
     public ListMessagesResponse listMessages(String queueErn, long pageSize, long pageIndex, String sortColumn)
             throws IOException, InterruptedException {
+        return listMessages(queueErn, pageSize, pageIndex, sortColumn, "asc");
+    }
+
+    /**
+     * Retrieves a paginated list of messages from a specified queue, in a chosen sort direction.
+     *
+     * @param queueErn      The unique resource name (ERN) of the queue to fetch messages from.
+     * @param pageSize      The number of messages to retrieve per page.
+     * @param pageIndex     The index of the page to retrieve, starting from 0.
+     * @param sortColumn    The column used to sort the messages, may be null to use default sorting.
+     * @param sortDirection The direction to sort in, {@code "asc"} or {@code "desc"}.
+     * @return A ListMessagesResponse object containing the retrieved messages and metadata.
+     * @throws IOException              If an I/O error occurs during the operation.
+     * @throws InterruptedException     If the operation is interrupted.
+     */
+    public ListMessagesResponse listMessages(String queueErn, long pageSize, long pageIndex, String sortColumn,
+                                             String sortDirection) throws IOException, InterruptedException {
         String body = OBJECT_MAPPER.writeValueAsString(
                 ListMessagesRequest.builder().queueErn(queueErn).pageSize(pageSize).pageIndex(pageIndex)
-                        .sortColumn(sortColumn).build());
+                        .sortColumn(sortColumn).sortDirection(sortDirection).build());
         HttpResponse<String> response = httpClient.post(baseUrl + "/", body, "eqs", "list-messages",
                 requestHeaders("list-messages", body));
 
         if (response.statusCode() / 100 != 2) {
-            throw new EuclidAuthenticationException(response.statusCode(), response.body());
+            throw new EuclidServiceException("eqs", "list-messages", response.statusCode(), response.body());
         }
 
         return extractListMessagesResponse(response.body());
@@ -309,14 +380,35 @@ public final class EuclidEqs {
      */
     public CreateQueueResponse createQueue(String name, long visibility, long maxRetries, long maxMessageLength,
                                             String dlqName, long delay) throws IOException, InterruptedException {
+        return createQueue(name, visibility, maxRetries, maxMessageLength, dlqName, delay, "MIDDLE");
+    }
+
+    /**
+     * Creates a queue with the specified parameters and a default message priority.
+     *
+     * @param name                The name of the queue to be created.
+     * @param visibility          The visibility timeout for the queue in seconds.
+     * @param maxRetries          The maximum number of retry attempts for failed messages.
+     * @param maxMessageLength    The maximum allowed length of messages in the queue.
+     * @param dlqName             The name of the dead-letter queue associated with this queue.
+     * @param delay               The delay in seconds before a message becomes visible in the queue.
+     * @param priority            The priority every message of this queue gets unless
+     *                            {@link #sendMessage(String, String, Map, String)} overrides it.
+     * @return                    A {@link CreateQueueResponse} object containing details of the created queue.
+     * @throws IOException        If an I/O error occurs during the request.
+     * @throws InterruptedException If the request is interrupted.
+     */
+    public CreateQueueResponse createQueue(String name, long visibility, long maxRetries, long maxMessageLength,
+                                            String dlqName, long delay, String priority)
+            throws IOException, InterruptedException {
         String body = OBJECT_MAPPER.writeValueAsString(
                 CreateQueueRequest.builder().name(name).visibility(visibility).maxRetries(maxRetries)
-                        .maxMessageLength(maxMessageLength).dlqName(dlqName).delay(delay).build());
+                        .maxMessageLength(maxMessageLength).dlqName(dlqName).delay(delay).priority(priority).build());
         HttpResponse<String> response = httpClient.post(baseUrl + "/", body, "eqs", "create-queue",
                 requestHeaders("create-queue", body));
 
         if (response.statusCode() / 100 != 2) {
-            throw new EuclidAuthenticationException(response.statusCode(), response.body());
+            throw new EuclidServiceException("eqs", "create-queue", response.statusCode(), response.body());
         }
 
         return extractCreateQueueResponse(response.body());
@@ -328,7 +420,7 @@ public final class EuclidEqs {
      * @param ern The Entity Resource Name (ERN) of the queue to be deleted.
      * @throws IOException If an I/O error occurs during the request.
      * @throws InterruptedException If the operation is interrupted.
-     * @throws EuclidAuthenticationException If the server responds with a failure status code.
+     * @throws EuclidServiceException If the server responds with a failure status code.
      */
     public void deleteQueue(String ern) throws IOException, InterruptedException {
         String body = OBJECT_MAPPER.writeValueAsString(DeleteQueueRequest.builder().ern(ern).build());
@@ -336,7 +428,7 @@ public final class EuclidEqs {
                 requestHeaders("delete-queue", body));
 
         if (response.statusCode() / 100 != 2) {
-            throw new EuclidAuthenticationException(response.statusCode(), response.body());
+            throw new EuclidServiceException("eqs", "delete-queue", response.statusCode(), response.body());
         }
     }
 
@@ -355,7 +447,7 @@ public final class EuclidEqs {
                 requestHeaders("get-queue-ern", body));
 
         if (response.statusCode() / 100 != 2) {
-            throw new EuclidAuthenticationException(response.statusCode(), response.body());
+            throw new EuclidServiceException("eqs", "get-queue-ern", response.statusCode(), response.body());
         }
 
         return extractGetQueueErnResponse(response.body());
@@ -375,7 +467,7 @@ public final class EuclidEqs {
                 requestHeaders("get-queue-metadata", body));
 
         if (response.statusCode() / 100 != 2) {
-            throw new EuclidAuthenticationException(response.statusCode(), response.body());
+            throw new EuclidServiceException("eqs", "get-queue-metadata", response.statusCode(), response.body());
         }
 
         return extractGetQueueMetadataResponse(response.body());
@@ -395,7 +487,7 @@ public final class EuclidEqs {
                 requestHeaders("purge-queue", body));
 
         if (response.statusCode() / 100 != 2) {
-            throw new EuclidAuthenticationException(response.statusCode(), response.body());
+            throw new EuclidServiceException("eqs", "purge-queue", response.statusCode(), response.body());
         }
     }
 
@@ -429,7 +521,7 @@ public final class EuclidEqs {
                 requestHeaders("purge-all-queues", body));
 
         if (response.statusCode() / 100 != 2) {
-            throw new EuclidAuthenticationException(response.statusCode(), response.body());
+            throw new EuclidServiceException("eqs", "purge-all-queues", response.statusCode(), response.body());
         }
     }
 
@@ -480,7 +572,7 @@ public final class EuclidEqs {
                 requestHeaders("send-message", requestBody));
 
         if (response.statusCode() / 100 != 2) {
-            throw new EuclidAuthenticationException(response.statusCode(), response.body());
+            throw new EuclidServiceException("eqs", "send-message", response.statusCode(), response.body());
         }
 
         return extractSendMessageResponse(response.body());
@@ -502,7 +594,10 @@ public final class EuclidEqs {
      * Retrieves messages from a message queue or similar service. The method attempts
      * to receive up to the specified maximum number of messages within an optional
      * wait time. If no messages are immediately available and a wait time is provided,
-     * it will repeatedly poll until messages are received or the wait time elapses.
+     * it will repeatedly poll until messages are received or the wait time elapses -
+     * waking up early, instead of on the next poll tick, as soon as a matching
+     * "eqs.message.sent" websocket event arrives for this queue (see {@link EuclidEventStream}),
+     * falling back to plain polling if a websocket connection can't be established.
      *
      * @param ern         The external resource name (ERN) identifying the message queue or topic.
      * @param maxMessages The maximum number of messages to retrieve in a single call.
@@ -536,8 +631,44 @@ public final class EuclidEqs {
             if (remaining <= 0) {
                 return response;
             }
-            Thread.sleep(Math.min(RECEIVE_POLL_INTERVAL_MS, remaining));
+            waitForQueueActivity(ern, Math.min(RECEIVE_POLL_INTERVAL_MS, remaining));
         }
+    }
+
+    /**
+     * Waits up to {@code timeoutMillis} for either a matching "eqs.message.sent" websocket event
+     * for {@code ern} to arrive (waking up immediately once it does) or the timeout to elapse -
+     * whichever happens first. Falls back to a plain sleep, permanently for the rest of this
+     * instance's lifetime, the first time a websocket connection can't be established.
+     *
+     * @param ern           the queue ERN to wait for activity on
+     * @param timeoutMillis how long to wait, in milliseconds
+     * @throws InterruptedException if interrupted while waiting
+     */
+    private void waitForQueueActivity(String ern, long timeoutMillis) throws InterruptedException {
+        if (!webSocketUnavailable) {
+            try {
+                eventStream().awaitEvent("eqs.message.sent", Map.of("queueErn", ern), timeoutMillis);
+                return;
+            } catch (IOException e) {
+                webSocketUnavailable = true;
+            }
+        }
+        Thread.sleep(timeoutMillis);
+    }
+
+    private EuclidEventStream eventStream() {
+        EuclidEventStream stream = eventStream;
+        if (stream == null) {
+            synchronized (this) {
+                stream = eventStream;
+                if (stream == null) {
+                    stream = new EuclidEventStream(baseUrl, token, region, accountId, userId, accessKeyId, secretAccessKey, caCertPath, TARGET);
+                    eventStream = stream;
+                }
+            }
+        }
+        return stream;
     }
 
     /**
@@ -591,27 +722,53 @@ public final class EuclidEqs {
                 requestHeaders("receive-messages", body));
 
         if (response.statusCode() / 100 != 2) {
-            throw new EuclidAuthenticationException(response.statusCode(), response.body());
+            throw new EuclidServiceException("eqs", "receive-messages", response.statusCode(), response.body());
         }
 
         return extractReceiveMessagesResponse(response.body());
     }
 
     /**
-     * Deletes a message from the queue using the provided receipt handle.
+     * Deletes a message from the queue using the provided receipt handle. This is the
+     * SQS-compatible way to delete, and only works for a message that was received: the handle is
+     * a lease, and the delete fails once its visibility timeout has expired.
      *
      * @param receiptHandle The unique identifier associated with the message to be deleted.
      * @throws IOException If an I/O error occurs during the deletion request.
      * @throws InterruptedException If the request is interrupted while waiting for a response.
      */
     public void deleteMessage(String receiptHandle) throws IOException, InterruptedException {
-        String body = OBJECT_MAPPER.writeValueAsString(
-                DeleteMessageRequest.builder().receiptHandle(receiptHandle).build());
+        deleteMessage(DeleteMessageRequest.builder().receiptHandle(receiptHandle).build());
+    }
+
+    /**
+     * Deletes a message by its ID, including one that has never been received - a message still
+     * AVAILABLE or DELAYED. This bypasses the receipt-handle lease {@link #deleteMessage(String)}
+     * goes through, and is a Euclid extension with no AWS SQS equivalent.
+     *
+     * @param messageId The ID of the message to be deleted.
+     * @throws IOException If an I/O error occurs during the deletion request.
+     * @throws InterruptedException If the request is interrupted while waiting for a response.
+     */
+    public void deleteMessageById(String messageId) throws IOException, InterruptedException {
+        deleteMessage(DeleteMessageRequest.builder().messageId(messageId).build());
+    }
+
+    /**
+     * Sends a delete-message action. The server takes either a receipt handle or a message ID and
+     * rejects a request carrying neither, so the two public entry points each fill in one.
+     *
+     * @param request the delete request, addressing the message one way or the other
+     * @throws IOException If an I/O error occurs during the deletion request.
+     * @throws InterruptedException If the request is interrupted while waiting for a response.
+     */
+    private void deleteMessage(DeleteMessageRequest request) throws IOException, InterruptedException {
+        String body = OBJECT_MAPPER.writeValueAsString(request);
         HttpResponse<String> response = httpClient.post(baseUrl + "/", body, "eqs", "delete-message",
                 requestHeaders("delete-message", body));
 
         if (response.statusCode() / 100 != 2) {
-            throw new EuclidAuthenticationException(response.statusCode(), response.body());
+            throw new EuclidServiceException("eqs", "delete-message", response.statusCode(), response.body());
         }
     }
 
@@ -630,7 +787,7 @@ public final class EuclidEqs {
                 requestHeaders("get-message-count", body));
 
         if (response.statusCode() / 100 != 2) {
-            throw new EuclidAuthenticationException(response.statusCode(), response.body());
+            throw new EuclidServiceException("eqs", "get-message-count", response.statusCode(), response.body());
         }
 
         return extractGetMessageCountResponse(response.body());
@@ -651,7 +808,7 @@ public final class EuclidEqs {
                 requestHeaders("set-visibility", body));
 
         if (response.statusCode() / 100 != 2) {
-            throw new EuclidAuthenticationException(response.statusCode(), response.body());
+            throw new EuclidServiceException("eqs", "set-visibility", response.statusCode(), response.body());
         }
     }
 
@@ -672,7 +829,7 @@ public final class EuclidEqs {
                 requestHeaders("get-message-attribute", body));
 
         if (response.statusCode() / 100 != 2) {
-            throw new EuclidAuthenticationException(response.statusCode(), response.body());
+            throw new EuclidServiceException("eqs", "get-message-attribute", response.statusCode(), response.body());
         }
 
         return extractGetMessageAttributeResponse(response.body());
@@ -693,7 +850,7 @@ public final class EuclidEqs {
                 requestHeaders("get-message-metadata", body));
 
         if (response.statusCode() / 100 != 2) {
-            throw new EuclidAuthenticationException(response.statusCode(), response.body());
+            throw new EuclidServiceException("eqs", "get-message-metadata", response.statusCode(), response.body());
         }
 
         return extractGetMessageMetadataResponse(response.body());
@@ -717,7 +874,7 @@ public final class EuclidEqs {
                 requestHeaders("set-message-attribute", body));
 
         if (response.statusCode() / 100 != 2) {
-            throw new EuclidAuthenticationException(response.statusCode(), response.body());
+            throw new EuclidServiceException("eqs", "set-message-attribute", response.statusCode(), response.body());
         }
 
         return extractGetMessageAttributeResponse(response.body());
@@ -738,7 +895,7 @@ public final class EuclidEqs {
                 requestHeaders("add-queue-tag", body));
 
         if (response.statusCode() / 100 != 2) {
-            throw new EuclidAuthenticationException(response.statusCode(), response.body());
+            throw new EuclidServiceException("eqs", "add-queue-tag", response.statusCode(), response.body());
         }
     }
 
@@ -757,7 +914,7 @@ public final class EuclidEqs {
                 requestHeaders("set-queue-tag", body));
 
         if (response.statusCode() / 100 != 2) {
-            throw new EuclidAuthenticationException(response.statusCode(), response.body());
+            throw new EuclidServiceException("eqs", "set-queue-tag", response.statusCode(), response.body());
         }
     }
 
@@ -775,7 +932,7 @@ public final class EuclidEqs {
                 requestHeaders("delete-queue-tag", body));
 
         if (response.statusCode() / 100 != 2) {
-            throw new EuclidAuthenticationException(response.statusCode(), response.body());
+            throw new EuclidServiceException("eqs", "delete-queue-tag", response.statusCode(), response.body());
         }
     }
 
@@ -813,7 +970,7 @@ public final class EuclidEqs {
      */
     private static GetQueueErnResponse extractGetQueueErnResponse(String responseBody) throws IOException {
         JsonNode root = OBJECT_MAPPER.readTree(responseBody);
-        return GetQueueErnResponse.builder().ern(textOrNull(root, "ern")).build();
+        return GetQueueErnResponse.builder().name(textOrNull(root, "name")).ern(textOrNull(root, "ern")).build();
     }
 
     /**
@@ -826,7 +983,8 @@ public final class EuclidEqs {
     private static GetMessageCountResponse extractGetMessageCountResponse(String responseBody) throws IOException {
         JsonNode root = OBJECT_MAPPER.readTree(responseBody);
         return GetMessageCountResponse.builder().ern(textOrNull(root, "ern")).available(root.path("available").asLong(0))
-                .delayed(root.path("delayed").asLong(0)).invisible(root.path("invisible").asLong(0)).build();
+                .delayed(root.path("delayed").asLong(0)).invisible(root.path("invisible").asLong(0))
+                .total(root.path("total").asLong(0)).build();
     }
 
     /**
@@ -913,6 +1071,9 @@ public final class EuclidEqs {
         if (userId != null) {
             headers.put("x-euclid-user-id", userId);
         }
+        if (nameSpace != null && !nameSpace.isEmpty()) {
+            headers.put("x-euclid-namespace", nameSpace);
+        }
 
         if (accessKeyId != null && !accessKeyId.isEmpty() && secretAccessKey != null && !secretAccessKey.isEmpty()) {
             SignableRequest signable = new SignableRequest("POST", "/");
@@ -977,8 +1138,10 @@ public final class EuclidEqs {
                         textOrNull(messageNode, "status"),
                         textOrNull(messageNode, "priority"),
                         textOrNull(messageNode, "body"),
-                        textOrNull(messageNode, "md5sum"),
+                        textOrNull(messageNode, "md5Body"),
                         textOrNull(messageNode, "receiptHandle"),
+                        messageNode.path("size").asLong(0),
+                        textOrNull(messageNode, "contentType"),
                         toVariantMap(messageNode.get("attributes")),
                         textOrNull(messageNode, "md5Attributes"),
                         textOrNull(messageNode, "lastReceived"),
@@ -1014,31 +1177,32 @@ public final class EuclidEqs {
      * @return a list of {@code Queue} objects parsed from the response body
      * @throws IOException if an error occurs while parsing the JSON response
      */
-    private static List<Queue> extractQueues(String responseBody) throws IOException {
-        JsonNode queuesNode = OBJECT_MAPPER.readTree(responseBody).get("queues");
+    private static ListQueueResponse extractListQueueResponse(String responseBody) throws IOException {
+        JsonNode root = OBJECT_MAPPER.readTree(responseBody);
+        JsonNode queuesNode = root.get("queues");
         List<Queue> queues = new ArrayList<>();
         if (queuesNode != null && queuesNode.isArray()) {
             for (JsonNode queueNode : queuesNode) {
                 queues.add(new Queue(
-                        textOrNull(queueNode, "region"),
                         textOrNull(queueNode, "name"),
                         textOrNull(queueNode, "owner"),
                         textOrNull(queueNode, "ern"),
                         toStringMap(queueNode.get("tags")),
-                        queueNode.path("delay").asLong(0),
                         queueNode.path("size").asLong(0),
-                        queueNode.path("messages").asLong(0),
+                        queueNode.path("delay").asLong(0),
+                        queueNode.path("available").asLong(0),
                         queueNode.path("delayed").asLong(0),
-                        queueNode.path("busy").asLong(0),
+                        queueNode.path("invisible").asLong(0),
                         queueNode.path("visibility").asLong(30),
                         queueNode.path("maxMessageLength").asLong(1024 * 1024),
                         queueNode.path("maxReceiveCount").asLong(3),
                         textOrNull(queueNode, "deadLetterQueueArn"),
+                        textOrNull(queueNode, "priority"),
                         textOrNull(queueNode, "created"),
                         textOrNull(queueNode, "modified")));
             }
         }
-        return queues;
+        return ListQueueResponse.builder().queues(queues).total(root.path("total").asLong(0)).build();
     }
 
     /**
