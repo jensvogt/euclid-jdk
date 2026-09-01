@@ -149,6 +149,48 @@ public final class FakeGatewayServer implements AutoCloseable {
     }
 
     /**
+     * Drops every connected websocket client, the way an idle timeout or a gateway restart does,
+     * forgetting the subscriptions those connections carried.
+     *
+     * <p>Forgetting them is the point: the real gateway attaches a subscription to the session
+     * that asked for it ({@code GatewayWsRegistry}), so a client that reconnects without saying
+     * what it wants again is connected and receives nothing.
+     *
+     * @throws IOException if a socket cannot be closed
+     */
+    public void dropConnections() throws IOException {
+        List<Socket> dropped = List.copyOf(wsSockets);
+        wsSockets.removeAll(dropped);
+        for (Socket socket : dropped) {
+            subscriptionsBySocket.remove(socket);
+            socket.close();
+        }
+    }
+
+    /**
+     * Blocks until some websocket connection other than the ones already dropped carries a
+     * subscription for {@code topic}.
+     *
+     * @param topic          the topic to wait for
+     * @param timeoutSeconds the maximum time to wait
+     * @throws InterruptedException if the thread is interrupted while waiting
+     */
+    public void awaitSubscriptionCount(String topic, int count, long timeoutSeconds) throws InterruptedException {
+        long deadline = System.currentTimeMillis() + timeoutSeconds * 1000;
+        while (System.currentTimeMillis() < deadline) {
+            long matching = subscriptionsBySocket.values().stream()
+                    .filter(subs -> subs.stream().anyMatch(s -> s.topic.equals(topic)))
+                    .count();
+            if (matching >= count) {
+                return;
+            }
+            Thread.sleep(10);
+        }
+        throw new AssertionError("fewer than " + count + " connection(s) subscribed to " + topic
+                + " within " + timeoutSeconds + "s");
+    }
+
+    /**
      * Closes the fake gateway server and releases all associated resources.
      * This includes closing all active websocket connections as well as the server socket.
      *

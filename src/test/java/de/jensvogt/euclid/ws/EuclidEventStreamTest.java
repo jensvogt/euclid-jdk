@@ -2,11 +2,15 @@ package de.jensvogt.euclid.ws;
 
 import de.jensvogt.euclid.auth.SigV4;
 import de.jensvogt.euclid.auth.SignableRequest;
+import com.fasterxml.jackson.databind.JsonNode;
 import de.jensvogt.euclid.testutil.FakeGatewayServer;
 import org.junit.jupiter.api.Test;
 
+import java.io.IOException;
 import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -208,6 +212,87 @@ class EuclidEventStreamTest {
 
             assertThrows(java.io.IOException.class, () -> stream.awaitEvent("eqs.message.sent", Map.of(), 1000));
             rejecter.join();
+        }
+    }
+
+    /**
+     * The defect this guards against: delivery is per connection on the gateway, so a stream that
+     * reconnects without saying again what it is subscribed to ends up connected, healthy-looking
+     * and permanently silent - events pile up in the store and nothing is logged.
+     */
+    @Test
+    void replaysItsSubscriptionsOnTheConnectionThatReplacesADroppedOne() throws Exception {
+        try (FakeGatewayServer server = new FakeGatewayServer((headers, body) -> "{}")) {
+            EuclidEventStream stream = newClient(server, null, null);
+            CountDownLatch delivered = new CountDownLatch(1);
+            stream.addListener(new EventStreamListener() {
+                @Override
+                public void onEvent(String topic, JsonNode body) {
+                    delivered.countDown();
+                }
+            });
+
+            stream.subscribe("esm.object.created", Map.of("bucketName", "invoices"));
+            server.awaitSubscriptionCount("esm.object.created", 1, 5);
+
+            // What an idle timeout or a gateway restart does. The fake server forgets the
+            // subscription with the connection, exactly as GatewayWsRegistry does.
+            server.dropConnections();
+
+            // A second connection carrying the same subscription is the whole assertion: without
+            // the replay the client reconnects (or does not) and is attached to nothing.
+            server.awaitSubscriptionCount("esm.object.created", 1, 15);
+            server.sendEventFrame("esm.object.created", Map.of("bucketName", "invoices"));
+
+            assertTrue(delivered.await(10, TimeUnit.SECONDS),
+                    "no event delivered after the connection was replaced");
+            stream.close();
+        }
+    }
+
+    /**
+     * A durable listener is told to go and look, because nothing could be pushed to it while it
+     * was disconnected - the events it missed are in the store, not on the wire.
+     */
+    @Test
+    void tellsListenersItReconnected() throws Exception {
+        try (FakeGatewayServer server = new FakeGatewayServer((headers, body) -> "{}")) {
+            EuclidEventStream stream = newClient(server, null, null);
+            CountDownLatch reconnected = new CountDownLatch(1);
+            stream.addListener(new EventStreamListener() {
+                @Override
+                public void onReconnected() {
+                    reconnected.countDown();
+                }
+            });
+
+            stream.subscribe("esm.object.created", Map.of());
+            server.awaitSubscriptionCount("esm.object.created", 1, 5);
+
+            server.dropConnections();
+
+            assertTrue(reconnected.await(15, TimeUnit.SECONDS), "listeners were not told about the reconnect");
+            stream.close();
+        }
+    }
+
+    /**
+     * Closing is closing: a stream that was shut down deliberately must not keep dialling the
+     * gateway in the background.
+     */
+    @Test
+    void doesNotReconnectAfterClose() throws Exception {
+        try (FakeGatewayServer server = new FakeGatewayServer((headers, body) -> "{}")) {
+            EuclidEventStream stream = newClient(server, null, null);
+            stream.subscribe("esm.object.created", Map.of());
+            server.awaitSubscriptionCount("esm.object.created", 1, 5);
+
+            stream.close();
+            server.dropConnections();
+            Thread.sleep(2500);
+
+            assertThrows(IOException.class, () -> stream.subscribe("esm.object.updated", Map.of()),
+                    "a closed stream should refuse to reconnect");
         }
     }
 
