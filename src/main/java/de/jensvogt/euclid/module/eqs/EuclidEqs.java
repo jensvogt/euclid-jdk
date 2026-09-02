@@ -2,6 +2,7 @@ package de.jensvogt.euclid.module.eqs;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import de.jensvogt.euclid.auth.TokenRefreshable;
 import de.jensvogt.euclid.dto.com.Variant;
 import de.jensvogt.euclid.dto.eqs.AddQueueTagRequest;
 import de.jensvogt.euclid.dto.eqs.CreateQueueRequest;
@@ -37,8 +38,9 @@ import de.jensvogt.euclid.dto.eqs.model.Queue;
 import de.jensvogt.euclid.http.EuclidHttpClient;
 import de.jensvogt.euclid.ws.EuclidEventStream;
 import de.jensvogt.euclid.exception.EuclidServiceException;
-import de.jensvogt.euclid.auth.SigV4;
 import de.jensvogt.euclid.auth.SignableRequest;
+import de.jensvogt.euclid.auth.SigningScheme;
+import de.jensvogt.euclid.auth.SigningSchemeSelectable;
 
 import java.io.IOException;
 import java.net.URI;
@@ -48,11 +50,13 @@ import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
+import java.util.function.Supplier;
 
 /**
  * EQS operations for an authenticated {@link de.jensvogt.euclid.module.eam.EuclidSession}.
  */
-public final class EuclidEqs {
+public final class EuclidEqs implements TokenRefreshable, SigningSchemeSelectable {
 
     /**
      * A statically instantiated, thread-safe Jackson {@code ObjectMapper} used for
@@ -96,12 +100,13 @@ public final class EuclidEqs {
     private final String baseUrl;
 
     /**
-     * The authentication token used for bearer token-based authorization.
-     * This token is typically provided during object initialization and is
-     * used for authenticating API requests when access key-based signing is
-     * not enabled or available.
+     * Supplies the bearer token for each request, used when no SigV4 access key is configured.
+     *
+     * <p>A supplier rather than a string so that a token which expires can be replaced without
+     * rebuilding the client - see {@link TokenRefreshable#token(Supplier)}. A client built with a
+     * fixed token holds a supplier that returns it.
      */
-    private final String token;
+    private volatile Supplier<String> token;
 
     /**
      * Represents the geographical region or location where the operations will be performed.
@@ -184,6 +189,15 @@ public final class EuclidEqs {
     private final String nameSpace;
 
     /**
+     * The scheme requests are signed with when an access key is configured.
+     *
+     * <p>Defaults to SigV4, which is what euclid has always accepted; a caller pointed at a server
+     * that understands RFC 9421 switches it with {@link #signingScheme(SigningScheme)}. Volatile
+     * because that call can come from a different thread than the requests it affects.
+     */
+    private volatile SigningScheme signingScheme = SigningScheme.SIGV4;
+
+    /**
      * Lazily-created websocket connection used by {@link #receiveMessages} to wake up as soon as
      * an "eqs.message.sent" event arrives for the queue being waited on, instead of only polling
      * every {@link #RECEIVE_POLL_INTERVAL_MS}. {@code null} until first needed.
@@ -215,7 +229,7 @@ public final class EuclidEqs {
     public EuclidEqs(String baseUrl, String token, String region, String accountId, String userId,
                      String accessKeyId, String secretAccessKey, String caCertPath, String nameSpace) {
         this.baseUrl = baseUrl;
-        this.token = token;
+        this.token = () -> token;
         this.region = region;
         this.accountId = accountId;
         this.userId = userId;
@@ -224,6 +238,22 @@ public final class EuclidEqs {
         this.caCertPath = caCertPath;
         this.nameSpace = nameSpace;
         this.httpClient = new EuclidHttpClient(caCertPath);
+    }
+
+    /**
+     * {@inheritDoc}
+     */
+    @Override
+    public void token(Supplier<String> token) {
+        this.token = Objects.requireNonNull(token, "token supplier must not be null");
+    }
+
+    /**
+     * {@inheritDoc}
+     */
+    @Override
+    public void signingScheme(SigningScheme signingScheme) {
+        this.signingScheme = Objects.requireNonNull(signingScheme, "signing scheme must not be null");
     }
 
     /**
@@ -663,7 +693,11 @@ public final class EuclidEqs {
             synchronized (this) {
                 stream = eventStream;
                 if (stream == null) {
-                    stream = new EuclidEventStream(baseUrl, token, region, accountId, userId, accessKeyId, secretAccessKey, caCertPath, TARGET);
+                    stream = new EuclidEventStream(baseUrl, token.get(), region, accountId, userId, accessKeyId, secretAccessKey, caCertPath, TARGET);
+                    // The stream outlives any one token by far - it is the connection that stays
+                    // open for as long as this client does - so it is given the same supplier
+                    // rather than the string, and reconnects with whatever is current.
+                    stream.token(token);
                     eventStream = stream;
                 }
             }
@@ -1082,14 +1116,35 @@ public final class EuclidEqs {
             signable.header("x-euclid-target", TARGET);
             signable.header("x-euclid-action", action);
             signable.body(body);
-            SigV4.sign(signable, accessKeyId, secretAccessKey, region, TARGET);
-            headers.put("x-amz-date", signable.header("x-amz-date"));
-            headers.put("x-amz-content-sha256", signable.header("x-amz-content-sha256"));
-            headers.put("Authorization", signable.header("authorization"));
+            signSignatureHeaders(signable, TARGET, headers);
         } else {
-            headers.put("Authorization", "Bearer " + token);
+            headers.put("Authorization", "Bearer " + token.get());
         }
         return headers;
+    }
+
+    /**
+     * Signs {@code signable} with the configured scheme and copies the headers it produced onto the
+     * outgoing request.
+     * <p>
+     * Which headers those are is the scheme's business rather than this method's: SigV4 signs into
+     * Authorization alongside two {@code x-amz-*} headers, RFC 9421 into Signature and
+     * Signature-Input alongside Content-Digest. The scheme is read once into a local so that a
+     * {@link #signingScheme(SigningScheme)} call arriving mid-request cannot sign with one scheme
+     * and then copy the header names of the other.
+     *
+     * @param signable the request to sign, with every header the signature covers and the body
+     *                 already set on it
+     * @param service  the service to scope the signature to
+     * @param headers  the outgoing headers, which the signature headers are added to in place
+     */
+    private void signSignatureHeaders(SignableRequest signable, String service, Map<String, String> headers) {
+        signable.scheme(URI.create(baseUrl).getScheme());
+        SigningScheme scheme = signingScheme;
+        scheme.sign(signable, accessKeyId, secretAccessKey, region, service);
+        for (String header : scheme.signatureHeaderNames()) {
+            headers.put(header, signable.header(header));
+        }
     }
 
     /**

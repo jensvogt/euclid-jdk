@@ -3,8 +3,10 @@ package de.jensvogt.euclid.module.eap;
 import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import de.jensvogt.euclid.auth.SigV4;
 import de.jensvogt.euclid.auth.SignableRequest;
+import de.jensvogt.euclid.auth.SigningScheme;
+import de.jensvogt.euclid.auth.SigningSchemeSelectable;
+import de.jensvogt.euclid.auth.TokenRefreshable;
 import de.jensvogt.euclid.dto.eap.ApplicationRequest;
 import de.jensvogt.euclid.dto.eap.CreateApplicationRequest;
 import de.jensvogt.euclid.dto.eap.ListApplicationsRequest;
@@ -20,6 +22,8 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
+import java.util.function.Supplier;
 
 /**
  * EAP (application platform) operations for an authenticated
@@ -38,7 +42,7 @@ import java.util.Map;
  * set {@code desiredState}; euclid-mgr's reconciler is what launches or tears down the processes,
  * so {@link Application#state()} can lag {@link Application#desiredState()} briefly after either.
  */
-public final class EuclidEap {
+public final class EuclidEap implements TokenRefreshable, SigningSchemeSelectable {
 
     /**
      * A singleton instance of {@code ObjectMapper} from the Jackson library used for
@@ -65,9 +69,13 @@ public final class EuclidEap {
     private final String baseUrl;
 
     /**
-     * The bearer token issued at login, used when no SigV4 access key is configured.
+     * Supplies the bearer token for each request, used when no SigV4 access key is configured.
+     *
+     * <p>A supplier rather than a string so that a token which expires can be replaced without
+     * rebuilding the client - see {@link TokenRefreshable#token(Supplier)}. A client built with a
+     * fixed token holds a supplier that returns it.
      */
-    private final String token;
+    private volatile Supplier<String> token;
 
     /**
      * The region requests are made in.
@@ -101,6 +109,15 @@ public final class EuclidEap {
     private final String nameSpace;
 
     /**
+     * The scheme requests are signed with when an access key is configured.
+     *
+     * <p>Defaults to SigV4, which is what euclid has always accepted; a caller pointed at a server
+     * that understands RFC 9421 switches it with {@link #signingScheme(SigningScheme)}. Volatile
+     * because that call can come from a different thread than the requests it affects.
+     */
+    private volatile SigningScheme signingScheme = SigningScheme.SIGV4;
+
+    /**
      * The HTTP client used for every request, pre-configured with this session's TLS trust.
      */
     private final EuclidHttpClient httpClient;
@@ -122,7 +139,7 @@ public final class EuclidEap {
     public EuclidEap(String baseUrl, String token, String region, String accountId, String userId,
                      String accessKeyId, String secretAccessKey, String caCertPath, String nameSpace) {
         this.baseUrl = baseUrl;
-        this.token = token;
+        this.token = () -> token;
         this.region = region;
         this.accountId = accountId;
         this.userId = userId;
@@ -130,6 +147,22 @@ public final class EuclidEap {
         this.secretAccessKey = secretAccessKey;
         this.nameSpace = nameSpace;
         this.httpClient = new EuclidHttpClient(caCertPath);
+    }
+
+    /**
+     * {@inheritDoc}
+     */
+    @Override
+    public void token(Supplier<String> token) {
+        this.token = Objects.requireNonNull(token, "token supplier must not be null");
+    }
+
+    /**
+     * {@inheritDoc}
+     */
+    @Override
+    public void signingScheme(SigningScheme signingScheme) {
+        this.signingScheme = Objects.requireNonNull(signingScheme, "signing scheme must not be null");
     }
 
     /**
@@ -362,7 +395,9 @@ public final class EuclidEap {
      * Generates a map of HTTP request headers for a specified action and request body.
      * The headers include content type, region, account ID, user ID, and
      * authentication information. If AWS credentials are available, the headers
-     * are signed using the SigV4 signing process; otherwise, a Bearer token is used.
+     * are signed with the client's configured {@link SigningScheme} - SigV4 unless
+     * {@link #signingScheme(SigningScheme)} says otherwise; without an access key, a Bearer token is
+     * used and nothing is signed.
      *
      * @param action the action being performed by the request.
      * @param body the body of the request to be included for signing.
@@ -391,18 +426,39 @@ public final class EuclidEap {
             signable.header("x-euclid-target", TARGET);
             signable.header("x-euclid-action", action);
             signable.body(body);
-            SigV4.sign(signable, accessKeyId, secretAccessKey, region, TARGET);
-            headers.put("x-amz-date", signable.header("x-amz-date"));
-            headers.put("x-amz-content-sha256", signable.header("x-amz-content-sha256"));
-            headers.put("Authorization", signable.header("authorization"));
+            signSignatureHeaders(signable, TARGET, headers);
         } else {
-            headers.put("Authorization", "Bearer " + token);
+            headers.put("Authorization", "Bearer " + token.get());
         }
         return headers;
     }
 
     /**
-     * Builds the {@code host} header value the SigV4 signature is computed over, including the port
+     * Signs {@code signable} with the configured scheme and copies the headers it produced onto the
+     * outgoing request.
+     * <p>
+     * Which headers those are is the scheme's business rather than this method's: SigV4 signs into
+     * Authorization alongside two {@code x-amz-*} headers, RFC 9421 into Signature and
+     * Signature-Input alongside Content-Digest. The scheme is read once into a local so that a
+     * {@link #signingScheme(SigningScheme)} call arriving mid-request cannot sign with one scheme
+     * and then copy the header names of the other.
+     *
+     * @param signable the request to sign, with every header the signature covers and the body
+     *                 already set on it
+     * @param service  the service to scope the signature to
+     * @param headers  the outgoing headers, which the signature headers are added to in place
+     */
+    private void signSignatureHeaders(SignableRequest signable, String service, Map<String, String> headers) {
+        signable.scheme(URI.create(baseUrl).getScheme());
+        SigningScheme scheme = signingScheme;
+        scheme.sign(signable, accessKeyId, secretAccessKey, region, service);
+        for (String header : scheme.signatureHeaderNames()) {
+            headers.put(header, signable.header(header));
+        }
+    }
+
+    /**
+     * Builds the {@code host} header value the request signature is computed over, including the port
      * when the base URL names one.
      *
      * @return the host header value

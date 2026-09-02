@@ -2,8 +2,10 @@ package de.jensvogt.euclid.module.ens;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import de.jensvogt.euclid.auth.SigV4;
 import de.jensvogt.euclid.auth.SignableRequest;
+import de.jensvogt.euclid.auth.SigningScheme;
+import de.jensvogt.euclid.auth.SigningSchemeSelectable;
+import de.jensvogt.euclid.auth.TokenRefreshable;
 import de.jensvogt.euclid.dto.com.Variant;
 import de.jensvogt.euclid.dto.ens.AddTopicTagRequest;
 import de.jensvogt.euclid.dto.ens.CreateTopicRequest;
@@ -47,24 +49,42 @@ import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
+import java.util.function.Supplier;
 
 /**
  * ENS (pub/sub topic) operations for an authenticated {@link de.jensvogt.euclid.module.eam.EuclidSession}.
  * Mirrors euclid-cli's {@code EnsCli}.
  */
-public final class EuclidEns {
+public final class EuclidEns implements TokenRefreshable, SigningSchemeSelectable {
 
     private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
     private static final String TARGET = "ens";
 
     private final String baseUrl;
-    private final String token;
+    /**
+     * Supplies the bearer token for each request, used when no SigV4 access key is configured.
+     *
+     * <p>A supplier rather than a string so that a token which expires can be replaced without
+     * rebuilding the client - see {@link TokenRefreshable#token(Supplier)}. A client built with a
+     * fixed token holds a supplier that returns it.
+     */
+    private volatile Supplier<String> token;
     private final String region;
     private final String accountId;
     private final String userId;
     private final String accessKeyId;
     private final String secretAccessKey;
     private final String nameSpace;
+
+    /**
+     * The scheme requests are signed with when an access key is configured.
+     *
+     * <p>Defaults to SigV4, which is what euclid has always accepted; a caller pointed at a server
+     * that understands RFC 9421 switches it with {@link #signingScheme(SigningScheme)}. Volatile
+     * because that call can come from a different thread than the requests it affects.
+     */
+    private volatile SigningScheme signingScheme = SigningScheme.SIGV4;
     private final EuclidHttpClient httpClient;
 
     /**
@@ -88,7 +108,7 @@ public final class EuclidEns {
     public EuclidEns(String baseUrl, String token, String region, String accountId, String userId,
                       String accessKeyId, String secretAccessKey, String caCertPath, String nameSpace) {
         this.baseUrl = baseUrl;
-        this.token = token;
+        this.token = () -> token;
         this.region = region;
         this.accountId = accountId;
         this.userId = userId;
@@ -96,6 +116,22 @@ public final class EuclidEns {
         this.nameSpace = nameSpace;
         this.secretAccessKey = secretAccessKey;
         this.httpClient = new EuclidHttpClient(caCertPath);
+    }
+
+    /**
+     * {@inheritDoc}
+     */
+    @Override
+    public void token(Supplier<String> token) {
+        this.token = Objects.requireNonNull(token, "token supplier must not be null");
+    }
+
+    /**
+     * {@inheritDoc}
+     */
+    @Override
+    public void signingScheme(SigningScheme signingScheme) {
+        this.signingScheme = Objects.requireNonNull(signingScheme, "signing scheme must not be null");
     }
 
     /**
@@ -668,8 +704,9 @@ public final class EuclidEns {
     /**
      * Builds the headers for one request/action: routing headers plus authentication.
      * <p>
-     * Signs with SigV4 (accessKeyId/secretAccessKey) when both are configured, mirroring how
-     * euclid-cli authenticates service calls; falls back to the bearer token otherwise.
+     * Signs with the configured {@link SigningScheme} - SigV4 unless
+     * {@link #signingScheme(SigningScheme)} says otherwise - when accessKeyId and secretAccessKey
+     * are both set, mirroring how euclid-cli authenticates service calls; falls back to the bearer token otherwise.
      */
     private Map<String, String> requestHeaders(String action, String body) {
         Map<String, String> headers = new LinkedHashMap<>();
@@ -694,14 +731,35 @@ public final class EuclidEns {
             signable.header("x-euclid-target", TARGET);
             signable.header("x-euclid-action", action);
             signable.body(body);
-            SigV4.sign(signable, accessKeyId, secretAccessKey, region, TARGET);
-            headers.put("x-amz-date", signable.header("x-amz-date"));
-            headers.put("x-amz-content-sha256", signable.header("x-amz-content-sha256"));
-            headers.put("Authorization", signable.header("authorization"));
+            signSignatureHeaders(signable, TARGET, headers);
         } else {
-            headers.put("Authorization", "Bearer " + token);
+            headers.put("Authorization", "Bearer " + token.get());
         }
         return headers;
+    }
+
+    /**
+     * Signs {@code signable} with the configured scheme and copies the headers it produced onto the
+     * outgoing request.
+     * <p>
+     * Which headers those are is the scheme's business rather than this method's: SigV4 signs into
+     * Authorization alongside two {@code x-amz-*} headers, RFC 9421 into Signature and
+     * Signature-Input alongside Content-Digest. The scheme is read once into a local so that a
+     * {@link #signingScheme(SigningScheme)} call arriving mid-request cannot sign with one scheme
+     * and then copy the header names of the other.
+     *
+     * @param signable the request to sign, with every header the signature covers and the body
+     *                 already set on it
+     * @param service  the service to scope the signature to
+     * @param headers  the outgoing headers, which the signature headers are added to in place
+     */
+    private void signSignatureHeaders(SignableRequest signable, String service, Map<String, String> headers) {
+        signable.scheme(URI.create(baseUrl).getScheme());
+        SigningScheme scheme = signingScheme;
+        scheme.sign(signable, accessKeyId, secretAccessKey, region, service);
+        for (String header : scheme.signatureHeaderNames()) {
+            headers.put(header, signable.header(header));
+        }
     }
 
     // The literal "Host" header java.net.http will put on the wire, derived the same way it
