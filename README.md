@@ -95,6 +95,29 @@ One stream can carry several listeners, and the same connection also still serve
 `stream.awaitEvent(topic, filter, timeoutMillis)` for the simple "wait for the
 next one" case.
 
+### Request signing
+
+A client configured with an access key signs every request rather than sending a
+bearer token. Two schemes are implemented: AWS SigV4, which is the default and
+what euclid has always accepted, and [RFC 9421](https://www.rfc-editor.org/rfc/rfc9421.html)
+HTTP Message Signatures, the standard scheme meant to replace it. Both use the
+same access key and secret, so switching is a wire-format change and nothing else:
+
+```java
+EuclidEqs eqs = session.eqs();
+eqs.signingScheme(SigningScheme.RFC9421);
+```
+
+The two do not collide - SigV4 signs into `Authorization`, RFC 9421 into
+`Signature` and `Signature-Input` alongside an RFC 9530 `Content-Digest` - so a
+server can accept both while a deployment moves one service at a time.
+`SigningScheme.of(request)` reports which one a received request presents.
+
+The signature covers the request line, the host, the body digest and euclid's
+`x-euclid-*` routing headers. Which of the optional routing headers a request
+carries is derived from the request itself on both sides, so adding or removing
+one invalidates the signature rather than going unnoticed.
+
 ### TLS
 
 When connecting to a server with a self-signed development certificate, point

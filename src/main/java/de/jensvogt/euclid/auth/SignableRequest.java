@@ -30,11 +30,11 @@ public final class SignableRequest {
 
     /**
      * A collection of HTTP request headers associated with the signable request.
-     *
+     * <p>
      * The keys represent header names and are stored in a case-insensitive manner
      * (lowercased) to comply with the HTTP specification.
      * The values represent the corresponding header values, which are stored as strings.
-     *
+     * <p>
      * The headers are maintained in insertion order to ensure predictable header iteration.
      * This property is primarily used for adding, retrieving, or verifying headers
      * associated with the request during the signing or verification process.
@@ -43,12 +43,22 @@ public final class SignableRequest {
 
     /**
      * The body of the HTTP request.
-     *
+     * <p>
      * Represents the payload or content of the request, typically used in methods
      * such as POST or PUT where data is being sent to the server.
      * If no body is specified, the default value is an empty string.
      */
     private String body = "";
+
+    /**
+     * The URI scheme the request is sent over, lowercase.
+     * <p>
+     * Only {@link Rfc9421} reads it, and only to decide whether the port in the {@code host}
+     * header is the default one for the scheme and so has to be left out of {@code @authority}.
+     * It defaults to {@code https} because that is what euclid is reached over anywhere the
+     * distinction can matter; a plain-HTTP caller sets it so that both ends of a signature agree.
+     */
+    private String scheme = "https";
 
     /**
      * Constructs a new instance of the {@code SignableRequest} class with the specified HTTP method
@@ -98,6 +108,29 @@ public final class SignableRequest {
     public SignableRequest body(String body) {
         this.body = body == null ? "" : body;
         return this;
+    }
+
+    /**
+     * Sets the URI scheme the request is sent over. Ignored when null or empty, leaving the
+     * {@code https} default in place.
+     *
+     * @param scheme the scheme, e.g. "https" or "http"; case-insensitive.
+     * @return the current instance of {@code SignableRequest} for method chaining.
+     */
+    public SignableRequest scheme(String scheme) {
+        if (scheme != null && !scheme.isEmpty()) {
+            this.scheme = scheme.toLowerCase(Locale.ROOT);
+        }
+        return this;
+    }
+
+    /**
+     * Retrieves the URI scheme the request is sent over.
+     *
+     * @return the scheme, lowercase; "https" unless set otherwise.
+     */
+    public String scheme() {
+        return scheme;
     }
 
     /**

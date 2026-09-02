@@ -3,9 +3,11 @@ package de.jensvogt.euclid.ws;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
-import de.jensvogt.euclid.auth.SigV4;
-import de.jensvogt.euclid.dto.ees.model.DeliveryMode;
 import de.jensvogt.euclid.auth.SignableRequest;
+import de.jensvogt.euclid.auth.SigningScheme;
+import de.jensvogt.euclid.auth.SigningSchemeSelectable;
+import de.jensvogt.euclid.auth.TokenRefreshable;
+import de.jensvogt.euclid.dto.ees.model.DeliveryMode;
 import de.jensvogt.euclid.http.EuclidHttpClient;
 
 import java.io.IOException;
@@ -19,6 +21,7 @@ import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
@@ -31,6 +34,7 @@ import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.Supplier;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
@@ -61,7 +65,7 @@ import java.util.logging.Logger;
  * while the connection was gone. A keepalive ping goes out every {@link #PING_INTERVAL} so an
  * otherwise idle connection is not closed by the gateway's idle timeout in the first place.
  */
-public final class EuclidEventStream implements AutoCloseable {
+public final class EuclidEventStream implements AutoCloseable, TokenRefreshable, SigningSchemeSelectable {
 
     private static final Logger LOG = Logger.getLogger(EuclidEventStream.class.getName());
 
@@ -81,13 +85,29 @@ public final class EuclidEventStream implements AutoCloseable {
     private static final Duration MAX_RECONNECT_DELAY = Duration.ofSeconds(30);
 
     private final String baseUrl;
-    private final String token;
+    /**
+     * Supplies the bearer token for each request, used when no SigV4 access key is configured.
+     *
+     * <p>A supplier rather than a string so that a token which expires can be replaced without
+     * rebuilding the client - see {@link TokenRefreshable#token(Supplier)}. A client built with a
+     * fixed token holds a supplier that returns it.
+     */
+    private volatile Supplier<String> token;
     private final String region;
     private final String accountId;
     private final String userId;
     private final String accessKeyId;
     private final String secretAccessKey;
     private final String target;
+
+    /**
+     * The scheme requests are signed with when an access key is configured.
+     *
+     * <p>Defaults to SigV4, which is what euclid has always accepted; a caller pointed at a server
+     * that understands RFC 9421 switches it with {@link #signingScheme(SigningScheme)}. Volatile
+     * because that call can come from a different thread than the requests it affects.
+     */
+    private volatile SigningScheme signingScheme = SigningScheme.SIGV4;
     private final HttpClient httpClient;
 
     private final List<Waiter> waiters = new CopyOnWriteArrayList<>();
@@ -133,7 +153,7 @@ public final class EuclidEventStream implements AutoCloseable {
     public EuclidEventStream(String baseUrl, String token, String region, String accountId, String userId,
                               String accessKeyId, String secretAccessKey, String caCertPath, String target) {
         this.baseUrl = baseUrl;
-        this.token = token;
+        this.token = () -> token;
         this.region = region;
         this.accountId = accountId;
         this.userId = userId;
@@ -141,6 +161,22 @@ public final class EuclidEventStream implements AutoCloseable {
         this.secretAccessKey = secretAccessKey;
         this.target = target;
         this.httpClient = new EuclidHttpClient(caCertPath).httpClient();
+    }
+
+    /**
+     * {@inheritDoc}
+     */
+    @Override
+    public void token(Supplier<String> token) {
+        this.token = Objects.requireNonNull(token, "token supplier must not be null");
+    }
+
+    /**
+     * {@inheritDoc}
+     */
+    @Override
+    public void signingScheme(SigningScheme signingScheme) {
+        this.signingScheme = Objects.requireNonNull(signingScheme, "signing scheme must not be null");
     }
 
     /**
@@ -524,10 +560,12 @@ public final class EuclidEventStream implements AutoCloseable {
     /**
      * Builds the handshake headers: routing headers plus authentication.
      * <p>
-     * Signs with SigV4 (accessKeyId/secretAccessKey) when both are configured, mirroring how
-     * euclid-cli authenticates service calls; falls back to the bearer token otherwise. The
-     * handshake is a GET with no body, unlike every action call's POST - so it is signed as one,
-     * distinct from the POST-based signing the rest of the SDK's {@code requestHeaders()} methods do.
+     * Signs with the configured {@link SigningScheme} - SigV4 unless
+     * {@link #signingScheme(SigningScheme)} says otherwise - when accessKeyId and secretAccessKey
+     * are both set, mirroring how euclid-cli authenticates service calls; falls back to the bearer
+     * token otherwise. The handshake is a GET with no body, unlike every action call's POST - so it
+     * is signed as one, distinct from the POST-based signing the rest of the SDK's
+     * {@code requestHeaders()} methods do.
      */
     private Map<String, String> requestHeaders() {
         Map<String, String> headers = new LinkedHashMap<>();
@@ -548,16 +586,37 @@ public final class EuclidEventStream implements AutoCloseable {
             signable.header("x-euclid-target", target);
             signable.header("x-euclid-action", ACTION);
             signable.body("");
-            SigV4.sign(signable, accessKeyId, secretAccessKey, region, target);
-            headers.put("x-amz-date", signable.header("x-amz-date"));
-            headers.put("x-amz-content-sha256", signable.header("x-amz-content-sha256"));
-            headers.put("Authorization", signable.header("authorization"));
+            signSignatureHeaders(signable, target, headers);
         } else {
-            headers.put("Authorization", "Bearer " + token);
+            headers.put("Authorization", "Bearer " + token.get());
         }
         headers.put("x-euclid-target", target);
         headers.put("x-euclid-action", ACTION);
         return headers;
+    }
+
+    /**
+     * Signs {@code signable} with the configured scheme and copies the headers it produced onto the
+     * outgoing request.
+     * <p>
+     * Which headers those are is the scheme's business rather than this method's: SigV4 signs into
+     * Authorization alongside two {@code x-amz-*} headers, RFC 9421 into Signature and
+     * Signature-Input alongside Content-Digest. The scheme is read once into a local so that a
+     * {@link #signingScheme(SigningScheme)} call arriving mid-request cannot sign with one scheme
+     * and then copy the header names of the other.
+     *
+     * @param signable the request to sign, with every header the signature covers and the body
+     *                 already set on it
+     * @param service  the service to scope the signature to
+     * @param headers  the outgoing headers, which the signature headers are added to in place
+     */
+    private void signSignatureHeaders(SignableRequest signable, String service, Map<String, String> headers) {
+        signable.scheme(URI.create(baseUrl).getScheme());
+        SigningScheme scheme = signingScheme;
+        scheme.sign(signable, accessKeyId, secretAccessKey, region, service);
+        for (String header : scheme.signatureHeaderNames()) {
+            headers.put(header, signable.header(header));
+        }
     }
 
     // The literal "Host" header java.net.http will put on the wire, derived the same way it

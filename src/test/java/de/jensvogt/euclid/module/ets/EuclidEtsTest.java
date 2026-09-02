@@ -4,8 +4,10 @@ import com.sun.net.httpserver.Headers;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpHandler;
 import com.sun.net.httpserver.HttpServer;
+import de.jensvogt.euclid.auth.Rfc9421;
 import de.jensvogt.euclid.auth.SigV4;
 import de.jensvogt.euclid.auth.SignableRequest;
+import de.jensvogt.euclid.auth.SigningScheme;
 import de.jensvogt.euclid.dto.ets.CreateServerRequest;
 import de.jensvogt.euclid.dto.ets.UpdateServerRequest;
 import de.jensvogt.euclid.dto.ets.model.TransferServer;
@@ -21,6 +23,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.stream.Stream;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -29,16 +32,23 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * Confirms EuclidEts authenticates the way it claims to (SigV4-signed when an access key is
- * configured, bearer token otherwise, mirroring euclid-cli's HttpClient.cpp), routes every transfer
- * server action to the right request with a correctly-shaped body, parses the corresponding
- * response, and surfaces non-2xx responses as {@link EuclidServiceException}.
+ * Confirms EuclidEts authenticates the way it claims to (signed when an access key is configured -
+ * with SigV4 as euclid-cli's HttpClient.cpp does, or with RFC 9421 when that scheme is selected -
+ * and with a bearer token otherwise), routes every transfer server action to the right request with
+ * a correctly-shaped body, parses the corresponding response, and surfaces non-2xx responses as
+ * {@link EuclidServiceException}.
  */
 class EuclidEtsTest {
 
     private static final List<String> SIGNED_HEADERS = List.of("host", "x-amz-content-sha256", "x-amz-date",
             "x-euclid-account-id", "x-euclid-action", "x-euclid-region", "x-euclid-target", "x-euclid-user-id",
             "x-euclid-namespace");
+
+    /**
+     * The headers RFC 9421 signs into, none of which SigV4 uses - captured alongside
+     * {@link #SIGNED_HEADERS} so one helper can hand either scheme's verifier what it needs.
+     */
+    private static final List<String> RFC9421_HEADERS = List.of("content-digest", "signature", "signature-input");
 
     private HttpServer server;
 
@@ -71,6 +81,33 @@ class EuclidEtsTest {
                 id -> id.equals(accessKeyId) ? Optional.of(secretAccessKey) : Optional.empty());
         assertTrue(result.isPresent(), "server-side verification of the client's own signature must succeed");
         assertEquals(accessKeyId, result.get().accessKeyId());
+    }
+
+    @Test
+    void createServerSignsWithRfc9421WhenThatSchemeIsSelected() throws Exception {
+        String accessKeyId = "AKIDEXAMPLE";
+        String secretAccessKey = "wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY";
+
+        AtomicReference<SignableRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(captureRequest(exchange));
+            sendResponse(exchange, 200, serverJson());
+        });
+
+        EuclidEts ets = new EuclidEts(baseUrl(), "unused-token", "eu-central-1", "863459426936", "alice",
+                accessKeyId, secretAccessKey, null, null);
+        ets.signingScheme(SigningScheme.RFC9421);
+        ets.createServer(minimalRequest());
+
+        SignableRequest req = received.get();
+        assertEquals("", req.header("authorization"), "RFC 9421 signs into its own headers, leaving Authorization free");
+        assertEquals("", req.header("x-amz-date"), "no SigV4 leftovers once the scheme is switched");
+        assertEquals(Optional.of(SigningScheme.RFC9421), SigningScheme.of(req));
+
+        Optional<Rfc9421.VerifyResult> result = Rfc9421.verify(req,
+                id -> id.equals(accessKeyId) ? Optional.of(secretAccessKey) : Optional.empty());
+        assertTrue(result.isPresent(), "server-side verification of the client's own signature must succeed");
+        assertEquals(accessKeyId, result.get().keyId());
     }
 
     @Test
@@ -372,8 +409,10 @@ class EuclidEtsTest {
 
     private static SignableRequest captureRequest(HttpExchange exchange) throws IOException {
         SignableRequest req = new SignableRequest(exchange.getRequestMethod(), exchange.getRequestURI().toString());
+        // The test server is plain HTTP, and RFC 9421's @authority depends on knowing that.
+        req.scheme("http");
         Headers requestHeaders = exchange.getRequestHeaders();
-        for (String name : SIGNED_HEADERS) {
+        for (String name : Stream.concat(SIGNED_HEADERS.stream(), RFC9421_HEADERS.stream()).toList()) {
             String value = requestHeaders.getFirst(name);
             if (value != null) {
                 req.header(name, value);
