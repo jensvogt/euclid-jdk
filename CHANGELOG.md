@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.14](https://github.com/jensvogt/euclid-jdk/compare/euclid-jdk-v0.1.13...euclid-jdk-v0.1.14) (2026-09-02)
+
+
+### Bug Fixes
+
+* token refresh logic update ([bd2486b](https://github.com/jensvogt/euclid-jdk/commit/bd2486b9e7bef6fdf720ed0a1fba4066eec3c087))
+
 ## [0.1.13](https://github.com/jensvogt/euclid-jdk/compare/euclid-jdk-v0.1.12...euclid-jdk-v0.1.13) (2026-09-01)
 
 
