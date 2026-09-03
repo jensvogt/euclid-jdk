@@ -284,6 +284,82 @@ class EuclidEsmTest {
         assertTrue(exception.responseBody().contains("boom"));
     }
 
+    /**
+     * Attributes belong on the upload, not on a call after it. EsmServer::handleCompleteUpload is
+     * what reads the x-euclid-attributes header, and the object row its background pass writes at
+     * the end is built from it - so an attribute added once the upload returns is written to a row
+     * that pass then replaces. Asserted on complete-upload rather than create-upload because that
+     * is the request the server actually looks at; sending it on the other one is silently
+     * ignored, which looks exactly like the attributes never being set.
+     */
+    @Test
+    void uploadFileCarriesItsAttributesOnCompleteUpload(@TempDir Path tempDir) throws Exception {
+        Path file = tempDir.resolve("data.bin");
+        Files.writeString(file, "ABCDEFGHIJ", StandardCharsets.US_ASCII);
+
+        AtomicReference<String> attributesHeader = new AtomicReference<>();
+
+        server = startServer(exchange -> {
+            String action = exchange.getRequestHeaders().getFirst("x-euclid-action");
+            switch (action) {
+                case "create-upload" -> {
+                    exchange.getRequestBody().readAllBytes();
+                    sendResponse(exchange, 200, "{\"uploadId\":\"upload-1\",\"bucketErn\":\"bucket-ern\",\"key\":\"data.bin\"}");
+                }
+                case "upload-part" -> {
+                    exchange.getRequestBody().readAllBytes();
+                    sendResponse(exchange, 200, "{}");
+                }
+                case "complete-upload" -> {
+                    attributesHeader.set(exchange.getRequestHeaders().getFirst("x-euclid-attributes"));
+                    sendResponse(exchange, 200,
+                        "{\"ern\":\"obj-ern\",\"bucketErn\":\"bucket-ern\",\"key\":\"data.bin\","
+                                + "\"size\":10,\"status\":\"AVAILABLE\",\"contentType\":\"application/octet-stream\",\"md5Sum\":\"abc\"}");
+                }
+                default -> sendResponse(exchange, 500, "{\"error\":\"unexpected action " + action + "\"}");
+            }
+        });
+
+        newClient().uploadFile("bucket-ern", "data.bin", file,
+                Map.of("file_origin", new Variant("string", "FTP_UPLOAD")));
+
+        assertEquals("{\"file_origin\":{\"type\":\"string\",\"value\":\"FTP_UPLOAD\"}}", attributesHeader.get());
+    }
+
+    /** An upload with nothing to say sends no header at all, rather than an empty object. */
+    @Test
+    void uploadFileWithoutAttributesSendsNoAttributesHeader(@TempDir Path tempDir) throws Exception {
+        Path file = tempDir.resolve("data.bin");
+        Files.writeString(file, "ABCDEFGHIJ", StandardCharsets.US_ASCII);
+
+        AtomicReference<String> attributesHeader = new AtomicReference<>();
+
+        server = startServer(exchange -> {
+            String action = exchange.getRequestHeaders().getFirst("x-euclid-action");
+            switch (action) {
+                case "create-upload" -> {
+                    exchange.getRequestBody().readAllBytes();
+                    sendResponse(exchange, 200, "{\"uploadId\":\"upload-1\",\"bucketErn\":\"bucket-ern\",\"key\":\"data.bin\"}");
+                }
+                case "upload-part" -> {
+                    exchange.getRequestBody().readAllBytes();
+                    sendResponse(exchange, 200, "{}");
+                }
+                case "complete-upload" -> {
+                    attributesHeader.set(exchange.getRequestHeaders().getFirst("x-euclid-attributes"));
+                    sendResponse(exchange, 200,
+                        "{\"ern\":\"obj-ern\",\"bucketErn\":\"bucket-ern\",\"key\":\"data.bin\","
+                                + "\"size\":10,\"status\":\"AVAILABLE\",\"contentType\":\"application/octet-stream\",\"md5Sum\":\"abc\"}");
+                }
+                default -> sendResponse(exchange, 500, "{\"error\":\"unexpected action " + action + "\"}");
+            }
+        });
+
+        newClient().uploadFile("bucket-ern", "data.bin", file);
+
+        assertNull(attributesHeader.get());
+    }
+
     @Test
     void uploadFileSplitsIntoPartsUploadsThemAndCompletes(@TempDir Path tempDir) throws Exception {
         Path file = tempDir.resolve("data.bin");

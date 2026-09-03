@@ -37,7 +37,6 @@ import de.jensvogt.euclid.dto.eqs.SetQueueTagRequest;
 import de.jensvogt.euclid.dto.eqs.model.Message;
 import de.jensvogt.euclid.dto.eqs.model.Queue;
 import de.jensvogt.euclid.http.EuclidHttpClient;
-import de.jensvogt.euclid.ws.EuclidEventStream;
 import de.jensvogt.euclid.exception.EuclidServiceException;
 import de.jensvogt.euclid.auth.SignableRequest;
 import de.jensvogt.euclid.auth.SigningScheme;
@@ -46,6 +45,7 @@ import de.jensvogt.euclid.auth.SigningSchemeSelectable;
 import java.io.IOException;
 import java.net.URI;
 import java.net.http.HttpResponse;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
@@ -74,13 +74,28 @@ public final class EuclidEqs implements TokenRefreshable, SigningSchemeSelectabl
     private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
 
     /**
-     * Defines the polling interval, in milliseconds, used for receiving messages from a queue.
+     * How long {@link #receiveMessages} pauses before asking again when the server answered a long
+     * poll immediately because it had no slot free to wait in.
      * <p>
-     * This constant specifies the time between consecutive polling attempts when consuming
-     * messages. Adjusting this value can impact the trade-off between resource usage and
-     * latency in message processing. The value is fixed at 500 milliseconds.
+     * Only reached when the server is short of threads, which is the moment to ask less often
+     * rather than more: re-asking at once would spend the thread that just declined to wait.
      */
-    private static final long RECEIVE_POLL_INTERVAL_MS = 500;
+    private static final long SLOTS_BUSY_BACKOFF_MS = 500;
+
+    /**
+     * How close to its deadline a long poll may come back and still count as having been waited
+     * out, rather than answered early for want of a slot. Absorbs the network and scheduling jitter
+     * between the server's clock and this one, so an honoured wait is not followed by a pointless
+     * extra request for the last few milliseconds of the window.
+     */
+    private static final long HONOURED_WAIT_TOLERANCE_MS = 250;
+
+    /**
+     * Added to a long poll's wait to give the response time to travel: the server answers at the
+     * end of the window it was asked for, so a timeout of exactly that window would be a race
+     * against the network every time.
+     */
+    private static final Duration LONG_POLL_RESPONSE_MARGIN = Duration.ofSeconds(10);
 
     /**
      * Represents the constant target identifier used within the EuclidEqs class.
@@ -175,10 +190,7 @@ public final class EuclidEqs implements TokenRefreshable, SigningSchemeSelectabl
     private final EuclidHttpClient httpClient;
 
     /**
-     * Path to a custom Certificate Authority (CA) certificate file for secure HTTPS connections,
-     * retained (rather than only handed to {@link #httpClient}) so a {@link EuclidEventStream}
-     * can be built lazily with the same TLS trust settings the first time {@link #receiveMessages}
-     * needs one.
+     * Path to a custom Certificate Authority (CA) certificate file for secure HTTPS connections.
      */
     private final String caCertPath;
 
@@ -200,19 +212,6 @@ public final class EuclidEqs implements TokenRefreshable, SigningSchemeSelectabl
      */
     private volatile SigningScheme signingScheme = SigningScheme.SIGV4;
 
-    /**
-     * Lazily-created websocket connection used by {@link #receiveMessages} to wake up as soon as
-     * an "eqs.message.sent" event arrives for the queue being waited on, instead of only polling
-     * every {@link #RECEIVE_POLL_INTERVAL_MS}. {@code null} until first needed.
-     */
-    private volatile EuclidEventStream eventStream;
-
-    /**
-     * Set once a websocket connection attempt fails, so {@link #receiveMessages} falls back to
-     * plain polling for the rest of this instance's lifetime instead of retrying (and paying the
-     * connect timeout) on every wait iteration.
-     */
-    private volatile boolean webSocketUnavailable;
 
     /**
      * Constructs an instance of the EuclidEqs class with the specified parameters for
@@ -626,13 +625,20 @@ public final class EuclidEqs implements TokenRefreshable, SigningSchemeSelectabl
     }
 
     /**
-     * Retrieves messages from a message queue or similar service. The method attempts
-     * to receive up to the specified maximum number of messages within an optional
-     * wait time. If no messages are immediately available and a wait time is provided,
-     * it will repeatedly poll until messages are received or the wait time elapses -
-     * waking up early, instead of on the next poll tick, as soon as a matching
-     * "eqs.message.sent" websocket event arrives for this queue (see {@link EuclidEventStream}),
-     * falling back to plain polling if a websocket connection can't be established.
+     * Retrieves messages from a message queue, waiting up to {@code waitTime} seconds for one to
+     * arrive.
+     *
+     * <p>The waiting is the server's, not this client's: {@code receive-messages} carries the wait
+     * and the server holds the request open until a message lands or the time runs out, so an idle
+     * queue costs one request for the whole window rather than one per poll tick, and a message
+     * comes back the instant it is sent.
+     *
+     * <p>The one case that still loops is the server declining to wait. It keeps a bounded number
+     * of long-poll slots - one fewer than it has threads - so that consumers sitting in a wait
+     * cannot starve the producers trying to send to them; with none free it answers immediately
+     * with whatever is in the queue rather than queueing behind the waiters. That comes back empty
+     * with time still on the clock, and the answer is to wait a moment and ask again, since asking
+     * again at once is exactly what a server short of threads does not need.
      *
      * @param ern         The external resource name (ERN) identifying the message queue or topic.
      * @param maxMessages The maximum number of messages to retrieve in a single call.
@@ -652,63 +658,26 @@ public final class EuclidEqs implements TokenRefreshable, SigningSchemeSelectabl
             if (available <= 0) {
                 return ReceiveMessagesResponse.builder().messages(new ArrayList<>()).total(0).build();
             }
-            return doReceiveMessages(ern, maxMessages);
+            return doReceiveMessages(ern, maxMessages, 0);
         }
 
         long deadline = System.currentTimeMillis() + waitTime * 1000;
         while (true) {
-            ReceiveMessagesResponse response = doReceiveMessages(ern, maxMessages);
+            long remaining = deadline - System.currentTimeMillis();
+            ReceiveMessagesResponse response =
+                    doReceiveMessages(ern, maxMessages, Math.max(1, remaining / 1000));
             if (!response.messages().isEmpty()) {
                 return response;
             }
 
-            long remaining = deadline - System.currentTimeMillis();
-            if (remaining <= 0) {
+            remaining = deadline - System.currentTimeMillis();
+            if (remaining <= HONOURED_WAIT_TOLERANCE_MS) {
                 return response;
             }
-            waitForQueueActivity(ern, Math.min(RECEIVE_POLL_INTERVAL_MS, remaining));
+            Thread.sleep(Math.min(SLOTS_BUSY_BACKOFF_MS, remaining));
         }
     }
 
-    /**
-     * Waits up to {@code timeoutMillis} for either a matching "eqs.message.sent" websocket event
-     * for {@code ern} to arrive (waking up immediately once it does) or the timeout to elapse -
-     * whichever happens first. Falls back to a plain sleep, permanently for the rest of this
-     * instance's lifetime, the first time a websocket connection can't be established.
-     *
-     * @param ern           the queue ERN to wait for activity on
-     * @param timeoutMillis how long to wait, in milliseconds
-     * @throws InterruptedException if interrupted while waiting
-     */
-    private void waitForQueueActivity(String ern, long timeoutMillis) throws InterruptedException {
-        if (!webSocketUnavailable) {
-            try {
-                eventStream().awaitEvent("eqs.message.sent", Map.of("queueErn", ern), timeoutMillis);
-                return;
-            } catch (IOException e) {
-                webSocketUnavailable = true;
-            }
-        }
-        Thread.sleep(timeoutMillis);
-    }
-
-    private EuclidEventStream eventStream() {
-        EuclidEventStream stream = eventStream;
-        if (stream == null) {
-            synchronized (this) {
-                stream = eventStream;
-                if (stream == null) {
-                    stream = new EuclidEventStream(baseUrl, token.get(), region, accountId, userId, accessKeyId, secretAccessKey, caCertPath, TARGET);
-                    // The stream outlives any one token by far - it is the connection that stays
-                    // open for as long as this client does - so it is given the same supplier
-                    // rather than the string, and reconnects with whatever is current.
-                    stream.token(token);
-                    eventStream = stream;
-                }
-            }
-        }
-        return stream;
-    }
 
     /**
      * Retrieves all messages associated with the specified entity reference number (ERN).
@@ -753,12 +722,16 @@ public final class EuclidEqs implements TokenRefreshable, SigningSchemeSelectabl
      * @throws IOException If an I/O error occurs during the request.
      * @throws InterruptedException If the request is interrupted.
      */
-    private ReceiveMessagesResponse doReceiveMessages(String ern, long maxMessages)
+    private ReceiveMessagesResponse doReceiveMessages(String ern, long maxMessages, long waitTime)
             throws IOException, InterruptedException {
         String body = OBJECT_MAPPER.writeValueAsString(
-                ReceiveMessagesRequest.builder().ern(ern).maxCount(maxMessages).waitTime(0).build());
+                ReceiveMessagesRequest.builder().ern(ern).maxCount(maxMessages).waitTime(waitTime).build());
+        // The request is meant to take as long as the server was asked to hold it, so the
+        // client-wide timeout - sized for an answer that comes straight back - would abandon a
+        // request that is being served correctly.
         HttpResponse<String> response = httpClient.post(baseUrl + "/", body, "eqs", "receive-messages",
-                requestHeaders("receive-messages", body));
+                requestHeaders("receive-messages", body),
+                Duration.ofSeconds(waitTime).plus(LONG_POLL_RESPONSE_MARGIN));
 
         if (response.statusCode() / 100 != 2) {
             throw new EuclidServiceException("eqs", "receive-messages", response.statusCode(), response.body());
@@ -1200,6 +1173,7 @@ public final class EuclidEqs implements TokenRefreshable, SigningSchemeSelectabl
                         textOrNull(messageNode, "body"),
                         textOrNull(messageNode, "md5Body"),
                         textOrNull(messageNode, "receiptHandle"),
+                        messageNode.path("receivedCount").asLong(0),
                         messageNode.path("size").asLong(0),
                         textOrNull(messageNode, "contentType"),
                         toVariantMap(messageNode.get("attributes")),

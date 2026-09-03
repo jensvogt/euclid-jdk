@@ -15,6 +15,8 @@ import java.util.Map;
  * @param body          the message body
  * @param md5Body       MD5 checksum of {@code body}
  * @param receiptHandle receipt handle from the last receive, empty until the message is received
+ * @param receivedCount how often this message has been received, so a handler can tell a first
+ *                      delivery from a redelivery of one that failed or timed out
  * @param size          size of the message body in bytes
  * @param contentType   the message body's content type
  * @param attributes    user-defined message attributes, keyed by name
@@ -24,7 +26,7 @@ import java.util.Map;
  * @param modified      last-modified timestamp
  */
 public record Message(String ern, String queueErn, String messageId, String status, String priority, String body,
-                      String md5Body, String receiptHandle, long size, String contentType,
+                      String md5Body, String receiptHandle, long receivedCount, long size, String contentType,
                       Map<String, Variant> attributes, String md5Attributes, String lastReceived, String created,
                       String modified) {
 }

@@ -20,7 +20,6 @@ import de.jensvogt.euclid.dto.eqs.SendMessageResponse;
 import de.jensvogt.euclid.dto.eqs.model.Message;
 import de.jensvogt.euclid.dto.eqs.model.Queue;
 import de.jensvogt.euclid.exception.EuclidServiceException;
-import de.jensvogt.euclid.testutil.FakeGatewayServer;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
@@ -359,7 +358,29 @@ class EuclidEqsTest {
     }
 
     @Test
-    void receiveMessagesPollsUntilMessageArrives() throws Exception {
+    void receiveMessagesSendsTheWaitToTheServerAndAsksOnce() throws Exception {
+        AtomicInteger callCount = new AtomicInteger();
+        AtomicReference<SignableRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            callCount.incrementAndGet();
+            received.set(captureRequest(exchange));
+            // What a server that honoured the wait does: hold the request, then answer empty.
+            sleepQuietly(1200);
+            sendResponse(exchange, 200, "{\"messages\":[],\"total\":0}");
+        });
+
+        ReceiveMessagesResponse response = newClient().receiveMessages("queue-ern", 10, 1);
+
+        assertTrue(response.messages().isEmpty());
+        assertEquals(1, callCount.get(), "the waiting is the server's, so one request covers the whole window");
+        assertBodyContains(received.get().body(), "\"waitTime\":1");
+    }
+
+    @Test
+    void receiveMessagesAsksAgainWhenTheServerDeclinesToWait() throws Exception {
+        // A server with no long-poll slot free answers at once with whatever is in the queue
+        // rather than queueing behind the waiters, so an empty answer arrives with the window
+        // barely started. The wait is the caller's, so it has to be seen through.
         AtomicInteger callCount = new AtomicInteger();
         server = startServer(exchange -> {
             if (callCount.getAndIncrement() == 0) {
@@ -369,45 +390,28 @@ class EuclidEqsTest {
             }
         });
 
-        ReceiveMessagesResponse response = newClient().receiveMessages("queue-ern", 10, 2);
+        ReceiveMessagesResponse response = newClient().receiveMessages("queue-ern", 10, 5);
 
-        assertTrue(callCount.get() >= 2, "should have polled more than once before a message showed up");
+        assertTrue(callCount.get() >= 2, "should have asked again after the server answered early");
         assertEquals(1, response.messages().size());
         assertEquals("msg-1", response.messages().getFirst().messageId());
     }
 
     @Test
-    void receiveMessagesWakesEarlyOnMatchingWebSocketEvent() throws Exception {
+    void receiveMessagesBacksOffRatherThanSpinningWhenTheServerNeverWaits() throws Exception {
         AtomicInteger callCount = new AtomicInteger();
-        try (FakeGatewayServer gateway = new FakeGatewayServer((headers, body) -> {
-            if (callCount.getAndIncrement() == 0) {
-                return "{\"messages\":[],\"total\":0}";
-            }
-            return "{\"messages\":[" + messageJson("msg-1", "rh-1") + "],\"total\":1}";
-        })) {
-            Thread pusher = new Thread(() -> {
-                try {
-                    gateway.awaitSubscription("eqs.message.sent", 5);
-                    gateway.sendEventFrame("eqs.message.sent", Map.of("queueErn", "queue-ern", "messageId", "msg-1"));
-                } catch (Exception e) {
-                    throw new RuntimeException(e);
-                }
-            });
-            pusher.start();
+        server = startServer(exchange -> {
+            callCount.incrementAndGet();
+            sendResponse(exchange, 200, "{\"messages\":[],\"total\":0}");
+        });
 
-            EuclidEqs client = new EuclidEqs("http://localhost:" + gateway.port(), "test-token", "eu-central-1",
-                    "863459426936", "alice", null, null, null, null);
+        ReceiveMessagesResponse response = newClient().receiveMessages("queue-ern", 10, 2);
 
-            long start = System.currentTimeMillis();
-            ReceiveMessagesResponse response = client.receiveMessages("queue-ern", 10, 20);
-            long elapsedMillis = System.currentTimeMillis() - start;
-            pusher.join();
-
-            assertEquals(1, response.messages().size());
-            assertEquals("msg-1", response.messages().getFirst().messageId());
-            assertTrue(elapsedMillis < 400,
-                    "should have woken on the websocket event well within the 500ms poll interval, took " + elapsedMillis + "ms");
-        }
+        assertTrue(response.messages().isEmpty());
+        // Two seconds at the 500ms backoff is a handful of requests. Without one it would be
+        // thousands - a server already short of threads being asked as fast as it can answer.
+        assertTrue(callCount.get() <= 6,
+                "should have backed off between attempts, but asked " + callCount.get() + " times");
     }
 
     @Test
@@ -761,6 +765,15 @@ class EuclidEqsTest {
 
     private String baseUrl() {
         return "http://localhost:" + server.getAddress().getPort();
+    }
+
+    /** Stands in for a server that holds a long poll open for the window it was asked for. */
+    private static void sleepQuietly(long millis) {
+        try {
+            Thread.sleep(millis);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
     }
 
     private static void sendResponse(HttpExchange exchange, int status, String body) throws IOException {
