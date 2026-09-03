@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.1.15](https://github.com/jensvogt/euclid-jdk/compare/euclid-jdk-v0.1.14...euclid-jdk-v0.1.15) (2026-09-03)
+
+
+### Bug Fixes
+
+* load test findings ([e58f791](https://github.com/jensvogt/euclid-jdk/commit/e58f7917f40d984fa785661c5f591dd80ec49000))
+* load test findings ([d12cb0d](https://github.com/jensvogt/euclid-jdk/commit/d12cb0df4e73f7f8c6a746dd753fc90bbdcc3544))
+
 ## [0.1.14](https://github.com/jensvogt/euclid-jdk/compare/euclid-jdk-v0.1.13...euclid-jdk-v0.1.14) (2026-09-02)
 
 
