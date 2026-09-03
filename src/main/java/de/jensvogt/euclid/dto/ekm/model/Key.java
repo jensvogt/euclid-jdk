@@ -8,6 +8,9 @@ import java.util.Map;
  *
  * @param name         the key's ID, a server-generated UUID that encrypt/decrypt and delete-key take
  * @param ern          the key's ERN, which revoke-key and the tag actions take
+ * @param description  what the key is for, as given when it was created, or {@code null} if none
+ *                     was. The ID says nothing about what a key protects and a key outlives the
+ *                     reason it was made, so this is what answers "can this one be deleted?"
  * @param algorithm    the key algorithm, e.g. {@code "AES"}
  * @param length       the key length in bits
  * @param status       lifecycle status: {@code "AVAILABLE"} can encrypt and decrypt,
@@ -19,6 +22,6 @@ import java.util.Map;
  * @param created      creation timestamp
  * @param modified     last-modified timestamp
  */
-public record Key(String name, String ern, String algorithm, long length, String status, Map<String, String> tags,
-                  String deletionDate, String created, String modified) {
+public record Key(String name, String ern, String description, String algorithm, long length, String status,
+                  Map<String, String> tags, String deletionDate, String created, String modified) {
 }

@@ -3,13 +3,15 @@ package de.jensvogt.euclid.dto.ekm;
 /**
  * The key a create-key action minted.
  *
- * @param ern       the new key's ERN
- * @param name      the generated key ID, which encrypt/decrypt and delete-key take
- * @param algorithm the key algorithm
- * @param length    the key length in bits
- * @param status    the key's lifecycle status, {@code "AVAILABLE"} for a new key
+ * @param ern         the new key's ERN
+ * @param name        the generated key ID, which encrypt/decrypt and delete-key take
+ * @param description what the key is for, as it was given; {@code null} if none was
+ * @param algorithm   the key algorithm
+ * @param length      the key length in bits
+ * @param status      the key's lifecycle status, {@code "AVAILABLE"} for a new key
  */
-public record CreateKeyResponse(String ern, String name, String algorithm, long length, String status) {
+public record CreateKeyResponse(String ern, String name, String description, String algorithm, long length,
+                                String status) {
 
     /**
      * Creates a new instance of the Builder for constructing a CreateKeyResponse object.
@@ -40,6 +42,11 @@ public record CreateKeyResponse(String ern, String name, String algorithm, long 
          * The generated key ID, which encrypt/decrypt and delete-key take.
          */
         private String name;
+
+        /**
+         * What the key is for, as it was given.
+         */
+        private String description;
 
         /**
          * The key algorithm.
@@ -75,6 +82,17 @@ public record CreateKeyResponse(String ern, String name, String algorithm, long 
          */
         public Builder name(String name) {
             this.name = name;
+            return this;
+        }
+
+        /**
+         * Sets what the key is for.
+         *
+         * @param description what the key is for
+         * @return the builder instance
+         */
+        public Builder description(String description) {
+            this.description = description;
             return this;
         }
 
@@ -117,7 +135,7 @@ public record CreateKeyResponse(String ern, String name, String algorithm, long 
          * @return a new CreateKeyResponse instance.
          */
         public CreateKeyResponse build() {
-            return new CreateKeyResponse(ern, name, algorithm, length, status);
+            return new CreateKeyResponse(ern, name, description, algorithm, length, status);
         }
     }
 }

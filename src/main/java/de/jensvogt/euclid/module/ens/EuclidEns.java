@@ -2,6 +2,7 @@ package de.jensvogt.euclid.module.ens;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import de.jensvogt.euclid.auth.CredentialsFileTokens;
 import de.jensvogt.euclid.auth.SignableRequest;
 import de.jensvogt.euclid.auth.SigningScheme;
 import de.jensvogt.euclid.auth.SigningSchemeSelectable;
@@ -66,8 +67,10 @@ public final class EuclidEns implements TokenRefreshable, SigningSchemeSelectabl
      * Supplies the bearer token for each request, used when no SigV4 access key is configured.
      *
      * <p>A supplier rather than a string so that a token which expires can be replaced without
-     * rebuilding the client - see {@link TokenRefreshable#token(Supplier)}. A client built with a
-     * fixed token holds a supplier that returns it.
+     * rebuilding the client - see {@link TokenRefreshable#token(Supplier)}. A client built inside an
+     * application euclid deployed follows the credentials file euclid rewrites; anywhere else it
+     * holds a supplier returning the token it was given - see
+     * {@link CredentialsFileTokens#forClient(String, String)}.
      */
     private volatile Supplier<String> token;
     private final String region;
@@ -108,14 +111,16 @@ public final class EuclidEns implements TokenRefreshable, SigningSchemeSelectabl
     public EuclidEns(String baseUrl, String token, String region, String accountId, String userId,
                       String accessKeyId, String secretAccessKey, String caCertPath, String nameSpace) {
         this.baseUrl = baseUrl;
-        this.token = () -> token;
+        this.token = CredentialsFileTokens.forClient(token, userId);
         this.region = region;
         this.accountId = accountId;
         this.userId = userId;
         this.accessKeyId = accessKeyId;
         this.nameSpace = nameSpace;
         this.secretAccessKey = secretAccessKey;
-        this.httpClient = new EuclidHttpClient(caCertPath);
+        // The header factory is what lets a request whose token or signature expired in flight be
+        // built again and sent once more - see EuclidHttpClient#headerFactory.
+        this.httpClient = new EuclidHttpClient(caCertPath).headerFactory(this::requestHeaders);
     }
 
     /**

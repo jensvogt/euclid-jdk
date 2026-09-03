@@ -33,7 +33,10 @@ import java.util.logging.Logger;
  * acknowledge or to catch up on.
  * <p>
  * Claiming runs on a thread of the listener's own, never on the websocket's reading thread, so a
- * slow handler delays this subscriber and nothing else.
+ * slow handler delays this subscriber and nothing else. {@link Builder#concurrency(int)} runs more
+ * than one such thread, each independently claiming and dispatching batches - safe because the
+ * claim in {@code receive-events} is what decides who handles an event, the same mechanism that
+ * lets two applications poll one subscriber without processing anything twice.
  *
  * <h2>Usage</h2>
  * <pre>{@code
@@ -67,11 +70,8 @@ public final class EuclidEventListener implements AutoCloseable, EventStreamList
     private final Map<String, Object> filter;
     private final DeliveryMode mode;
     private final Consumer<Event> handler;
-    private final ExecutorService claims = Executors.newSingleThreadExecutor(runnable -> {
-        Thread thread = new Thread(runnable, "euclid-events");
-        thread.setDaemon(true);
-        return thread;
-    });
+    private final int concurrency;
+    private final ExecutorService claims;
     private final AtomicBoolean started = new AtomicBoolean();
 
     private EuclidEventListener(Builder builder) {
@@ -82,6 +82,12 @@ public final class EuclidEventListener implements AutoCloseable, EventStreamList
         this.filter = builder.filter == null ? Map.of() : Map.copyOf(builder.filter);
         this.mode = builder.mode == null ? DeliveryMode.DURABLE : builder.mode;
         this.handler = builder.handler;
+        this.concurrency = Math.max(1, builder.concurrency);
+        this.claims = Executors.newFixedThreadPool(this.concurrency, runnable -> {
+            Thread thread = new Thread(runnable, "euclid-events");
+            thread.setDaemon(true);
+            return thread;
+        });
     }
 
     /**
@@ -111,7 +117,9 @@ public final class EuclidEventListener implements AutoCloseable, EventStreamList
         stream.addListener(this);
         stream.attach(name);
         if (mode == DeliveryMode.DURABLE) {
-            claims.execute(this::drain);
+            for (int i = 0; i < concurrency; i++) {
+                claims.execute(this::drain);
+            }
         }
     }
 
@@ -243,6 +251,7 @@ public final class EuclidEventListener implements AutoCloseable, EventStreamList
         private Map<String, Object> filter;
         private DeliveryMode mode;
         private Consumer<Event> handler;
+        private int concurrency = 1;
 
         /**
          * Creates an empty builder.
@@ -326,6 +335,20 @@ public final class EuclidEventListener implements AutoCloseable, EventStreamList
          */
         public Builder handler(Consumer<Event> handler) {
             this.handler = handler;
+            return this;
+        }
+
+        /**
+         * Sets how many threads independently claim and dispatch batches at once. Defaults to
+         * one; raise it when publishing outruns what a single thread can drain. Only applies to
+         * {@link DeliveryMode#DURABLE}, since a {@link DeliveryMode#LIVE} event is handled exactly
+         * once, as it arrives, with nothing to claim concurrently.
+         *
+         * @param concurrency the number of claiming threads, floored at one
+         * @return this builder
+         */
+        public Builder concurrency(int concurrency) {
+            this.concurrency = concurrency;
             return this;
         }
 

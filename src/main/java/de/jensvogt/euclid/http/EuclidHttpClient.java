@@ -19,7 +19,9 @@ import java.security.cert.CertificateException;
 import java.security.cert.CertificateFactory;
 import java.security.cert.X509Certificate;
 import java.time.Duration;
+import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.function.BiFunction;
 
 /**
  * Thin wrapper around {@link java.net.http.HttpClient} for issuing common
@@ -53,6 +55,17 @@ public class EuclidHttpClient {
      * a custom value or rely on sensible defaults.
      */
     private final Duration requestTimeout;
+
+    /**
+     * Rebuilds the authentication headers for one {@code (action, body)} pair, or {@code null} if
+     * this client was not given one.
+     *
+     * <p>Set by each module client to its own header builder, and used for one purpose: when the
+     * server rejects a request because the credentials it carried had expired, the headers are
+     * built again and the request is sent once more. See
+     * {@link #post(String, String, String, String, Map)}.
+     */
+    private volatile BiFunction<String, String, Map<String, String>> headerFactory;
 
     /**
      * Constructs a new {@code EuclidHttpClient} instance with a default request timeout
@@ -99,6 +112,23 @@ public class EuclidHttpClient {
             builder.sslContext(buildSslContext(caCertPath));
         }
         this.client = builder.build();
+    }
+
+    /**
+     * Registers how to build the headers for an action, enabling the retry described on
+     * {@link #post(String, String, String, String, Map)}.
+     *
+     * <p>Without one, a request whose credentials expired between being built and being read fails
+     * like any other error, which for a long-lived application is a business operation lost to a
+     * token that a second attempt would have carried correctly.
+     *
+     * @param factory builds the headers for a {@code (action, body)} pair, exactly as the caller
+     *                built the ones it passed in
+     * @return this client, for chaining onto the constructor
+     */
+    public EuclidHttpClient headerFactory(BiFunction<String, String, Map<String, String>> factory) {
+        this.headerFactory = factory;
+        return this;
     }
 
     /**
@@ -219,10 +249,62 @@ public class EuclidHttpClient {
      * @throws InterruptedException if the operation is interrupted while waiting for the response
      */
     public HttpResponse<String> post(String url, String body, String target, String action, Map<String, String> headers) throws IOException, InterruptedException {
-        HttpRequest request = newRequestBuilder(url, target, action, headers)
-                .POST(HttpRequest.BodyPublishers.ofString(body))
-                .build();
-        return send(request);
+        HttpResponse<String> response = send(newRequestBuilder(url, target, action, headers)
+                                                     .POST(HttpRequest.BodyPublishers.ofString(body))
+                                                     .build());
+
+        Map<String, String> refreshed = refreshedHeaders(response, action, body, headers);
+        if (refreshed == null) {
+            return response;
+        }
+
+        return send(newRequestBuilder(url, target, action, refreshed)
+                            .POST(HttpRequest.BodyPublishers.ofString(body))
+                            .build());
+    }
+
+    /**
+     * Decides whether a failed request is worth sending a second time with fresh credentials, and
+     * builds the headers for that second attempt.
+     *
+     * <p>An application that runs for days holds credentials that do not: a bearer token from a
+     * credentials file the manager rewrites, or a signature that is only valid around the moment it
+     * was made. Either can go stale between the header being built and the server reading it, and
+     * the request that carries it fails - not because anything was wrong with it, but because it
+     * was a moment too late. Building the headers again costs one round trip and turns that into a
+     * success.
+     *
+     * <p>Deliberately narrow, so it never turns a real rejection into two:
+     * <ul>
+     *   <li>only 401, and only when the server said the credentials had expired - a wrong password
+     *       or a missing permission is answered once, as before;</li>
+     *   <li>only when the new headers actually differ. A bearer token read from a file nobody has
+     *       refreshed comes back identical, and repeating the request with it would fail exactly as
+     *       it just did.</li>
+     * </ul>
+     *
+     * @param response the response to the first attempt
+     * @param action   the action the request carried
+     * @param body     the body the request carried, which a signature covers
+     * @param headers  the headers the first attempt used, kept so that per-request headers the
+     *                 factory knows nothing about survive into the retry
+     * @return the headers to retry with, or {@code null} if the request should not be retried
+     */
+    private Map<String, String> refreshedHeaders(HttpResponse<String> response, String action, String body,
+                                                 Map<String, String> headers) {
+        BiFunction<String, String, Map<String, String>> factory = headerFactory;
+        if (factory == null || response.statusCode() != 401) {
+            return null;
+        }
+
+        String reason = response.body();
+        if (reason == null || !reason.toLowerCase().contains("expired")) {
+            return null;
+        }
+
+        Map<String, String> refreshed = new LinkedHashMap<>(headers);
+        refreshed.putAll(factory.apply(action, body));
+        return refreshed.equals(headers) ? null : refreshed;
     }
 
     /**

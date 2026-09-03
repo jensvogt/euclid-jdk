@@ -10,6 +10,7 @@ import de.jensvogt.euclid.dto.ekm.CreateKeyResponse;
 import de.jensvogt.euclid.dto.ekm.DeleteKeyResponse;
 import de.jensvogt.euclid.dto.ekm.ListKeysResponse;
 import de.jensvogt.euclid.dto.ekm.RevokeKeyResponse;
+import de.jensvogt.euclid.dto.ekm.SetKeyDescriptionResponse;
 import de.jensvogt.euclid.dto.ekm.model.Key;
 import de.jensvogt.euclid.exception.EuclidServiceException;
 import org.junit.jupiter.api.AfterEach;
@@ -122,12 +123,49 @@ class EuclidEkmTest {
     }
 
     @Test
+    void createKeyCarriesTheDescriptionBothWays() throws Exception {
+        // A key is identified by an ID the server mints, which says nothing about what it
+        // protects - the description is the only thing that will, months later, answer whether
+        // the key can be deleted.
+        AtomicReference<SignableRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(captureRequest(exchange));
+            sendResponse(exchange, 200, "{\"ern\":\"key-ern\",\"name\":\"key-1\","
+                    + "\"description\":\"payroll exports\",\"algorithm\":\"AES\",\"length\":256,"
+                    + "\"status\":\"AVAILABLE\"}");
+        });
+
+        CreateKeyResponse response = newClient().createKey("AES", 256, "payroll exports");
+
+        assertBodyContains(received.get().body(), "\"description\":\"payroll exports\"");
+        assertEquals("payroll exports", response.description());
+    }
+
+    @Test
+    void createKeyWithoutADescriptionSendsAnEmptyOne() throws Exception {
+        AtomicReference<SignableRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(captureRequest(exchange));
+            sendResponse(exchange, 200, "{\"ern\":\"key-ern\",\"name\":\"key-1\",\"status\":\"AVAILABLE\"}");
+        });
+
+        // The two-argument call is what existed before descriptions did, and it still has to
+        // produce a request the server accepts.
+        CreateKeyResponse response = newClient().createKey("AES", 128);
+
+        assertBodyContains(received.get().body(), "\"description\":\"\"");
+        // A server too old to return the field leaves this unset rather than inventing one.
+        assertNull(response.description());
+    }
+
+    @Test
     void listKeysUsesDefaultsAndParsesResponse() throws Exception {
         AtomicReference<SignableRequest> received = new AtomicReference<>();
         server = startServer(exchange -> {
             received.set(captureRequest(exchange));
             sendResponse(exchange, 200, "{\"total\":1,\"keys\":[{\"ern\":\"key-ern\",\"name\":\"key-1\","
-                    + "\"algorithm\":\"AES\",\"length\":256,\"status\":\"AVAILABLE\",\"tags\":{\"env\":\"prod\"},"
+                    + "\"description\":\"payroll exports\",\"algorithm\":\"AES\",\"length\":256,"
+                    + "\"status\":\"AVAILABLE\",\"tags\":{\"env\":\"prod\"},"
                     + "\"created\":\"2026-01-01\",\"modified\":\"2026-01-02\"}]}");
         });
 
@@ -141,6 +179,7 @@ class EuclidEkmTest {
         Key key = response.keys().getFirst();
         assertEquals("key-1", key.name());
         assertEquals("key-ern", key.ern());
+        assertEquals("payroll exports", key.description());
         assertEquals("AES", key.algorithm());
         assertEquals(256, key.length());
         assertEquals("prod", key.tags().get("env"));
@@ -223,6 +262,56 @@ class EuclidEkmTest {
         assertEquals("revoke-key", received.get().header("x-euclid-action"));
         assertBodyContains(received.get().body(), "\"ern\":\"key-ern\"");
         assertEquals("REVOKED", response.status());
+    }
+
+    @Test
+    void setKeyDescriptionTakesTheErnAndParsesResponse() throws Exception {
+        AtomicReference<SignableRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(captureRequest(exchange));
+            sendResponse(exchange, 200, "{\"ern\":\"key-ern\",\"name\":\"key-1\","
+                    + "\"description\":\"payroll exports\"}");
+        });
+
+        SetKeyDescriptionResponse response = newClient().setKeyDescription("key-ern", "payroll exports");
+
+        assertEquals("set-key-description", received.get().header("x-euclid-action"));
+        // The ERN, like revoke-key and unlike delete-key - getting that wrong is the easy mistake
+        // here, and it would fail as a key that cannot be found rather than as a bad request.
+        assertBodyContains(received.get().body(), "\"ern\":\"key-ern\"", "\"description\":\"payroll exports\"");
+        assertEquals("payroll exports", response.description());
+        assertEquals("key-1", response.name());
+    }
+
+    @Test
+    void anEmptyDescriptionIsSentRatherThanOmitted() throws Exception {
+        // The server reads an empty description as "clear it" rather than "leave it alone", which
+        // is the only way to remove one - so the field has to go on the wire, not be dropped.
+        AtomicReference<SignableRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(captureRequest(exchange));
+            sendResponse(exchange, 200, "{\"ern\":\"key-ern\",\"name\":\"key-1\",\"description\":\"\"}");
+        });
+
+        SetKeyDescriptionResponse response = newClient().setKeyDescription("key-ern", "");
+
+        assertBodyContains(received.get().body(), "\"description\":\"\"");
+        assertEquals("", response.description());
+    }
+
+    @Test
+    void aNullDescriptionClearsRatherThanFailing() throws Exception {
+        AtomicReference<SignableRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(captureRequest(exchange));
+            sendResponse(exchange, 200, "{\"ern\":\"key-ern\",\"name\":\"key-1\",\"description\":\"\"}");
+        });
+
+        newClient().setKeyDescription("key-ern", null);
+
+        // Jackson would otherwise write a JSON null, which the server reads as no description at
+        // all - the same outcome, but by accident rather than because anything decided it.
+        assertBodyContains(received.get().body(), "\"description\":\"\"");
     }
 
     // Plaintext and ciphertext travel as the raw body with the key named in a header, rather than
