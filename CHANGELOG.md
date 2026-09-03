@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.16](https://github.com/jensvogt/euclid-jdk/compare/euclid-jdk-v0.1.15...euclid-jdk-v0.1.16) (2026-09-03)
+
+
+### Bug Fixes
+
+* remove websockets ([c26be62](https://github.com/jensvogt/euclid-jdk/commit/c26be62af09448b108ebe1167f2fcdbed9ea865f))
+
 ## [0.1.15](https://github.com/jensvogt/euclid-jdk/compare/euclid-jdk-v0.1.14...euclid-jdk-v0.1.15) (2026-09-03)
 
 
