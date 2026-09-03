@@ -4,6 +4,7 @@ import javax.net.ssl.SSLContext;
 import javax.net.ssl.TrustManager;
 import javax.net.ssl.TrustManagerFactory;
 import javax.net.ssl.X509TrustManager;
+import java.io.EOFException;
 import java.io.IOException;
 import java.io.InputStream;
 import java.net.URI;
@@ -21,6 +22,8 @@ import java.security.cert.X509Certificate;
 import java.time.Duration;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.logging.Level;
+import java.util.logging.Logger;
 import java.util.function.BiFunction;
 
 /**
@@ -33,6 +36,8 @@ import java.util.function.BiFunction;
  * euclid server presenting a self-signed development certificate.
  */
 public class EuclidHttpClient {
+
+    private static final Logger LOG = Logger.getLogger(EuclidHttpClient.class.getName());
 
     /**
      * Represents the underlying HTTP client used for sending requests and receiving responses.
@@ -249,7 +254,30 @@ public class EuclidHttpClient {
      * @throws InterruptedException if the operation is interrupted while waiting for the response
      */
     public HttpResponse<String> post(String url, String body, String target, String action, Map<String, String> headers) throws IOException, InterruptedException {
-        HttpResponse<String> response = send(newRequestBuilder(url, target, action, headers)
+        return post(url, body, target, action, headers, requestTimeout);
+    }
+
+    /**
+     * Sends an HTTP POST request that is allowed to take longer than this client's configured
+     * request timeout.
+     *
+     * <p>For the actions the server deliberately answers slowly: a long poll is told how many
+     * seconds to hold the request open, and the caller has to be willing to wait at least that
+     * long, or it would abandon a request the server is still correctly serving.
+     *
+     * @param url     the URL to which the POST request is sent
+     * @param body    the body content of the POST request
+     * @param target  the target identifier, typically used for routing or additional request context
+     * @param action  the action to be performed, often used for specifying the operation type
+     * @param headers a map of headers to include in the POST request
+     * @param timeout how long to wait for this response, in place of the client-wide timeout
+     * @return the HTTP response as a string
+     * @throws IOException          if an I/O error occurs during the request
+     * @throws InterruptedException if the operation is interrupted while waiting for the response
+     */
+    public HttpResponse<String> post(String url, String body, String target, String action, Map<String, String> headers,
+                                     Duration timeout) throws IOException, InterruptedException {
+        HttpResponse<String> response = send(newRequestBuilder(url, target, action, headers, timeout)
                                                      .POST(HttpRequest.BodyPublishers.ofString(body))
                                                      .build());
 
@@ -258,7 +286,7 @@ public class EuclidHttpClient {
             return response;
         }
 
-        return send(newRequestBuilder(url, target, action, refreshed)
+        return send(newRequestBuilder(url, target, action, refreshed, timeout)
                             .POST(HttpRequest.BodyPublishers.ofString(body))
                             .build());
     }
@@ -596,9 +624,22 @@ public class EuclidHttpClient {
      * @return a pre-configured {@link HttpRequest.Builder} instance with the specified URL and headers applied
      */
     private HttpRequest.Builder newRequestBuilder(String url, Map<String, String> headers) {
+        return newRequestBuilder(url, headers, requestTimeout);
+    }
+
+    /**
+     * Creates a new {@link HttpRequest.Builder} instance with the specified URL, headers and a
+     * timeout of its own, for the requests the client-wide one is the wrong length for.
+     *
+     * @param url     the URL for the HTTP request
+     * @param headers a map of headers to be included in the request, where the key is the header name and the value is the header value
+     * @param timeout how long to wait for this response
+     * @return a pre-configured {@link HttpRequest.Builder} instance with the specified URL and headers applied
+     */
+    private HttpRequest.Builder newRequestBuilder(String url, Map<String, String> headers, Duration timeout) {
         HttpRequest.Builder builder = HttpRequest.newBuilder()
                 .uri(URI.create(url))
-                .timeout(requestTimeout);
+                .timeout(timeout);
         headers.forEach(builder::header);
         return builder;
     }
@@ -613,13 +654,44 @@ public class EuclidHttpClient {
      * @return a configured instance of {@link HttpRequest.Builder}
      */
     private HttpRequest.Builder newRequestBuilder(String url, String target, String action, Map<String, String> headers) {
-        return newRequestBuilder(url, headers)
+        return newRequestBuilder(url, target, action, headers, requestTimeout);
+    }
+
+    /**
+     * Creates a new instance of {@link HttpRequest.Builder} with the specified URL, target, action,
+     * headers and a timeout of its own.
+     *
+     * @param url     the URL for the request
+     * @param target  the value to be set for the "x-euclid-target" header
+     * @param action  the value to be set for the "x-euclid-action" header
+     * @param headers a map of additional headers to be included in the request
+     * @param timeout how long to wait for this response
+     * @return a configured instance of {@link HttpRequest.Builder}
+     */
+    private HttpRequest.Builder newRequestBuilder(String url, String target, String action, Map<String, String> headers,
+                                                  Duration timeout) {
+        return newRequestBuilder(url, headers, timeout)
                 .header("x-euclid-target", target)
                 .header("x-euclid-action", action);
     }
 
     /**
-     * Sends the given HTTP request and returns the response as a string.
+     * Sends the given HTTP request and returns the response as a string, once more if the
+     * connection it went out on turned out to be dead.
+     *
+     * <p>A pooled connection can be closed by the far end - the server's idle timeout, a proxy, a
+     * load balancer - between the moment it is handed out and the moment it is written to, and
+     * nothing tells the client until it reads back an immediate end of stream. {@link HttpClient}
+     * does not retry that by itself, so without this every such connection surfaces as an
+     * {@code IOException} in the caller, which for a long-running consumer means a poll lost to a
+     * condition that a second attempt on a fresh connection resolves.
+     *
+     * <p>Only failures that produced no response at all are retried, and only once. That is not
+     * quite the same as knowing the request was never processed - the server may have acted on it
+     * and been unable to answer - so this trades a possible repeat for the far commoner case of a
+     * connection that was already gone. It is the same trade the JDK's own retry-on-idempotent
+     * behaviour makes, applied to requests that are POSTs only because that is how euclid carries
+     * its action name.
      *
      * @param request the HTTP request to be sent
      * @return the HTTP response received from the request
@@ -627,7 +699,42 @@ public class EuclidHttpClient {
      * @throws InterruptedException if the operation is interrupted
      */
     private HttpResponse<String> send(HttpRequest request) throws IOException, InterruptedException {
-        return client.send(request, HttpResponse.BodyHandlers.ofString());
+        try {
+            return client.send(request, HttpResponse.BodyHandlers.ofString());
+        } catch (IOException e) {
+            if (!isConnectionClosedBeforeResponse(e)) {
+                throw e;
+            }
+            LOG.log(Level.FINE, "Connection closed before a response arrived, retrying once", e);
+            return client.send(request, HttpResponse.BodyHandlers.ofString());
+        }
+    }
+
+    /**
+     * Whether a failure is one where the connection ended before a single byte of the response
+     * arrived, which is what a connection closed while it sat in the pool looks like from here.
+     *
+     * <p>Recognised by the end-of-stream in the cause chain, and by the message
+     * {@code HttpClient} raises when its header parser gets nothing at all - a reset arriving
+     * before the response is the same situation with a different word for it.
+     *
+     * @param e the failure to judge
+     * @return whether sending it again on a new connection is worth doing
+     */
+    private static boolean isConnectionClosedBeforeResponse(IOException e) {
+        for (Throwable cause = e; cause != null; cause = cause.getCause()) {
+            if (cause instanceof EOFException) {
+                return true;
+            }
+            String message = cause.getMessage();
+            if (message != null && (message.contains("received no bytes") || message.contains("Connection reset"))) {
+                return true;
+            }
+            if (cause.getCause() == cause) {
+                break;
+            }
+        }
+        return false;
     }
 
     /**

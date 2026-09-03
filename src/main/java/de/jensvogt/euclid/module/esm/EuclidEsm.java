@@ -836,8 +836,37 @@ public final class EuclidEsm implements TokenRefreshable, SigningSchemeSelectabl
      */
     public SubscribeResponse subscribe(String bucketErn, String type, String targetErn)
             throws IOException, InterruptedException {
+        return subscribe(bucketErn, type, targetErn, List.of(), "", false);
+    }
+
+    /**
+     * Subscribes a queue or a topic to the object events of a bucket that match the given filters,
+     * which the server applies as it publishes - so a subscription only ever delivers what it
+     * asked for, rather than the target receiving everything and discarding most of it.
+     * <p>
+     * Subscribing is not idempotent: a second call registers a second subscription, and the target
+     * then receives every matching event twice. A caller that may run this more than once checks
+     * {@link #listSubscriptions} first, or {@link #unsubscribe}s the previous one.
+     *
+     * @param bucketErn the Euclid Resource Name (ERN) of the bucket whose events are subscribed to
+     * @param type the target resource type, {@code "SQS"} for a queue or {@code "SNS"} for a topic
+     * @param targetErn the ERN of the queue or topic the events are delivered to
+     * @param eventTypes the object events to deliver - {@code "esm.object.created"},
+     *                   {@code "esm.object.updated"} and {@code "esm.object.deleted"} - or empty
+     *                   for all of them
+     * @param prefix only deliver objects whose key starts with this, or empty for the whole bucket
+     * @param directories whether directory markers - the zero-byte objects whose key ends in
+     *                    {@code "/"} - are delivered too
+     * @return a {@code SubscribeResponse} carrying the new subscription's own ERN
+     * @throws IOException if an I/O error occurs during the HTTP request
+     * @throws InterruptedException if the operation is interrupted while waiting for a response
+     */
+    public SubscribeResponse subscribe(String bucketErn, String type, String targetErn, List<String> eventTypes,
+                                        String prefix, boolean directories)
+            throws IOException, InterruptedException {
         String body = OBJECT_MAPPER.writeValueAsString(
-                SubscribeRequest.builder().sourceErn(bucketErn).type(type).targetErn(targetErn).build());
+                SubscribeRequest.builder().sourceErn(bucketErn).type(type).targetErn(targetErn)
+                        .eventTypes(eventTypes).prefix(prefix).directories(directories).build());
         HttpResponse<String> response = httpClient.post(baseUrl + "/", body, "esm", "subscribe",
                 requestHeaders("subscribe", body));
 
@@ -961,6 +990,28 @@ public final class EuclidEsm implements TokenRefreshable, SigningSchemeSelectabl
     }
 
     /**
+     * Uploads a local file and gives the object the attributes it is to carry, in one operation.
+     * <p>
+     * Attributes belong <em>on</em> the upload rather than added afterwards. Completing an upload
+     * is finished off in the background on the server, and the object row it writes at the end
+     * carries the attributes this call supplied - so an attribute added between this method
+     * returning and that pass finishing is overwritten and silently lost. Passing them here is
+     * what makes them arrive with the object instead of racing it.
+     *
+     * @param bucketErn  the Euclid Resource Name (ERN) of the target bucket
+     * @param key        the key (path) within the bucket to store the object under
+     * @param file       the path to the local file to be uploaded
+     * @param attributes the user-defined attributes the stored object is to carry, keyed by name
+     * @return a {@code CompleteUploadResponse} describing the completed upload
+     * @throws IOException          if an I/O error occurs during the upload process
+     * @throws InterruptedException if the operation is interrupted during execution
+     */
+    public CompleteUploadResponse uploadFile(String bucketErn, String key, Path file, Map<String, Variant> attributes)
+            throws IOException, InterruptedException {
+        return uploadFile(bucketErn, key, file, DEFAULT_UPLOAD_PART_SIZE, DEFAULT_CONCURRENCY, attributes);
+    }
+
+    /**
      * Uploads a file to a specified bucket in a multipart upload process. This method splits the file
      * into parts of a specified size and uploads them concurrently.
      *
@@ -975,6 +1026,27 @@ public final class EuclidEsm implements TokenRefreshable, SigningSchemeSelectabl
      * @throws InterruptedException  If the thread executing this method is interrupted while waiting.
      */
     public CompleteUploadResponse uploadFile(String bucketErn, String key, Path file, int partSize, int concurrency)
+            throws IOException, InterruptedException {
+        return uploadFile(bucketErn, key, file, partSize, concurrency, Map.of());
+    }
+
+    /**
+     * Uploads a file in parts, giving the stored object {@code attributes} as part of completing
+     * it - see {@link #uploadFile(String, String, Path, Map)} for why they belong here rather than
+     * in a call of their own.
+     *
+     * @param bucketErn   The unique identifier of the bucket where the file will be uploaded.
+     * @param key         The key (path/identifier) for the file within the bucket.
+     * @param file        The path to the file to be uploaded.
+     * @param partSize    The size (in bytes) of each part to be uploaded.
+     * @param concurrency The maximum number of parts uploaded concurrently, bounded to at least 1.
+     * @param attributes  The user-defined attributes the stored object is to carry, keyed by name.
+     * @return A {@code CompleteUploadResponse} object containing information about the completed upload.
+     * @throws IOException           If an I/O error occurs during the upload process.
+     * @throws InterruptedException  If the thread executing this method is interrupted while waiting.
+     */
+    public CompleteUploadResponse uploadFile(String bucketErn, String key, Path file, int partSize, int concurrency,
+                                             Map<String, Variant> attributes)
             throws IOException, InterruptedException {
         int boundedConcurrency = Math.max(1, concurrency);
         String uploadId = createUpload(bucketErn, key, boundedConcurrency).uploadId();
@@ -1021,7 +1093,7 @@ public final class EuclidEsm implements TokenRefreshable, SigningSchemeSelectabl
             executor.shutdown();
         }
 
-        return completeUpload(uploadId);
+        return completeUpload(uploadId, attributes);
     }
 
     /**
@@ -1235,14 +1307,23 @@ public final class EuclidEsm implements TokenRefreshable, SigningSchemeSelectabl
      * @throws IOException If an input or output exception occurs during the HTTP request.
      * @throws InterruptedException If the HTTP request is interrupted.
      */
-    private CompleteUploadResponse completeUpload(String uploadId) throws IOException, InterruptedException {
+    private CompleteUploadResponse completeUpload(String uploadId, Map<String, Variant> attributes)
+            throws IOException, InterruptedException {
         String body = OBJECT_MAPPER.writeValueAsString(CompleteUploadRequest.builder().uploadId(uploadId).build());
+        Map<String, String> headers = requestHeaders("complete-upload", body);
+        // Carried on this request specifically: EsmServer::handleCompleteUpload is what reads the
+        // header, and the object row its background pass writes at the end is built from what this
+        // call was given. An attribute added after this returns is written to a row that pass then
+        // replaces, which is how it gets silently lost.
+        if (attributes != null && !attributes.isEmpty()) {
+            headers.put("x-euclid-attributes", OBJECT_MAPPER.writeValueAsString(attributes));
+        }
         // Retried on 5xx like create-upload, and for the same reason: failing here discards every
         // part already uploaded. Safe to repeat as long as the request is rejected before the server
         // takes ownership of the staged parts - it validates and hands assembly to a background
         // pass, so a 5xx from that validation means nothing was consumed. An upload the server did
         // accept fails a retry with 404 (upload not found), which is not retried.
-        HttpResponse<String> response = postWithRetry("complete-upload", body, requestHeaders("complete-upload", body));
+        HttpResponse<String> response = postWithRetry("complete-upload", body, headers);
 
         if (response.statusCode() / 100 != 2) {
             throw new EuclidServiceException("esm", "complete-upload", response.statusCode(), response.body());
