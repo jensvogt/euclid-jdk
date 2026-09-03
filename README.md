@@ -95,6 +95,44 @@ One stream can carry several listeners, and the same connection also still serve
 `stream.awaitEvent(topic, filter, timeoutMillis)` for the simple "wait for the
 next one" case.
 
+### Tokens in a deployed application
+
+An application euclid deploys is not handed a token. It is handed the name of a
+file holding one, in `EUCLID_CREDENTIALS_FILE`, and euclid rewrites that file
+with a fresh token once less than half the token's lifetime is left - roughly
+every thirty minutes on the default one hour. A client that kept the token it
+was built with would therefore work for about an hour and then start failing
+with `401: Bearer token expired`, in the middle of whatever the application was
+doing.
+
+Clients read that file rather than remembering it, so this needs no code:
+
+```java
+// Inside an application euclid deployed - the token follows the file from here on.
+EuclidEns ens = session.ens();
+```
+
+A client only does this when the file names the same user the client was built
+for. An application that deliberately logs in as somebody else keeps the token
+it logged in with, because swapping in the application's own identity would
+change who the call is made as.
+
+Anywhere else - a command-line tool, a job that runs and exits - the token a
+client was given is the one it sends, as before. To read the managed
+credentials from a client that would not pick them up on its own, or to renew a
+token some other way, install a supplier (see `TokenRefreshable`):
+
+```java
+ens.token(CredentialsFileTokens.fromEnvironment());
+ens.token(() -> myOwnRenewal.currentToken());
+```
+
+The supplier is asked once per request, so the reader stats the file and
+re-reads it only when it has actually changed. If a token goes stale in flight
+anyway, the client builds the credentials again and makes exactly one more
+attempt - only on a 401 that says "expired", and only when the second attempt
+would carry something different.
+
 ### Request signing
 
 A client configured with an access key signs every request rather than sending a

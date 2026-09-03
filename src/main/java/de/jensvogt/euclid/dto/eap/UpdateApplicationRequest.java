@@ -17,6 +17,8 @@ import java.util.Map;
  * @param applicationId  the application to change; the only required field
  * @param runtime        how the artifact is executed
  * @param artifact       key of the artifact object, which must exist in the application's bucket
+ * @param version        version recorded for the application, taken as given - including one already
+ *                       deployed, which is what makes this the way to rebuild a version in place
  * @param command        command to run the artifact with
  * @param arguments      arguments passed to the command, replacing the current list
  * @param environment    environment variables, replacing the current set
@@ -26,9 +28,10 @@ import java.util.Map;
  * @param maxInstances   largest number of processes to run
  * @param readyTimeoutMs milliseconds to wait for a process to report ready
  */
-public record UpdateApplicationRequest(String applicationId, String runtime, String artifact, String command,
-                                       List<String> arguments, Map<String, String> environment, List<String> buckets,
-                                       List<String> queues, Long minInstances, Long maxInstances, Long readyTimeoutMs) {
+public record UpdateApplicationRequest(String applicationId, String runtime, String artifact, String version,
+                                       String command, List<String> arguments, Map<String, String> environment,
+                                       List<String> buckets, List<String> queues, Long minInstances, Long maxInstances,
+                                       Long readyTimeoutMs) {
 
     /**
      * Creates a new instance of the Builder for constructing an UpdateApplicationRequest object.
@@ -64,6 +67,11 @@ public record UpdateApplicationRequest(String applicationId, String runtime, Str
          * Key of the artifact object, which must exist in the application's bucket.
          */
         private String artifact;
+
+        /**
+         * Version recorded for the application, taken as given.
+         */
+        private String version;
 
         /**
          * Command to run the artifact with.
@@ -135,6 +143,23 @@ public record UpdateApplicationRequest(String applicationId, String runtime, Str
          */
         public Builder artifact(String artifact) {
             this.artifact = artifact;
+            return this;
+        }
+
+        /**
+         * Sets the version recorded for the application.
+         * <p>
+         * Taken as given, unlike
+         * {@link de.jensvogt.euclid.module.eap.EuclidEap#redeployApplication(RedeployApplicationRequest)},
+         * which refuses a version already deployed: this is the one place a version can be set to
+         * anything, which is what makes it the way to rebuild a version in place or roll back to
+         * one already seen.
+         *
+         * @param version version recorded for the application
+         * @return the builder instance
+         */
+        public Builder version(String version) {
+            this.version = version;
             return this;
         }
 
@@ -232,7 +257,7 @@ public record UpdateApplicationRequest(String applicationId, String runtime, Str
          * @return a new UpdateApplicationRequest instance.
          */
         public UpdateApplicationRequest build() {
-            return new UpdateApplicationRequest(applicationId, runtime, artifact, command, arguments, environment, buckets, queues, minInstances, maxInstances, readyTimeoutMs);
+            return new UpdateApplicationRequest(applicationId, runtime, artifact, version, command, arguments, environment, buckets, queues, minInstances, maxInstances, readyTimeoutMs);
         }
     }
 }

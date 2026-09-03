@@ -3,6 +3,7 @@ package de.jensvogt.euclid.module.eap;
 import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import de.jensvogt.euclid.auth.CredentialsFileTokens;
 import de.jensvogt.euclid.auth.SignableRequest;
 import de.jensvogt.euclid.auth.SigningScheme;
 import de.jensvogt.euclid.auth.SigningSchemeSelectable;
@@ -10,6 +11,7 @@ import de.jensvogt.euclid.auth.TokenRefreshable;
 import de.jensvogt.euclid.dto.eap.ApplicationRequest;
 import de.jensvogt.euclid.dto.eap.CreateApplicationRequest;
 import de.jensvogt.euclid.dto.eap.ListApplicationsRequest;
+import de.jensvogt.euclid.dto.eap.RedeployApplicationRequest;
 import de.jensvogt.euclid.dto.eap.UpdateApplicationRequest;
 import de.jensvogt.euclid.dto.eap.model.Application;
 import de.jensvogt.euclid.exception.EuclidServiceException;
@@ -72,8 +74,10 @@ public final class EuclidEap implements TokenRefreshable, SigningSchemeSelectabl
      * Supplies the bearer token for each request, used when no SigV4 access key is configured.
      *
      * <p>A supplier rather than a string so that a token which expires can be replaced without
-     * rebuilding the client - see {@link TokenRefreshable#token(Supplier)}. A client built with a
-     * fixed token holds a supplier that returns it.
+     * rebuilding the client - see {@link TokenRefreshable#token(Supplier)}. A client built inside an
+     * application euclid deployed follows the credentials file euclid rewrites; anywhere else it
+     * holds a supplier returning the token it was given - see
+     * {@link CredentialsFileTokens#forClient(String, String)}.
      */
     private volatile Supplier<String> token;
 
@@ -139,14 +143,16 @@ public final class EuclidEap implements TokenRefreshable, SigningSchemeSelectabl
     public EuclidEap(String baseUrl, String token, String region, String accountId, String userId,
                      String accessKeyId, String secretAccessKey, String caCertPath, String nameSpace) {
         this.baseUrl = baseUrl;
-        this.token = () -> token;
+        this.token = CredentialsFileTokens.forClient(token, userId);
         this.region = region;
         this.accountId = accountId;
         this.userId = userId;
         this.accessKeyId = accessKeyId;
         this.secretAccessKey = secretAccessKey;
         this.nameSpace = nameSpace;
-        this.httpClient = new EuclidHttpClient(caCertPath);
+        // The header factory is what lets a request whose token or signature expired in flight be
+        // built again and sent once more - see EuclidHttpClient#headerFactory.
+        this.httpClient = new EuclidHttpClient(caCertPath).headerFactory(this::requestHeaders);
     }
 
     /**
@@ -205,6 +211,31 @@ public final class EuclidEap implements TokenRefreshable, SigningSchemeSelectabl
     public Application updateApplication(UpdateApplicationRequest request)
             throws IOException, InterruptedException {
         return toApplication(post("update-application", OBJECT_MAPPER.writeValueAsString(request)));
+    }
+
+    /**
+     * Deploys a new build of an application, restarting its instances onto it.
+     * <p>
+     * The artifact has to be in the application's bucket already - upload it with
+     * {@code EuclidEsm} first - and this is what makes it the deployed one: EAP records the new
+     * version and the artifact's checksum, and euclid-mgr reads the changed definition as a new
+     * revision and restarts the pool within a few seconds. An application that is stopped stays
+     * stopped and comes up on the new build when it is next started.
+     * <p>
+     * Refused unless it is genuinely a new build - a version that differs from the one deployed,
+     * carrying bytes that differ too. {@link #updateApplication(UpdateApplicationRequest)} deploys
+     * either on purpose.
+     *
+     * @param request the build to deploy; only {@code applicationId} is required
+     * @return the stored definition, carrying the new version and checksum
+     * @throws IOException if an I/O error occurs during the operation
+     * @throws InterruptedException if the operation is interrupted
+     * @throws de.jensvogt.euclid.exception.EuclidServiceException with status 409 if the version or
+     * the artifact is the one already deployed
+     */
+    public Application redeployApplication(RedeployApplicationRequest request)
+            throws IOException, InterruptedException {
+        return toApplication(post("redeploy-application", OBJECT_MAPPER.writeValueAsString(request)));
     }
 
     /**
@@ -346,6 +377,8 @@ public final class EuclidEap implements TokenRefreshable, SigningSchemeSelectabl
                 textOrNull(node, "runtime"),
                 textOrNull(node, "bucketErn"),
                 textOrNull(node, "artifactKey"),
+                textOrNull(node, "version"),
+                textOrNull(node, "md5Sum"),
                 textOrNull(node, "command"),
                 toStringList(node.get("arguments")),
                 toStringMap(node.get("environment")),

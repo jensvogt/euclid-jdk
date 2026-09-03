@@ -2,6 +2,7 @@ package de.jensvogt.euclid.module.ekm;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import de.jensvogt.euclid.auth.CredentialsFileTokens;
 import de.jensvogt.euclid.auth.SignableRequest;
 import de.jensvogt.euclid.auth.SigningScheme;
 import de.jensvogt.euclid.auth.SigningSchemeSelectable;
@@ -15,6 +16,8 @@ import de.jensvogt.euclid.dto.ekm.DeleteKeyTagRequest;
 import de.jensvogt.euclid.dto.ekm.ListKeysRequest;
 import de.jensvogt.euclid.dto.ekm.ListKeysResponse;
 import de.jensvogt.euclid.dto.ekm.RevokeKeyRequest;
+import de.jensvogt.euclid.dto.ekm.SetKeyDescriptionRequest;
+import de.jensvogt.euclid.dto.ekm.SetKeyDescriptionResponse;
 import de.jensvogt.euclid.dto.ekm.RevokeKeyResponse;
 import de.jensvogt.euclid.dto.ekm.model.Key;
 import de.jensvogt.euclid.exception.EuclidServiceException;
@@ -37,8 +40,9 @@ import java.util.function.Supplier;
  * <p>
  * A key is addressed two different ways depending on the action, which is worth knowing before
  * reaching for the wrong one: {@link #encrypt}, {@link #decrypt} and {@link #deleteKey} take the key
- * ID ({@link Key#name()}, a server-generated UUID), while {@link #revokeKey}, {@link #addKeyTag} and
- * {@link #deleteKeyTag} take the key's ERN. Both come back from {@link #createKey}.
+ * ID ({@link Key#name()}, a server-generated UUID), while {@link #revokeKey},
+ * {@link #setKeyDescription}, {@link #addKeyTag} and {@link #deleteKeyTag} take the key's ERN. Both
+ * come back from {@link #createKey}.
  * <p>
  * Key material never leaves the server. There is no export action - encryption and decryption are
  * round trips, with the plaintext or ciphertext travelling as the raw request and response body.
@@ -69,8 +73,10 @@ public final class EuclidEkm implements TokenRefreshable, SigningSchemeSelectabl
      * Supplies the bearer token for each request, used when no SigV4 access key is configured.
      *
      * <p>A supplier rather than a string so that a token which expires can be replaced without
-     * rebuilding the client - see {@link TokenRefreshable#token(Supplier)}. A client built with a
-     * fixed token holds a supplier that returns it.
+     * rebuilding the client - see {@link TokenRefreshable#token(Supplier)}. A client built inside an
+     * application euclid deployed follows the credentials file euclid rewrites; anywhere else it
+     * holds a supplier returning the token it was given - see
+     * {@link CredentialsFileTokens#forClient(String, String)}.
      */
     private volatile Supplier<String> token;
 
@@ -136,14 +142,16 @@ public final class EuclidEkm implements TokenRefreshable, SigningSchemeSelectabl
     public EuclidEkm(String baseUrl, String token, String region, String accountId, String userId,
                      String accessKeyId, String secretAccessKey, String caCertPath, String nameSpace) {
         this.baseUrl = baseUrl;
-        this.token = () -> token;
+        this.token = CredentialsFileTokens.forClient(token, userId);
         this.region = region;
         this.accountId = accountId;
         this.userId = userId;
         this.accessKeyId = accessKeyId;
         this.secretAccessKey = secretAccessKey;
         this.nameSpace = nameSpace;
-        this.httpClient = new EuclidHttpClient(caCertPath);
+        // The header factory is what lets a request whose token or signature expired in flight be
+        // built again and sent once more - see EuclidHttpClient#headerFactory.
+        this.httpClient = new EuclidHttpClient(caCertPath).headerFactory(this::requestHeaders);
     }
 
     /**
@@ -185,10 +193,31 @@ public final class EuclidEkm implements TokenRefreshable, SigningSchemeSelectabl
      * @throws InterruptedException if the operation is interrupted
      */
     public CreateKeyResponse createKey(String algorithm, long length) throws IOException, InterruptedException {
+        return createKey(algorithm, length, "");
+    }
+
+    /**
+     * Creates a new encryption key and records what it is for.
+     *
+     * <p>The description is worth supplying. A key is identified by the ID the server mints, which
+     * says nothing about what the key protects, and a key outlives the reason it was made - so
+     * months later this is the only thing that answers whether it can be deleted, and delete-key
+     * is not a mistake that can be undone.
+     *
+     * @param algorithm the key algorithm; the server only generates {@code "AES"} keys so far and
+     *                  rejects anything else with HTTP 400
+     * @param length the key length in bits, 128 or 256
+     * @param description what the key is for; free text, never interpreted, may be empty
+     * @return a {@code CreateKeyResponse} carrying the new key's ID and ERN
+     * @throws IOException if an I/O error occurs during the operation
+     * @throws InterruptedException if the operation is interrupted
+     */
+    public CreateKeyResponse createKey(String algorithm, long length, String description) throws IOException, InterruptedException {
         String body = OBJECT_MAPPER.writeValueAsString(
-                CreateKeyRequest.builder().algorithm(algorithm).length(length).build());
+                CreateKeyRequest.builder().algorithm(algorithm).length(length).description(description).build());
         JsonNode root = post("create-key", body);
         return CreateKeyResponse.builder().ern(textOrNull(root, "ern")).name(textOrNull(root, "name"))
+                .description(textOrNull(root, "description"))
                 .algorithm(textOrNull(root, "algorithm")).length(root.path("length").asLong(0))
                 .status(textOrNull(root, "status")).build();
     }
@@ -278,6 +307,36 @@ public final class EuclidEkm implements TokenRefreshable, SigningSchemeSelectabl
         JsonNode root = post("revoke-key", body);
         return RevokeKeyResponse.builder().ern(textOrNull(root, "ern")).name(textOrNull(root, "name"))
                 .status(textOrNull(root, "status")).build();
+    }
+
+    /**
+     * Changes what a key says it is for.
+     *
+     * <p>A key is identified by a generated ID that says nothing about what it protects, so the
+     * description is what answers - months later, when somebody is deciding whether the key can be
+     * deleted - what would be lost with it. {@link #createKey(String, long, String)} takes one;
+     * this is how it is corrected afterwards, which is worth doing for a key that has been revoked
+     * or scheduled for deletion: that is exactly the kind whose description should say why.
+     *
+     * <p>Only the description changes. The key material, algorithm, length, status and any
+     * scheduled deletion are untouched, so describing a key neither prolongs nor shortens its life.
+     *
+     * <p>Takes the key's ERN, not its ID, as {@link #revokeKey} does - {@link #listKeys()} reports
+     * both.
+     *
+     * @param ern the ERN of the key to describe
+     * @param description what the key is for; an empty string clears the description rather than
+     *                    leaving it alone, since otherwise there would be no way to remove one
+     * @return a {@code SetKeyDescriptionResponse} carrying the key as it now reads
+     * @throws IOException if an I/O error occurs during the operation
+     * @throws InterruptedException if the operation is interrupted
+     */
+    public SetKeyDescriptionResponse setKeyDescription(String ern, String description) throws IOException, InterruptedException {
+        String body = OBJECT_MAPPER.writeValueAsString(
+                SetKeyDescriptionRequest.builder().ern(ern).description(description).build());
+        JsonNode root = post("set-key-description", body);
+        return SetKeyDescriptionResponse.builder().ern(textOrNull(root, "ern")).name(textOrNull(root, "name"))
+                .description(textOrNull(root, "description")).build();
     }
 
     /**
@@ -399,6 +458,9 @@ public final class EuclidEkm implements TokenRefreshable, SigningSchemeSelectabl
                 keys.add(new Key(
                         textOrNull(keyNode, "name"),
                         textOrNull(keyNode, "ern"),
+                        // Absent from a key a server too old to know about descriptions returns,
+                        // and empty for one whose creator gave none.
+                        textOrNull(keyNode, "description"),
                         textOrNull(keyNode, "algorithm"),
                         keyNode.path("length").asLong(0),
                         textOrNull(keyNode, "status"),

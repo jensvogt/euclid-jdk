@@ -293,7 +293,14 @@ public final class EuclidEam {
     public EuclidSession login() throws IOException, InterruptedException {
         EuclidSession cached = loadCachedSession();
         if (cached != null) {
-            return cached;
+            // A cached session may have been established - by this caller or by euclid-cli,
+            // since both share the same credentials file - before namespace(...) was ever asked
+            // for, or scoped to a different one. Switching it here is what makes namespace(...)
+            // apply regardless of whether login() ends up reusing a cached session or doing a
+            // fresh one.
+            return namespace != null && !namespace.equals(cached.nameSpace())
+                    ? cached.changeNamespace(namespace)
+                    : cached;
         }
 
         if ((username == null || username.isEmpty()) && (email == null || email.isEmpty())) {

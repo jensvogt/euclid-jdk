@@ -6,16 +6,19 @@ import java.util.function.Supplier;
  * A client whose bearer token can be replaced after it was built.
  *
  * <p>A token is not a credential the caller keeps: it is issued with an expiry and has to be
- * replaced before it runs out. A client constructed with a token string holds that one string for
- * as long as it lives, which is right for a process that outlives no token - a command-line call,
- * a job that runs and exits - and wrong for a server that runs for days. Handing the client a
- * {@link Supplier} instead moves the decision to the caller: it is asked at each request, so
- * whatever the caller currently considers valid is what goes on the wire.
+ * replaced before it runs out. A client constructed with a token string would hold that one string
+ * for as long as it lives, which is right for a process that outlives no token - a command-line
+ * call, a job that runs and exits - and wrong for a server that runs for days. Handing the client a
+ * {@link Supplier} instead moves the decision: it is asked at each request, so whatever is
+ * currently valid is what goes on the wire.
  *
  * <p>Applications euclid deploys are the case this exists for. Such an application is given a
  * bearer token in a file, which euclid rewrites at half the token's lifetime; the supplier reads
- * that file, and the client that never restarts keeps working. See {@code euclid-spring}'s
- * {@code CredentialsFileTokens} for that reader.
+ * that file, and the client that never restarts keeps working. {@link CredentialsFileTokens} is
+ * that reader, and a client installs it on itself when the environment names a credentials file
+ * belonging to the user the client was built for - so a deployed application gets this without
+ * having to ask for it, and this interface is for the callers who renew a token some other way.
+ * Calling {@link #token(Supplier)} replaces whatever the client chose.
  *
  * <p>Setting a supplier does not change how a client chooses between authentication schemes: a
  * client configured with a SigV4 access key signs its requests and never consults the token at

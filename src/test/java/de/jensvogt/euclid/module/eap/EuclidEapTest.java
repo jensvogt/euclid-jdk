@@ -7,6 +7,7 @@ import com.sun.net.httpserver.HttpServer;
 import de.jensvogt.euclid.auth.SigV4;
 import de.jensvogt.euclid.auth.SignableRequest;
 import de.jensvogt.euclid.dto.eap.CreateApplicationRequest;
+import de.jensvogt.euclid.dto.eap.RedeployApplicationRequest;
 import de.jensvogt.euclid.dto.eap.UpdateApplicationRequest;
 import de.jensvogt.euclid.dto.eap.model.Application;
 import de.jensvogt.euclid.exception.EuclidServiceException;
@@ -111,7 +112,10 @@ class EuclidEapTest {
         // The names a caller deploys with come back resolved to ERNs.
         assertEquals("billing", created.applicationId());
         assertEquals("ern:esm:eu-central-1:863459426936:bucket/artifacts", created.bucketErn());
-        assertEquals("billing-1.0.jar", created.artifactKey());
+        assertEquals("billing-1.0.0.jar", created.artifactKey());
+        // Which build is deployed, and which bytes it is - what a redeploy has to differ from.
+        assertEquals("1.0.0", created.version());
+        assertEquals("0dc7cdef5e707bae7f7b6bbb5be4c32a", created.md5Sum());
         assertEquals(List.of("-jar", "billing-1.0.jar"), created.arguments());
         assertEquals("info", created.environment().get("LOG_LEVEL"));
         assertEquals(List.of("ern:esm:eu-central-1:863459426936:bucket/invoices"), created.resources());
@@ -305,6 +309,90 @@ class EuclidEapTest {
         assertTrue(exception.responseBody().contains("Artifact not found"));
     }
 
+    // EAP will not create an application whose version it cannot establish, so a caller deploying
+    // an artifact whose name carries none has to be able to say what it is.
+    @Test
+    void createApplicationSendsTheVersionWhenGiven() throws Exception {
+        AtomicReference<SignableRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(captureRequest(exchange));
+            sendResponse(exchange, 200, applicationJson());
+        });
+
+        newClient().createApplication(CreateApplicationRequest.builder()
+                .applicationId("billing").runtime("JAVA").bucket("artifacts").artifact("billing.jar")
+                .version("1.0.0").build());
+
+        assertBodyContains(received.get().body(), "\"version\":\"1.0.0\"");
+    }
+
+    // And left unset it must stay out of the body: EAP then reads the version off the artifact's
+    // own name, which sending an empty string would prevent.
+    @Test
+    void createApplicationOmitsAnUnsetVersion() throws Exception {
+        AtomicReference<SignableRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(captureRequest(exchange));
+            sendResponse(exchange, 200, applicationJson());
+        });
+
+        newClient().createApplication(minimalRequest());
+
+        String body = received.get().body();
+        assertFalse(body.contains("version"), "an unset version should not be sent, was " + body);
+    }
+
+    @Test
+    void redeployApplicationSendsTheBuildAndParsesResponse() throws Exception {
+        AtomicReference<SignableRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(captureRequest(exchange));
+            sendResponse(exchange, 200, applicationJson());
+        });
+
+        Application deployed = newClient().redeployApplication(RedeployApplicationRequest.builder()
+                .applicationId("billing").artifact("billing-1.0.0.jar").version("1.0.0").build());
+
+        assertEquals("redeploy-application", received.get().header("x-euclid-action"));
+        assertBodyContains(received.get().body(), "\"applicationId\":\"billing\"",
+                "\"artifact\":\"billing-1.0.0.jar\"", "\"version\":\"1.0.0\"");
+        assertEquals("1.0.0", deployed.version());
+    }
+
+    // The ordinary redeploy names neither: the build keeps its key, and its version is read off
+    // the artifact's name. Both have to be absent rather than null for the server to do that.
+    @Test
+    void redeployApplicationOmitsWhatItWasNotTold() throws Exception {
+        AtomicReference<SignableRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(captureRequest(exchange));
+            sendResponse(exchange, 200, applicationJson());
+        });
+
+        newClient().redeployApplication(RedeployApplicationRequest.builder().applicationId("billing").build());
+
+        String body = received.get().body();
+        assertFalse(body.contains("artifact"), "an unset artifact should not be sent, was " + body);
+        assertFalse(body.contains("version"), "an unset version should not be sent, was " + body);
+    }
+
+    // A redeploy that is not a new build is refused by the server, and the reason is the whole
+    // value of the refusal - it has to reach the caller rather than becoming a bare 409.
+    @Test
+    void aRefusedRedeploySurfacesTheServersReason() throws Exception {
+        server = startServer(exchange -> sendResponse(exchange, 409,
+                "{\"error\":\"Refusing to redeploy 'billing': version 1.0.0 is already deployed"
+                        + " - a new build needs a new version. Use 'update-application' to deploy it anyway.\"}"));
+
+        EuclidEap eap = newClient();
+        EuclidServiceException exception = assertThrows(EuclidServiceException.class,
+                () -> eap.redeployApplication(RedeployApplicationRequest.builder()
+                        .applicationId("billing").version("1.0.0").build()));
+
+        assertEquals(409, exception.statusCode());
+        assertTrue(exception.responseBody().contains("already deployed"));
+    }
+
     private static CreateApplicationRequest minimalRequest() {
         return CreateApplicationRequest.builder()
                 .applicationId("billing").runtime("JAVA").bucket("artifacts").artifact("billing-1.0.jar").build();
@@ -318,7 +406,8 @@ class EuclidEapTest {
         return "{\"applicationId\":\"billing\",\"ern\":\"ern:eap:eu-central-1:863459426936:application/billing\","
                 + "\"accountId\":\"863459426936\",\"region\":\"eu-central-1\",\"runtime\":\"JAVA\","
                 + "\"bucketErn\":\"ern:esm:eu-central-1:863459426936:bucket/artifacts\","
-                + "\"artifactKey\":\"billing-1.0.jar\",\"command\":\"java\","
+                + "\"artifactKey\":\"billing-1.0.0.jar\",\"version\":\"1.0.0\","
+                + "\"md5Sum\":\"0dc7cdef5e707bae7f7b6bbb5be4c32a\",\"command\":\"java\","
                 + "\"arguments\":[\"-jar\",\"billing-1.0.jar\"],\"environment\":{\"LOG_LEVEL\":\"info\"},"
                 + "\"resources\":[\"ern:esm:eu-central-1:863459426936:bucket/invoices\"],"
                 + "\"userId\":\"eap-billing\",\"minInstances\":2,\"maxInstances\":5,\"readyTimeoutMs\":60000,"

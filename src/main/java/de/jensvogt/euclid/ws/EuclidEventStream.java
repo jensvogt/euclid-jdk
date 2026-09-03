@@ -3,6 +3,7 @@ package de.jensvogt.euclid.ws;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import de.jensvogt.euclid.auth.CredentialsFileTokens;
 import de.jensvogt.euclid.auth.SignableRequest;
 import de.jensvogt.euclid.auth.SigningScheme;
 import de.jensvogt.euclid.auth.SigningSchemeSelectable;
@@ -89,8 +90,10 @@ public final class EuclidEventStream implements AutoCloseable, TokenRefreshable,
      * Supplies the bearer token for each request, used when no SigV4 access key is configured.
      *
      * <p>A supplier rather than a string so that a token which expires can be replaced without
-     * rebuilding the client - see {@link TokenRefreshable#token(Supplier)}. A client built with a
-     * fixed token holds a supplier that returns it.
+     * rebuilding the client - see {@link TokenRefreshable#token(Supplier)}. A client built inside an
+     * application euclid deployed follows the credentials file euclid rewrites; anywhere else it
+     * holds a supplier returning the token it was given - see
+     * {@link CredentialsFileTokens#forClient(String, String)}.
      */
     private volatile Supplier<String> token;
     private final String region;
@@ -153,7 +156,7 @@ public final class EuclidEventStream implements AutoCloseable, TokenRefreshable,
     public EuclidEventStream(String baseUrl, String token, String region, String accountId, String userId,
                               String accessKeyId, String secretAccessKey, String caCertPath, String target) {
         this.baseUrl = baseUrl;
-        this.token = () -> token;
+        this.token = CredentialsFileTokens.forClient(token, userId);
         this.region = region;
         this.accountId = accountId;
         this.userId = userId;

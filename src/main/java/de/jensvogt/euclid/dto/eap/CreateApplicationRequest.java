@@ -14,6 +14,8 @@ import java.util.Map;
  * @param runtime        how the artifact is executed: {@code "JAVA"}, {@code "PYTHON"}, {@code "NODEJS"} or {@code "BINARY"}
  * @param bucket         name of the ESM bucket holding the artifact
  * @param artifact       key of the artifact object within that bucket
+ * @param version        version this build is, e.g. {@code "1.4.0"}; left unset, EAP reads it out of the
+ *                       artifact's own name, and refuses the deployment if the name carries none
  * @param command        command to run the artifact with, or empty for the runtime default
  * @param arguments      arguments passed to the command
  * @param environment    environment variables the processes are started with
@@ -24,10 +26,10 @@ import java.util.Map;
  * @param maxInstances   largest number of processes to run; the server raises it to minInstances if lower
  * @param readyTimeoutMs milliseconds to wait for a process to report ready; the server floors this at 1000
  */
-public record CreateApplicationRequest(String applicationId, String runtime, String bucket, String artifact, String command,
-                                       List<String> arguments, Map<String, String> environment, List<String> buckets,
-                                       List<String> queues, String user, Long minInstances, Long maxInstances,
-                                       Long readyTimeoutMs) {
+public record CreateApplicationRequest(String applicationId, String runtime, String bucket, String artifact, String version,
+                                       String command, List<String> arguments, Map<String, String> environment,
+                                       List<String> buckets, List<String> queues, String user, Long minInstances,
+                                       Long maxInstances, Long readyTimeoutMs) {
 
     /**
      * Creates a new instance of the Builder for constructing a CreateApplicationRequest object.
@@ -68,6 +70,11 @@ public record CreateApplicationRequest(String applicationId, String runtime, Str
          * Key of the artifact object within that bucket.
          */
         private String artifact;
+
+        /**
+         * Version this build is; left unset, EAP reads it out of the artifact's own name.
+         */
+        private String version;
 
         /**
          * Command to run the artifact with, or empty for the runtime default.
@@ -155,6 +162,23 @@ public record CreateApplicationRequest(String applicationId, String runtime, Str
          */
         public Builder artifact(String artifact) {
             this.artifact = artifact;
+            return this;
+        }
+
+        /**
+         * Sets the version this build is, e.g. {@code "1.4.0"}.
+         * <p>
+         * Left unset, EAP reads it out of the artifact's own name - {@code orders-1.4.0.jar} is
+         * {@code 1.4.0} - and refuses to create the application if the name carries no such
+         * version, since a recorded version that was invented is worse than none. It is what a
+         * later redeploy has to differ from, and reaches the process as
+         * {@code EUCLID_APPLICATION_VERSION}.
+         *
+         * @param version version this build is
+         * @return the builder instance
+         */
+        public Builder version(String version) {
+            this.version = version;
             return this;
         }
 
@@ -263,7 +287,7 @@ public record CreateApplicationRequest(String applicationId, String runtime, Str
          * @return a new CreateApplicationRequest instance.
          */
         public CreateApplicationRequest build() {
-            return new CreateApplicationRequest(applicationId, runtime, bucket, artifact, command, arguments, environment, buckets, queues, user, minInstances, maxInstances, readyTimeoutMs);
+            return new CreateApplicationRequest(applicationId, runtime, bucket, artifact, version, command, arguments, environment, buckets, queues, user, minInstances, maxInstances, readyTimeoutMs);
         }
     }
 }

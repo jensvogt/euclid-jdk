@@ -20,6 +20,10 @@ import java.util.Map;
  * @param bucketErn      ERN of the bucket holding the artifact, resolved when the application was
  *                       deployed
  * @param artifactKey    key of the artifact object within that bucket
+ * @param version        version of the build currently deployed, e.g. {@code "1.4.0"} - empty for an
+ *                       application defined before versions were recorded, until its next redeploy
+ * @param md5Sum         MD5 of the artifact as it was when this version was deployed, which together
+ *                       with the version answers "which build is running?" from the definition alone
  * @param command        command the artifact is run with
  * @param arguments      arguments passed to the command
  * @param environment    environment variables the processes are started with
@@ -41,7 +45,8 @@ import java.util.Map;
  * @param modified       last-modified timestamp
  */
 public record Application(String applicationId, String ern, String accountId, String region, String runtime,
-                          String bucketErn, String artifactKey, String command, List<String> arguments,
+                          String bucketErn, String artifactKey, String version, String md5Sum, String command,
+                          List<String> arguments,
                           Map<String, String> environment, List<String> resources, String userId, long minInstances,
                           long maxInstances, long readyTimeoutMs, String desiredState, String state, long instances,
                           String created, String modified) {
