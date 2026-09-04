@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.17](https://github.com/jensvogt/euclid-jdk/compare/euclid-jdk-v0.1.16...euclid-jdk-v0.1.17) (2026-09-04)
+
+
+### Bug Fixes
+
+* add auto scaler metrics ([3cd4fa6](https://github.com/jensvogt/euclid-jdk/commit/3cd4fa6a7ac5223d1f85d8b3ef41dbd1a4f52ade))
+
 ## [0.1.16](https://github.com/jensvogt/euclid-jdk/compare/euclid-jdk-v0.1.15...euclid-jdk-v0.1.16) (2026-09-03)
 
 
