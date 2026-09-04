@@ -52,7 +52,6 @@ public final class CredentialsFileTokens implements Supplier<String> {
     public static final String CREDENTIALS_FILE_VARIABLE = "EUCLID_CREDENTIALS_FILE";
 
     private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
-
     /**
      * What was read, and the state of the file it was read from.
      *

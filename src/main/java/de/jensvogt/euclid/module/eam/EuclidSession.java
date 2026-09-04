@@ -40,6 +40,7 @@ import de.jensvogt.euclid.module.ekm.EuclidEkm;
 import de.jensvogt.euclid.module.ens.EuclidEns;
 import de.jensvogt.euclid.module.eqs.EuclidEqs;
 import de.jensvogt.euclid.module.esm.EuclidEsm;
+import de.jensvogt.euclid.module.emo.EuclidEmo;
 import de.jensvogt.euclid.module.ets.EuclidEts;
 
 import java.io.IOException;
@@ -147,6 +148,21 @@ public record EuclidSession(String token, String userId, String accountId, Strin
      */
     public EuclidEts ets() {
         return new EuclidEts(baseUrl, token, region, accountId, userId, accessKeyId, secretAccessKey, caCertPath, nameSpace);
+    }
+
+    /**
+     * EMO (monitoring) operations for this session, for pushing metrics a process has measured
+     * about itself. Requests are signed with the session's access key when it has one, falling
+     * back to the bearer token otherwise.
+     * <p>
+     * Unlike the administrative modules this is meant to be called by ordinary principals: an
+     * application reporting its own load is the intended caller, and it holds no more privilege
+     * than any other application.
+     *
+     * @return EuclidEmo instance
+     */
+    public EuclidEmo emo() {
+        return new EuclidEmo(baseUrl, token, region, accountId, userId, accessKeyId, secretAccessKey, caCertPath, nameSpace);
     }
 
     /**
