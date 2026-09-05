@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.1.18](https://github.com/jensvogt/euclid-jdk/compare/euclid-jdk-v0.1.17...euclid-jdk-v0.1.18) (2026-09-05)
+
+
+### Bug Fixes
+
+* add internal traffic ([0a5eac9](https://github.com/jensvogt/euclid-jdk/commit/0a5eac9fcfd4b48b8082f859448e31adfe020363))
+* add internal traffic ([f9c9136](https://github.com/jensvogt/euclid-jdk/commit/f9c91363d89a94a1dd12d4a2e75e207152625f2a))
+
 ## [0.1.17](https://github.com/jensvogt/euclid-jdk/compare/euclid-jdk-v0.1.16...euclid-jdk-v0.1.17) (2026-09-04)
 
 
