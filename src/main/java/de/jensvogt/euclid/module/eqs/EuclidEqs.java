@@ -212,6 +212,12 @@ public final class EuclidEqs implements TokenRefreshable, SigningSchemeSelectabl
      */
     private volatile SigningScheme signingScheme = SigningScheme.SIGV4;
 
+    /**
+     * Whether requests from this client are the system talking to itself rather than work being
+     * asked of it. Sent as {@code x-euclid-internal}, which keeps such a request out of the
+     * autoscaler's load signal - see {@link #asInternal()}.
+     */
+    private boolean internal;
 
     /**
      * Constructs an instance of the EuclidEqs class with the specified parameters for
@@ -242,6 +248,33 @@ public final class EuclidEqs implements TokenRefreshable, SigningSchemeSelectabl
         // The header factory is what lets a request whose token or signature expired in flight be
         // built again and sent once more - see EuclidHttpClient#headerFactory.
         this.httpClient = new EuclidHttpClient(caCertPath).headerFactory(this::requestHeaders);
+    }
+
+    /**
+     * A view of this client whose requests are marked as internal traffic.
+     *
+     * <p>Some calls observe the system rather than use it: reading a queue's depth to report it,
+     * writing a heartbeat tag to keep a delivery queue alive. They are indistinguishable from real
+     * work by their action alone - the same {@code get-message-count} is a user's question one
+     * moment and a metric collector's poll the next - so the caller says which it is.
+     *
+     * <p>It matters because euclid scales a module on the traffic it receives. Instrumentation
+     * that polls every few seconds would otherwise keep a pool permanently awake and, under load,
+     * make an idle one look busy - the monitoring preventing the very thing it exists to measure.
+     *
+     * <p>Returns a separate client rather than changing this one, so a single instance is never
+     * half-marked and no call has to remember to set it back. Hold on to the result: it builds its
+     * own HTTP client, which is worth doing once rather than per call.
+     *
+     * @return an equivalent client whose requests carry {@code x-euclid-internal}
+     */
+    public EuclidEqs asInternal() {
+        EuclidEqs copy = new EuclidEqs(baseUrl, null, region, accountId, userId,
+                                       accessKeyId, secretAccessKey, caCertPath, nameSpace);
+        copy.token = token;// the same supplier, so a refreshed token reaches both
+        copy.signingScheme = signingScheme;
+        copy.internal = true;
+        return copy;
     }
 
     /**
@@ -1085,6 +1118,9 @@ public final class EuclidEqs implements TokenRefreshable, SigningSchemeSelectabl
         }
         if (nameSpace != null && !nameSpace.isEmpty()) {
             headers.put("x-euclid-namespace", nameSpace);
+        }
+        if (internal) {
+            headers.put("x-euclid-internal", "true");
         }
 
         if (accessKeyId != null && !accessKeyId.isEmpty() && secretAccessKey != null && !secretAccessKey.isEmpty()) {
