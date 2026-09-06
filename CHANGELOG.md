@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.1.23](https://github.com/jensvogt/euclid-jdk/compare/euclid-jdk-v0.1.22...euclid-jdk-v0.1.23) (2026-09-06)
+
+
+### Bug Fixes
+
+* orphanRemoval of internal queues. ([97ccdcd](https://github.com/jensvogt/euclid-jdk/commit/97ccdcdc78bb2400860f40954dd825b3d7470b2f))
+* orphanRemoval of internal queues. ([e66818a](https://github.com/jensvogt/euclid-jdk/commit/e66818ac4e49a9cef88702103733d6dd49d9e26e))
+
 ## [0.1.22](https://github.com/jensvogt/euclid-jdk/compare/euclid-jdk-v0.1.21...euclid-jdk-v0.1.22) (2026-09-06)
 
 
