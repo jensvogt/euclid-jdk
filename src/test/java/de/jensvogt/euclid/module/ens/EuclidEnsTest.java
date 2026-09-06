@@ -273,7 +273,7 @@ class EuclidEnsTest {
         AtomicReference<SignableRequest> received = new AtomicReference<>();
         server = startServer(exchange -> {
             received.set(captureRequest(exchange));
-            sendResponse(exchange, 200, "{\"messageId\":\"msg-1\",\"md5Body\":\"abc\",\"md5Attributes\":\"def\"}");
+            sendResponse(exchange, 200, "{\"messageId\":\"msg-1\"}");
         });
 
         PublishMessageResponse response = newClient().publishMessage("topic-ern", "hello");
@@ -281,8 +281,6 @@ class EuclidEnsTest {
         assertEquals("publish-message", received.get().header("x-euclid-action"));
         assertBodyContains(received.get().body(), "\"ern\":\"topic-ern\"", "\"body\":\"hello\"", "\"attributes\":{}");
         assertEquals("msg-1", response.messageId());
-        assertEquals("abc", response.md5Body());
-        assertEquals("def", response.md5Attributes());
     }
 
     @Test
@@ -598,8 +596,9 @@ class EuclidEnsTest {
 
     private static String messageJson(String messageId) {
         return "{\"ern\":\"msg-ern\",\"topicErn\":\"topic-ern\",\"messageId\":\"" + messageId + "\","
-                + "\"status\":\"AVAILABLE\",\"body\":\"hello\",\"md5Body\":\"abc\",\"attributes\":{},"
-                + "\"md5Attributes\":\"def\",\"lastReceived\":null,\"created\":\"2026-01-01\",\"modified\":\"2026-01-02\"}";
+                + "\"status\":\"AVAILABLE\",\"body\":\"hello\",\"attributes\":{},"
+                + "\"contentType\":\"text/plain\",\"lastReceived\":null,\"created\":\"2026-01-01\","
+                + "\"modified\":\"2026-01-02\"}";
     }
 
     private static void assertBodyContains(String body, String... fragments) {
