@@ -287,7 +287,7 @@ class EuclidEqsTest {
         AtomicReference<SignableRequest> received = new AtomicReference<>();
         server = startServer(exchange -> {
             received.set(captureRequest(exchange));
-            sendResponse(exchange, 200, "{\"messageId\":\"msg-1\",\"md5Body\":\"abc\",\"md5Attributes\":\"def\"}");
+            sendResponse(exchange, 200, "{\"messageId\":\"msg-1\"}");
         });
 
         SendMessageResponse response = newClient().sendMessage("queue-ern", "hello");
@@ -296,8 +296,6 @@ class EuclidEqsTest {
         assertBodyContains(received.get().body(), "\"ern\":\"queue-ern\"", "\"body\":\"hello\"",
                 "\"attributes\":{}", "\"priority\":\"MIDDLE\"");
         assertEquals("msg-1", response.messageId());
-        assertEquals("abc", response.md5Body());
-        assertEquals("def", response.md5Attributes());
     }
 
     @Test
@@ -355,6 +353,8 @@ class EuclidEqsTest {
         assertEquals(1, response.messages().size());
         assertEquals("msg-1", response.messages().getFirst().messageId());
         assertEquals("rh-1", response.messages().getFirst().receiptHandle());
+        assertEquals("corr-1", response.messages().getFirst().systemAttributes().get("correlationId").value());
+        assertEquals(2, response.messages().getFirst().receivedCount());
     }
 
     @Test
@@ -636,8 +636,7 @@ class EuclidEqsTest {
             sendResponse(exchange, 200, "{\"messageId\":\"msg-1\",\"queueErn\":\"queue-ern\","
                     + "\"receiptHandle\":\"rh-1\",\"status\":\"VISIBLE\",\"priority\":\"MIDDLE\",\"size\":11,"
                     + "\"receivedCount\":2,\"visibilityTimeout\":30,\"contentType\":\"text/plain\","
-                    + "\"md5Body\":\"abc\",\"md5Attributes\":\"def\",\"created\":\"2026-01-01\","
-                    + "\"modified\":\"2026-01-02\"}");
+                    + "\"created\":\"2026-01-01\",\"modified\":\"2026-01-02\"}");
         });
 
         GetMessageMetadataResponse response = newClient().getMessageMetadata("msg-1");
@@ -757,8 +756,9 @@ class EuclidEqsTest {
 
     private static String messageJson(String messageId, String receiptHandle) {
         return "{\"ern\":\"msg-ern\",\"queueErn\":\"queue-ern\",\"messageId\":\"" + messageId + "\","
-                + "\"status\":\"VISIBLE\",\"priority\":\"MIDDLE\",\"body\":\"hello\",\"md5Body\":\"abc\","
-                + "\"receiptHandle\":\"" + receiptHandle + "\",\"attributes\":{},\"md5Attributes\":\"def\","
+                + "\"status\":\"VISIBLE\",\"priority\":\"MIDDLE\",\"body\":\"hello\","
+                + "\"receiptHandle\":\"" + receiptHandle + "\",\"receivedCount\":2,\"attributes\":{},"
+                + "\"systemAttributes\":{\"correlationId\":{\"type\":\"string\",\"value\":\"corr-1\"}},"
                 + "\"lastReceived\":null,\"created\":\"2026-01-01\",\"modified\":\"2026-01-02\"}";
     }
 
