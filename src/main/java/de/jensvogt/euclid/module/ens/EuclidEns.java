@@ -369,8 +369,31 @@ public final class EuclidEns implements TokenRefreshable, SigningSchemeSelectabl
      */
     public PublishMessageResponse publishMessage(String ern, String body, Map<String, Variant> attributes)
             throws IOException, InterruptedException {
+        return publishMessage(ern, body, attributes, "MIDDLE");
+    }
+
+    /**
+     * Publishes a message with the specified body, attributes and priority to a topic.
+     *
+     * <p>The priority belongs to the queue messages this publish fans out to, not to the topic
+     * message: a topic is not consumed from, so a priority means nothing on it. It is carried so
+     * that the messages the topic's SQS-type subscriptions turn this one into are worth what the
+     * message that caused them was worth - a delivery that crosses a topic would otherwise arrive
+     * on the other side at MIDDLE, whatever it was sent as.
+     *
+     * @param ern        the ERN of the topic to publish to
+     * @param body       the message body
+     * @param attributes typed message attributes
+     * @param priority   the priority of the fanned-out queue messages, "LOW", "MIDDLE" or "HIGH";
+     *                   anything else is read by the server as the default of "MIDDLE"
+     * @return a {@code PublishMessageResponse} containing the published message's details
+     * @throws IOException if an I/O error occurs during the operation
+     * @throws InterruptedException if the operation is interrupted
+     */
+    public PublishMessageResponse publishMessage(String ern, String body, Map<String, Variant> attributes, String priority)
+            throws IOException, InterruptedException {
         String requestBody = OBJECT_MAPPER.writeValueAsString(
-                PublishMessageRequest.builder().ern(ern).body(body).attributes(attributes).build());
+                PublishMessageRequest.builder().ern(ern).body(body).attributes(attributes).priority(priority).build());
         HttpResponse<String> response = httpClient.post(baseUrl + "/", requestBody, "ens", "publish-message",
                 requestHeaders("publish-message", requestBody));
 

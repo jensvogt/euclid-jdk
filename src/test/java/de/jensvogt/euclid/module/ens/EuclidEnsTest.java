@@ -298,6 +298,37 @@ class EuclidEnsTest {
         assertBodyContains(received.get().body(), "\"count\":{\"type\":\"long\",\"value\":5}");
     }
 
+    /**
+     * The priority the topic's subscriptions hand on to the queues they fan out to. A publish that
+     * does not ask for one says so explicitly rather than leaving the field off, so the server is
+     * never left guessing what an older client meant.
+     */
+    @Test
+    void publishMessageSendsMiddlePriorityByDefault() throws Exception {
+        AtomicReference<SignableRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(captureRequest(exchange));
+            sendResponse(exchange, 200, "{\"messageId\":\"msg-1\"}");
+        });
+
+        newClient().publishMessage("topic-ern", "hello");
+
+        assertBodyContains(received.get().body(), "\"priority\":\"MIDDLE\"");
+    }
+
+    @Test
+    void publishMessageSendsTheGivenPriority() throws Exception {
+        AtomicReference<SignableRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(captureRequest(exchange));
+            sendResponse(exchange, 200, "{\"messageId\":\"msg-1\"}");
+        });
+
+        newClient().publishMessage("topic-ern", "hello", Map.of(), "LOW");
+
+        assertBodyContains(received.get().body(), "\"priority\":\"LOW\"");
+    }
+
     @Test
     void listMessagesUsesDefaultsAndParsesResponse() throws Exception {
         AtomicReference<SignableRequest> received = new AtomicReference<>();
