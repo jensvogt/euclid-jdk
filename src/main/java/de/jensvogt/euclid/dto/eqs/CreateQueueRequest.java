@@ -10,9 +10,11 @@ package de.jensvogt.euclid.dto.eqs;
  * @param dlqName          name of the dead letter queue, or empty for none
  * @param delay            seconds a new message stays delayed before becoming available
  * @param priority         default priority for the queue's messages, overridable per send-message
+ * @param internal         whether the queue is euclid's own plumbing rather than a user's queue,
+ *                         and so left out of list-queues and the queue count
  */
 public record CreateQueueRequest(String name, long visibility, long maxRetries, long maxMessageLength, String dlqName,
-                                 long delay, String priority) {
+                                 long delay, String priority, boolean internal) {
 
     /**
      * Creates a new instance of the Builder for constructing a CreateQueueRequest object.
@@ -146,9 +148,9 @@ public record CreateQueueRequest(String name, long visibility, long maxRetries, 
         }
 
         /**
-         * Sets internal flag
+         * Sets the default priority for the queue's messages, overridable per send-message.
          *
-         * @param priority internal flag, if true, it's an internal queue not visible to users
+         * @param priority default priority for the queue's messages
          * @return the builder instance
          */
         public Builder priority(String priority) {
@@ -157,9 +159,9 @@ public record CreateQueueRequest(String name, long visibility, long maxRetries, 
         }
 
         /**
-         * Sets default priority for the queue's messages, overridable per send-message.
+         * Sets whether this queue is euclid's own plumbing rather than a user's queue.
          *
-         * @param internal default priority for the queue's messages, overridable per send-message
+         * @param internal true to keep the queue out of list-queues and the queue count
          * @return the builder instance
          */
         public Builder internal(boolean internal) {
@@ -173,7 +175,8 @@ public record CreateQueueRequest(String name, long visibility, long maxRetries, 
          * @return a new CreateQueueRequest instance.
          */
         public CreateQueueRequest build() {
-            return new CreateQueueRequest(name, visibility, maxRetries, maxMessageLength, dlqName, delay, priority);
+            return new CreateQueueRequest(name, visibility, maxRetries, maxMessageLength, dlqName, delay, priority,
+                    internal);
         }
     }
 }

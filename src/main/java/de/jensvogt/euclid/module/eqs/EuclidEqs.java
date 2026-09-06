@@ -491,8 +491,9 @@ public final class EuclidEqs implements TokenRefreshable, SigningSchemeSelectabl
                                            String dlqName, long delay, String priority, boolean internal)
             throws IOException, InterruptedException {
         String body = OBJECT_MAPPER.writeValueAsString(
-                CreateQueueRequest.builder().name(name).visibility(visibility).maxRetries(maxRetries).internal(internal)
-                        .maxMessageLength(maxMessageLength).dlqName(dlqName).delay(delay).priority(priority).internal(internal).build());
+                CreateQueueRequest.builder().name(name).visibility(visibility).maxRetries(maxRetries)
+                        .maxMessageLength(maxMessageLength).dlqName(dlqName).delay(delay).priority(priority)
+                        .internal(internal).build());
         HttpResponse<String> response = httpClient.post(baseUrl + "/", body, "eqs", "create-queue",
                 requestHeaders("create-queue", body));
 

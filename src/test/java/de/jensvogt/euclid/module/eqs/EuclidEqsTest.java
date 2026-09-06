@@ -481,6 +481,39 @@ class EuclidEqsTest {
                 "\"dlqName\":\"dlq\"", "\"delay\":5");
     }
 
+    /**
+     * The regression this guards against: the builder took an internal flag the record it built
+     * had no room for, so {@code internal(true)} was accepted, dropped, and the queue came back
+     * visible - with nothing anywhere saying the request had asked for otherwise.
+     */
+    @Test
+    void createQueueSendsTheInternalFlag() throws Exception {
+        AtomicReference<SignableRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(captureRequest(exchange));
+            sendResponse(exchange, 200, "{\"name\":\"orders\",\"ern\":\"queue-ern\"}");
+        });
+
+        newClient().createQueue("orders", 30, 3, 1024, "", 0, "MIDDLE", true);
+
+        assertBodyContains(received.get().body(), "\"name\":\"orders\"", "\"internal\":true");
+    }
+
+    @Test
+    void createQueueDefaultsToAVisibleQueue() throws Exception {
+        AtomicReference<SignableRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(captureRequest(exchange));
+            sendResponse(exchange, 200, "{\"name\":\"orders\",\"ern\":\"queue-ern\"}");
+        });
+
+        newClient().createQueue("orders");
+
+        // An ordinary caller's queue is theirs to see; only euclid's own plumbing asks to be
+        // hidden, and it has to ask explicitly.
+        assertBodyContains(received.get().body(), "\"internal\":false");
+    }
+
     // The overloads without a priority still have to send one - the queue's default is set at
     // creation and every message inherits it unless send-message overrides it.
     @Test
