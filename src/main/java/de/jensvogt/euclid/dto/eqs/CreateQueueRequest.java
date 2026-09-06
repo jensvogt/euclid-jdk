@@ -70,6 +70,16 @@ public record CreateQueueRequest(String name, long visibility, long maxRetries, 
         private String priority = "MIDDLE";
 
         /**
+         * Whether this queue is euclid's own plumbing rather than a user's queue.
+         * <p>
+         * An internal queue is left out of list-queues and the queue count; it behaves like any
+         * other in every other respect. For a delivery that has to land somewhere - a bucket
+         * subscription's target, say - where the queue is an implementation detail of whoever
+         * registered it. See Database::Entity::EQS::Queue::internal.
+         */
+        boolean internal = false;
+
+        /**
          * Sets the name of the queue.
          *
          * @param name the name of the queue
@@ -114,7 +124,7 @@ public record CreateQueueRequest(String name, long visibility, long maxRetries, 
         }
 
         /**
-         * Sets name of the dead letter queue, or empty for none.
+         * Sets the name of the dead letter queue, or empty for none.
          *
          * @param dlqName name of the dead letter queue, or empty for none
          * @return the builder instance
@@ -136,13 +146,24 @@ public record CreateQueueRequest(String name, long visibility, long maxRetries, 
         }
 
         /**
-         * Sets default priority for the queue's messages, overridable per send-message.
+         * Sets internal flag
          *
-         * @param priority default priority for the queue's messages, overridable per send-message
+         * @param priority internal flag, if true, it's an internal queue not visible to users
          * @return the builder instance
          */
         public Builder priority(String priority) {
             this.priority = priority;
+            return this;
+        }
+
+        /**
+         * Sets default priority for the queue's messages, overridable per send-message.
+         *
+         * @param internal default priority for the queue's messages, overridable per send-message
+         * @return the builder instance
+         */
+        public Builder internal(boolean internal) {
+            this.internal = internal;
             return this;
         }
 

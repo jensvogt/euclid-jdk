@@ -41,7 +41,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /**
  * Confirms EuclidEqs authenticates the way it claims to (SigV4-signed when an access key is
  * configured, bearer token otherwise, mirroring euclid-cli's HttpClient.cpp), routes every
- * operation to the right action with a correctly-shaped request body, parses the corresponding
+ * operation to the right action with a correctly shaped request body, parses the corresponding
  * response, and surfaces non-2xx responses as {@link EuclidServiceException}.
  */
 class EuclidEqsTest {
