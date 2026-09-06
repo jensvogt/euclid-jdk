@@ -11,8 +11,12 @@ import java.util.Map;
  * @param ern        topic ERN
  * @param body       message body
  * @param attributes typed message attributes
+ * @param priority   priority of the queue messages this publish fans out to. A topic is not
+ *                   consumed from, so this says nothing about the topic itself - it is what the
+ *                   messages its SQS-type subscriptions turn this one into are given, so that a
+ *                   hop through a topic does not silently reset a delivery to MIDDLE
  */
-public record PublishMessageRequest(String ern, String body, Map<String, Variant> attributes) {
+public record PublishMessageRequest(String ern, String body, Map<String, Variant> attributes, String priority) {
 
     /**
      * Creates a new instance of the Builder for constructing a PublishMessageRequest object.
@@ -50,6 +54,11 @@ public record PublishMessageRequest(String ern, String body, Map<String, Variant
         private Map<String, Variant> attributes = new LinkedHashMap<>();
 
         /**
+         * The priority of the queue messages this publish fans out to.
+         */
+        private String priority = "MIDDLE";
+
+        /**
          * Sets the topic ERN.
          *
          * @param ern the topic ERN
@@ -83,12 +92,23 @@ public record PublishMessageRequest(String ern, String body, Map<String, Variant
         }
 
         /**
+         * Sets the priority of the queue messages this publish fans out to.
+         *
+         * @param priority the priority
+         * @return the builder instance
+         */
+        public Builder priority(String priority) {
+            this.priority = priority;
+            return this;
+        }
+
+        /**
          * Builds and returns a new instance of PublishMessageRequest using the properties set on the Builder.
          *
          * @return a new PublishMessageRequest instance.
          */
         public PublishMessageRequest build() {
-            return new PublishMessageRequest(ern, body, attributes);
+            return new PublishMessageRequest(ern, body, attributes, priority);
         }
     }
 }
