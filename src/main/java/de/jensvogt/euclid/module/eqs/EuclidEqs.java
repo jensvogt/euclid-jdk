@@ -447,7 +447,7 @@ public final class EuclidEqs implements TokenRefreshable, SigningSchemeSelectabl
      */
     public CreateQueueResponse createQueue(String name, long visibility, long maxRetries, long maxMessageLength,
                                             String dlqName, long delay) throws IOException, InterruptedException {
-        return createQueue(name, visibility, maxRetries, maxMessageLength, dlqName, delay, "MIDDLE");
+        return createQueue(name, visibility, maxRetries, maxMessageLength, dlqName, delay, "MIDDLE", false);
     }
 
     /**
@@ -461,15 +461,16 @@ public final class EuclidEqs implements TokenRefreshable, SigningSchemeSelectabl
      * @param delay               The delay in seconds before a message becomes visible in the queue.
      * @param priority            The priority every message of this queue gets unless
      *                            {@link #sendMessage(String, String, Map, String)} overrides it.
+     * @param internal            The internal flag, if true, the queue is not visible to users
      * @return                    A {@link CreateQueueResponse} object containing details of the created queue.
      * @throws IOException        If an I/O error occurs during the request.
      * @throws InterruptedException If the request is interrupted.
      */
     public CreateQueueResponse createQueue(String name, long visibility, long maxRetries, long maxMessageLength,
-                                            String dlqName, long delay, String priority)
+                                            String dlqName, long delay, String priority, boolean internal)
             throws IOException, InterruptedException {
         String body = OBJECT_MAPPER.writeValueAsString(
-                CreateQueueRequest.builder().name(name).visibility(visibility).maxRetries(maxRetries)
+                CreateQueueRequest.builder().name(name).visibility(visibility).maxRetries(maxRetries).internal(internal)
                         .maxMessageLength(maxMessageLength).dlqName(dlqName).delay(delay).priority(priority).build());
         HttpResponse<String> response = httpClient.post(baseUrl + "/", body, "eqs", "create-queue",
                 requestHeaders("create-queue", body));
