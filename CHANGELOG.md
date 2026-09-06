@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.1.24](https://github.com/jensvogt/euclid-jdk/compare/euclid-jdk-v0.1.23...euclid-jdk-v0.1.24) (2026-09-06)
+
+
+### Bug Fixes
+
+* add ENS priorities for topic subscriptions ([2b929a6](https://github.com/jensvogt/euclid-jdk/commit/2b929a60c09010a3a08940104e7e828fa4f6be0a))
+* add ENS priorities for topic subscriptions ([47441eb](https://github.com/jensvogt/euclid-jdk/commit/47441ebc99b319d5b2c9b5ad26dcd53fc0528025))
+
 ## [0.1.23](https://github.com/jensvogt/euclid-jdk/compare/euclid-jdk-v0.1.22...euclid-jdk-v0.1.23) (2026-09-06)
 
 
