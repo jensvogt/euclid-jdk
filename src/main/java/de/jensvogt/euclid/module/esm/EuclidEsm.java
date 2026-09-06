@@ -934,9 +934,43 @@ public final class EuclidEsm implements TokenRefreshable, SigningSchemeSelectabl
      * @throws InterruptedException if the operation is interrupted while waiting for a response
      */
     public void putObject(String bucketErn, String key, byte[] data) throws IOException, InterruptedException {
+        putObject(bucketErn, key, data, null, null);
+    }
+
+    /**
+     * Uploads an object in a single request, with attributes.
+     *
+     * <p>Two maps, and they are not the same one. {@code attributes} are the caller's own, listed
+     * back by {@code list-object-attributes} and meaningless to euclid. {@code systemAttributes}
+     * are euclid's envelope: they travel with the object across every hop, are never mixed into
+     * the caller's, and are not returned by the attribute listings.
+     *
+     * <p>The one euclid acts on is {@code priority}. An object written with
+     * {@code Map.of("priority", new Variant("LOW"))} produces a bucket notification carrying it,
+     * and the message that lands in the subscribed queue is LOW rather than the queue's default.
+     * That is how a producer's decision survives a hop through a bucket, which has no notion of
+     * priority of its own - a service that received a message at some priority passes
+     * {@code message.priority()} straight through here.
+     *
+     * @param bucketErn the Euclid Resource Name (ERN) of the target bucket
+     * @param key the key (path) within the bucket to store the object under
+     * @param data the object's bytes
+     * @param attributes the caller's own attributes, or {@code null} for none
+     * @param systemAttributes euclid's envelope, or {@code null} for none
+     * @throws IOException if an I/O error occurs during the HTTP request
+     * @throws InterruptedException if the operation is interrupted while waiting for a response
+     */
+    public void putObject(String bucketErn, String key, byte[] data, Map<String, Variant> attributes,
+                          Map<String, Variant> systemAttributes) throws IOException, InterruptedException {
         Map<String, String> headers = binaryRequestHeaders();
         headers.put("x-euclid-bucket-ern", bucketErn);
         headers.put("x-euclid-key", key);
+        if (attributes != null && !attributes.isEmpty()) {
+            headers.put("x-euclid-attributes", OBJECT_MAPPER.writeValueAsString(attributes));
+        }
+        if (systemAttributes != null && !systemAttributes.isEmpty()) {
+            headers.put("x-euclid-system-attributes", OBJECT_MAPPER.writeValueAsString(systemAttributes));
+        }
         HttpResponse<String> response = httpClient.postBinary(baseUrl + "/", data, "esm", "put-object", headers);
 
         if (response.statusCode() / 100 != 2) {
@@ -1048,6 +1082,31 @@ public final class EuclidEsm implements TokenRefreshable, SigningSchemeSelectabl
     public CompleteUploadResponse uploadFile(String bucketErn, String key, Path file, int partSize, int concurrency,
                                              Map<String, Variant> attributes)
             throws IOException, InterruptedException {
+        return uploadFile(bucketErn, key, file, partSize, concurrency, attributes, null);
+    }
+
+    /**
+     * Uploads a file as a multipart upload, with attributes and euclid's own envelope.
+     *
+     * <p>See {@link #putObject(String, String, byte[], Map, Map)} for what separates the two maps,
+     * and why {@code priority} in {@code systemAttributes} is what carries a producer's decision
+     * across a hop through a bucket.
+     *
+     * @param bucketErn the Euclid Resource Name (ERN) of the target bucket
+     * @param key the key (path) within the bucket to store the object under
+     * @param file the file to upload
+     * @param partSize the size of each part, in bytes
+     * @param concurrency how many parts to upload at once
+     * @param attributes the caller's own attributes, or {@code null} for none
+     * @param systemAttributes euclid's envelope, or {@code null} for none
+     * @return the completed upload
+     * @throws IOException if an I/O error occurs during the HTTP request
+     * @throws InterruptedException if the operation is interrupted while waiting for a response
+     */
+    public CompleteUploadResponse uploadFile(String bucketErn, String key, Path file, int partSize, int concurrency,
+                                             Map<String, Variant> attributes,
+                                             Map<String, Variant> systemAttributes)
+            throws IOException, InterruptedException {
         int boundedConcurrency = Math.max(1, concurrency);
         String uploadId = createUpload(bucketErn, key, boundedConcurrency).uploadId();
 
@@ -1093,7 +1152,7 @@ public final class EuclidEsm implements TokenRefreshable, SigningSchemeSelectabl
             executor.shutdown();
         }
 
-        return completeUpload(uploadId, attributes);
+        return completeUpload(uploadId, attributes, systemAttributes);
     }
 
     /**
@@ -1307,7 +1366,8 @@ public final class EuclidEsm implements TokenRefreshable, SigningSchemeSelectabl
      * @throws IOException If an input or output exception occurs during the HTTP request.
      * @throws InterruptedException If the HTTP request is interrupted.
      */
-    private CompleteUploadResponse completeUpload(String uploadId, Map<String, Variant> attributes)
+    private CompleteUploadResponse completeUpload(String uploadId, Map<String, Variant> attributes,
+                                                 Map<String, Variant> systemAttributes)
             throws IOException, InterruptedException {
         String body = OBJECT_MAPPER.writeValueAsString(CompleteUploadRequest.builder().uploadId(uploadId).build());
         Map<String, String> headers = requestHeaders("complete-upload", body);
@@ -1317,6 +1377,12 @@ public final class EuclidEsm implements TokenRefreshable, SigningSchemeSelectabl
         // replaces, which is how it gets silently lost.
         if (attributes != null && !attributes.isEmpty()) {
             headers.put("x-euclid-attributes", OBJECT_MAPPER.writeValueAsString(attributes));
+        }
+        // The same reasoning, and the same header the single-request path sends: a file big enough
+        // to be split into parts is exactly the one whose priority somebody bothered to decide, so
+        // losing it here would make the priority depend on the file's size.
+        if (systemAttributes != null && !systemAttributes.isEmpty()) {
+            headers.put("x-euclid-system-attributes", OBJECT_MAPPER.writeValueAsString(systemAttributes));
         }
         // Retried on 5xx like create-upload, and for the same reason: failing here discards every
         // part already uploaded. Safe to repeat as long as the request is rejected before the server
