@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.1.22](https://github.com/jensvogt/euclid-jdk/compare/euclid-jdk-v0.1.21...euclid-jdk-v0.1.22) (2026-09-06)
+
+
+### Bug Fixes
+
+* add internal flag to headers in CreateQueueRequest and EUclidEqs ([371e1a4](https://github.com/jensvogt/euclid-jdk/commit/371e1a48e693ce336e3d126c0ce4ba62238473f3))
+* add internal flag to headers in CreateQueueRequest and EUclidEqs ([df068cb](https://github.com/jensvogt/euclid-jdk/commit/df068cb3601d10347d31bc334bd21167192ee42b))
+
 ## [0.1.21](https://github.com/jensvogt/euclid-jdk/compare/euclid-jdk-v0.1.20...euclid-jdk-v0.1.21) (2026-09-06)
 
 
