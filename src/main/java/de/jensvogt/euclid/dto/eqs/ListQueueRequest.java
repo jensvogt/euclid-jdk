@@ -8,8 +8,10 @@ package de.jensvogt.euclid.dto.eqs;
  * @param pageIndex     the zero-based index of the page to return
  * @param sortColumn    the name of the column results are sorted by
  * @param sortDirection the sort direction, {@code "asc"} or {@code "desc"}
+ * @param includeInternal whether euclid's own queues are listed as well; they are hidden by default
  */
-public record ListQueueRequest(String prefix, long pageSize, long pageIndex, String sortColumn, String sortDirection) {
+public record ListQueueRequest(String prefix, long pageSize, long pageIndex, String sortColumn, String sortDirection,
+                               boolean includeInternal) {
 
     /**
      * Creates a new instance of the Builder for constructing a ListQueueRequest object.
@@ -55,6 +57,11 @@ public record ListQueueRequest(String prefix, long pageSize, long pageIndex, Str
          * The sort direction, {@code "asc"} or {@code "desc"}.
          */
         private String sortDirection = "asc";
+
+        /**
+         * Whether euclid's own queues are listed as well.
+         */
+        private boolean includeInternal = false;
 
         /**
          * Sets only queues whose name starts with this prefix are returned.
@@ -112,12 +119,28 @@ public record ListQueueRequest(String prefix, long pageSize, long pageIndex, Str
         }
 
         /**
+         * Sets whether euclid's own queues are listed as well.
+         *
+         * <p>An internal queue is one a component made for itself rather than one somebody asked
+         * for - the delivery queue behind a bucket listener, for instance. They are left out of a
+         * listing by default, so that a listing shows what a person would recognise. A component
+         * looking for its own queues has to ask for them.
+         *
+         * @param includeInternal whether euclid's own queues are listed as well
+         * @return the builder instance
+         */
+        public Builder includeInternal(boolean includeInternal) {
+            this.includeInternal = includeInternal;
+            return this;
+        }
+
+        /**
          * Builds and returns a new instance of ListQueueRequest using the properties set on the Builder.
          *
          * @return a new ListQueueRequest instance.
          */
         public ListQueueRequest build() {
-            return new ListQueueRequest(prefix, pageSize, pageIndex, sortColumn, sortDirection);
+            return new ListQueueRequest(prefix, pageSize, pageIndex, sortColumn, sortDirection, includeInternal);
         }
     }
 }
