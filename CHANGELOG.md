@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.1.20](https://github.com/jensvogt/euclid-jdk/compare/euclid-jdk-v0.1.19...euclid-jdk-v0.1.20) (2026-09-06)
+
+
+### Bug Fixes
+
+* add internal flag to DTO ([0a52a0e](https://github.com/jensvogt/euclid-jdk/commit/0a52a0e0dcb85fd9c31312b3c621e693f3adfaf3))
+* add internal flag to DTO ([f948a6b](https://github.com/jensvogt/euclid-jdk/commit/f948a6b92d4b44b98651d4ce37961b1327ccdf9c))
+
 ## [0.1.19](https://github.com/jensvogt/euclid-jdk/compare/euclid-jdk-v0.1.18...euclid-jdk-v0.1.19) (2026-09-06)
 
 
