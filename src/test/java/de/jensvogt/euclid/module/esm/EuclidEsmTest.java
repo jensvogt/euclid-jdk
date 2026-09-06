@@ -326,6 +326,73 @@ class EuclidEsmTest {
         assertEquals("{\"file_origin\":{\"type\":\"string\",\"value\":\"FTP_UPLOAD\"}}", attributesHeader.get());
     }
 
+    /**
+     * A producer's priority has to survive a hop through a bucket, and a bucket has no notion of
+     * one - so it rides in euclid's own attribute map, kept apart from the caller's so that a user
+     * attribute called "priority" means nothing and euclid can add a system attribute later without
+     * colliding with something already stored. EsmServer reads x-euclid-system-attributes, puts
+     * them on the object, and sends them with the bucket notification; the message that lands in
+     * the subscribed queue takes its priority from there.
+     */
+    @Test
+    void putObjectSendsSystemAttributesSeparatelyFromTheCallersOwn() throws Exception {
+        AtomicReference<String> attributesHeader = new AtomicReference<>();
+        AtomicReference<String> systemAttributesHeader = new AtomicReference<>();
+
+        server = startServer(exchange -> {
+            exchange.getRequestBody().readAllBytes();
+            attributesHeader.set(exchange.getRequestHeaders().getFirst("x-euclid-attributes"));
+            systemAttributesHeader.set(exchange.getRequestHeaders().getFirst("x-euclid-system-attributes"));
+            sendResponse(exchange, 200, "{}");
+        });
+
+        newClient().putObject("bucket-ern", "data.bin", "ABC".getBytes(StandardCharsets.US_ASCII),
+                Map.of("file_origin", new Variant("string", "FTP_UPLOAD")),
+                Map.of("priority", new Variant("string", "LOW")));
+
+        assertEquals("{\"file_origin\":{\"type\":\"string\",\"value\":\"FTP_UPLOAD\"}}", attributesHeader.get());
+        assertEquals("{\"priority\":{\"type\":\"string\",\"value\":\"LOW\"}}", systemAttributesHeader.get());
+    }
+
+    /**
+     * A file large enough to be split into parts is exactly the one whose priority somebody
+     * bothered to decide, so losing the envelope here would make the priority depend on the file's
+     * size. Asserted on complete-upload for the same reason the attribute test is.
+     */
+    @Test
+    void uploadFileCarriesSystemAttributesOnCompleteUpload(@TempDir Path tempDir) throws Exception {
+        Path file = tempDir.resolve("data.bin");
+        Files.writeString(file, "ABCDEFGHIJ", StandardCharsets.US_ASCII);
+
+        AtomicReference<String> systemAttributesHeader = new AtomicReference<>();
+
+        server = startServer(exchange -> {
+            String action = exchange.getRequestHeaders().getFirst("x-euclid-action");
+            switch (action) {
+                case "create-upload" -> {
+                    exchange.getRequestBody().readAllBytes();
+                    sendResponse(exchange, 200, "{\"uploadId\":\"upload-1\",\"bucketErn\":\"bucket-ern\",\"key\":\"data.bin\"}");
+                }
+                case "upload-part" -> {
+                    exchange.getRequestBody().readAllBytes();
+                    sendResponse(exchange, 200, "{}");
+                }
+                case "complete-upload" -> {
+                    systemAttributesHeader.set(exchange.getRequestHeaders().getFirst("x-euclid-system-attributes"));
+                    sendResponse(exchange, 200,
+                        "{\"ern\":\"obj-ern\",\"bucketErn\":\"bucket-ern\",\"key\":\"data.bin\","
+                                + "\"size\":10,\"status\":\"AVAILABLE\",\"contentType\":\"application/octet-stream\",\"md5Sum\":\"abc\"}");
+                }
+                default -> sendResponse(exchange, 500, "{\"error\":\"unexpected action " + action + "\"}");
+            }
+        });
+
+        newClient().uploadFile("bucket-ern", "data.bin", file, 8 * 1024 * 1024, 1, null,
+                Map.of("priority", new Variant("string", "LOW")));
+
+        assertEquals("{\"priority\":{\"type\":\"string\",\"value\":\"LOW\"}}", systemAttributesHeader.get());
+    }
+
     /** An upload with nothing to say sends no header at all, rather than an empty object. */
     @Test
     void uploadFileWithoutAttributesSendsNoAttributesHeader(@TempDir Path tempDir) throws Exception {
