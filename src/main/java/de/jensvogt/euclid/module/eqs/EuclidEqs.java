@@ -335,9 +335,33 @@ public final class EuclidEqs implements TokenRefreshable, SigningSchemeSelectabl
     public ListQueueResponse listQueues(String prefix, long pageSize, long pageIndex, String sortColumn,
                                         String sortDirection)
             throws IOException, InterruptedException {
+        return listQueues(prefix, pageSize, pageIndex, sortColumn, sortDirection, false);
+    }
+
+    /**
+     * Retrieves a paginated and optionally filtered list of queues, including euclid's own.
+     *
+     * <p>An internal queue is one a component made for itself rather than one somebody asked for -
+     * the delivery queue behind a bucket listener, for instance. They are left out of a listing by
+     * default, so a listing shows what a person would recognise; a component looking for queues it
+     * created has to ask for them, and gets nothing back otherwise.
+     *
+     * @param prefix only queues whose name starts with this prefix are returned
+     * @param pageSize the maximum number of queues to return in a single page
+     * @param pageIndex the zero-based index of the page to return
+     * @param sortColumn the name of the column results are sorted by
+     * @param sortDirection the sort direction, {@code "asc"} or {@code "desc"}
+     * @param includeInternal whether euclid's own queues are listed as well
+     * @return the queues
+     * @throws IOException If an I/O error occurs during the operation.
+     * @throws InterruptedException If the operation is interrupted during execution.
+     */
+    public ListQueueResponse listQueues(String prefix, long pageSize, long pageIndex, String sortColumn,
+                                        String sortDirection, boolean includeInternal)
+            throws IOException, InterruptedException {
         String body = OBJECT_MAPPER.writeValueAsString(
                 ListQueueRequest.builder().prefix(prefix).pageSize(pageSize).pageIndex(pageIndex)
-                        .sortColumn(sortColumn).sortDirection(sortDirection).build());
+                        .sortColumn(sortColumn).sortDirection(sortDirection).includeInternal(includeInternal).build());
         HttpResponse<String> response = httpClient.post(baseUrl + "/", body, "eqs", "list-queues",
                 requestHeaders("list-queues", body));
 
