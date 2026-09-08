@@ -15,6 +15,7 @@ import java.util.function.Function;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -142,7 +143,11 @@ class Rfc9421Test {
 
         Rfc9421.sign(req, ACCESS_KEY_ID, SECRET_ACCESS_KEY);
 
-        assertTrue(req.header("signature-input").startsWith("sig1=(\"@method\" \"@authority\" \"@path\" \"@query\" \"content-digest\""));
+        // Spelled out rather than abbreviated: this is the wire format euclid's server compares
+        // against for exact equality, so a change here is a change every signed request feels.
+        assertTrue(req.header("signature-input").startsWith(
+                "sig1=(\"@method\" \"@path\" \"@authority\" \"content-digest\" \"x-euclid-account-id\" "
+                        + "\"x-euclid-action\" \"x-euclid-region\" \"x-euclid-target\" \"x-euclid-user-id\")"));
         assertTrue(req.header("signature-input").contains(";keyid=\"" + ACCESS_KEY_ID + "\""));
         assertTrue(req.header("signature-input").contains(";alg=\"hmac-sha256\""));
         assertTrue(req.header("signature-input").contains(";tag=\"euclid\""));
@@ -157,22 +162,41 @@ class Rfc9421Test {
         assertEquals(ACCESS_KEY_ID, result.get().keyId());
     }
 
+    /**
+     * The covered set is the same for every request and is not negotiated with the message, because
+     * euclid's server holds the identical list and compares the two for exact equality - order
+     * included. This assertion and {@code HttpSignature::CoveredComponents()} are one wire format
+     * written down twice; if they ever disagree, every signed request is answered "Signature does
+     * not match".
+     */
     @Test
-    void signaturesCoverOnlyTheRoutingHeadersTheRequestCarries() {
-        SignableRequest full = euclidRequest();
+    void everySignatureCoversTheSameFixedComponentsInTheServersOrder() {
+        assertEquals(List.of("@method", "@path", "@authority", "content-digest", "x-euclid-account-id",
+                        "x-euclid-action", "x-euclid-region", "x-euclid-target", "x-euclid-user-id"),
+                Rfc9421.coveredComponents(euclidRequest()));
+        assertEquals(Rfc9421.requiredComponents(), Rfc9421.coveredComponents(euclidRequest()));
+        assertEquals(List.of(), Rfc9421.optionalComponents());
+    }
+
+    /**
+     * A request that cannot supply every covered component is refused here rather than signed into
+     * something the server will reject, and the complaint names what is missing - which for a
+     * client is the difference between a configuration mistake and an unexplained 403.
+     */
+    @Test
+    void signingRefusesARequestMissingACoveredHeader() {
         SignableRequest sparse = new SignableRequest("POST", "/")
                 .header("host", "euclid.example.com")
                 .header("x-euclid-target", "eqs")
-                .header("x-euclid-action", "ListQueues");
+                .header("x-euclid-action", "ListQueues")
+                .body("{}");
 
-        assertEquals(List.of("@method", "@authority", "@path", "@query", "content-digest", "x-euclid-action",
-                "x-euclid-target", "x-euclid-account-id", "x-euclid-region", "x-euclid-user-id"),
-                Rfc9421.coveredComponents(full));
-        assertEquals(List.of("@method", "@authority", "@path", "@query", "content-digest", "x-euclid-action",
-                "x-euclid-target"), Rfc9421.coveredComponents(sparse));
+        IllegalArgumentException thrown = assertThrows(IllegalArgumentException.class,
+                () -> Rfc9421.sign(sparse, ACCESS_KEY_ID, SECRET_ACCESS_KEY));
 
-        Rfc9421.sign(sparse, ACCESS_KEY_ID, SECRET_ACCESS_KEY);
-        assertTrue(Rfc9421.verify(sparse, LOOKUP).isPresent());
+        assertTrue(thrown.getMessage().contains("x-euclid-account-id"), thrown.getMessage());
+        assertTrue(thrown.getMessage().contains("x-euclid-region"), thrown.getMessage());
+        assertTrue(thrown.getMessage().contains("x-euclid-user-id"), thrown.getMessage());
     }
 
     @Test
@@ -218,18 +242,25 @@ class Rfc9421Test {
         assertFalse(Rfc9421.verify(req, LOOKUP).isPresent());
     }
 
+    /**
+     * Records a gap rather than a guarantee. {@code x-euclid-namespace} scopes what a request may
+     * touch, and it is not one of the components euclid signs - so adding one to a signed request,
+     * or changing it, does not disturb the signature. The server has the same hole, since the two
+     * cover the same set by construction.
+     * <p>
+     * The assertion is deliberately the wrong way round for a security test: it passes because the
+     * namespace is unprotected. Adding the component here and in
+     * {@code HttpSignature::CoveredComponents()} is what closes it, and this test inverting is how
+     * you will know it worked.
+     */
     @Test
-    void addingARoutingHeaderTheSignerNeverCoveredFails() {
-        SignableRequest req = new SignableRequest("POST", "/")
-                .header("host", "euclid.example.com")
-                .header("x-euclid-target", "eqs")
-                .header("x-euclid-action", "ListQueues")
-                .body("{}");
+    void namespaceTravelsUnsignedWhichIsAKnownGap() {
+        SignableRequest req = euclidRequest();
         Rfc9421.sign(req, ACCESS_KEY_ID, SECRET_ACCESS_KEY);
 
         req.header("x-euclid-namespace", "someone-elses");
 
-        assertFalse(Rfc9421.verify(req, LOOKUP).isPresent());
+        assertTrue(Rfc9421.verify(req, LOOKUP).isPresent());
     }
 
     @Test

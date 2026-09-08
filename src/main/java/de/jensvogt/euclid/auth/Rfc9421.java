@@ -40,13 +40,15 @@ import java.util.function.Function;
  * <p>
  * <b>Covered components.</b> RFC 9421 lets a signer choose what its signature covers and tell the
  * verifier in {@code Signature-Input}. Taken literally that would let a request decide how little
- * of itself to authenticate, so this class does not take it literally: {@link #verify} derives the
- * component list the request <em>must</em> have covered from the request itself
- * ({@link #coveredComponents}) and rejects any signature covering anything else. Stripping
- * {@code x-euclid-user-id}, or adding one the signer never saw, changes that derived list and fails
- * before the HMAC is even computed - the same fixed-policy stance {@link SigV4} takes with its
- * {@code SignedHeaders} list, arrived at differently because RFC 9421's component list is genuinely
- * variable where euclid's headers are optional.
+ * of itself to authenticate, so this class does not take it literally: the covered set is fixed
+ * ({@link #coveredComponents}), {@link #verify} rejects any signature covering anything else, and
+ * {@link #sign} refuses to sign a request that cannot supply all of it. Stripping
+ * {@code x-euclid-user-id}, or adding one the signer never saw, fails before the HMAC is even
+ * computed - the same fixed-policy stance {@link SigV4} takes with its {@code SignedHeaders} list.
+ * <p>
+ * The set is not this class's to choose: euclid's server holds the same list and compares the two
+ * for exact equality, so {@link #REQUIRED_COMPONENTS} is a wire format shared with
+ * {@code HttpSignature::CoveredComponents()} and the two only ever change together.
  * <p>
  * <b>Replay.</b> Each signature carries a {@code created} timestamp, checked here against a skew
  * window, and a random {@code nonce}, which is not checked here - single-use enforcement needs
@@ -88,25 +90,40 @@ public final class Rfc9421 {
      * Components every euclid signature covers, in signing order.
      * <p>
      * The derived components pin the request line and host, {@code content-digest} pins the body,
-     * and the two {@code x-euclid-*} headers pin what the request is asking for - which for euclid
-     * lives in headers rather than in the URI, so a signature that left them out would authenticate
-     * a request without authenticating what it does.
+     * and the {@code x-euclid-*} headers pin what the request is asking for and on whose behalf -
+     * which for euclid lives in headers rather than in the URI, so a signature that left them out
+     * would authenticate a request without authenticating what it does.
+     * <p>
+     * <b>This list is a wire format, not a preference.</b> euclid's server compares the component
+     * list it receives against its own for exact equality, order included
+     * ({@code HttpSignature::Verify}), so a signature covering more, fewer, or the same components
+     * in another order is rejected with "Signature does not match" - it does not fall back to
+     * covering what both sides happen to agree on. Changing this list without changing
+     * {@code HttpSignature::CoveredComponents()} in the same release breaks every signed request.
+     * <p>
+     * Two things are deliberately absent, because the server has no slot for them. {@code @query}
+     * is not covered: euclid POSTs everything to {@code /} and carries its arguments in the body
+     * and headers, so there is no query string for a signature to protect. {@code
+     * x-euclid-namespace} is not covered either, which is a genuine gap rather than a simplifying
+     * choice - the namespace scopes what a request may touch, and it currently travels unsigned.
+     * Closing it means adding the component on both sides at once.
      */
     private static final List<String> REQUIRED_COMPONENTS = List.of(
-            "@method", "@authority", "@path", "@query", "content-digest",
-            "x-euclid-action", "x-euclid-target");
+            "@method", "@path", "@authority", "content-digest",
+            "x-euclid-account-id", "x-euclid-action", "x-euclid-region", "x-euclid-target",
+            "x-euclid-user-id");
 
     /**
      * Headers covered whenever the request carries them, in signing order.
      * <p>
-     * These are the routing headers a client sets or leaves out depending on how it was
-     * configured. RFC 9421 forbids signing a field that is not there, so they cannot simply join
-     * {@link #REQUIRED_COMPONENTS} the way {@link SigV4} handles an absent header by signing an
-     * empty value; instead each is covered exactly when present, and {@link #verify} reconstructs
-     * the same decision from the received message.
+     * Empty, and kept as a concept rather than deleted: RFC 9421 lets a signer cover a field only
+     * when the message actually carries one, which is the natural way to treat euclid's routing
+     * headers, and it is how this class used to treat them. The server does not allow it - its
+     * component list is fixed - so every header a euclid signature covers is now required to be
+     * there, and {@link #sign} says which one is missing rather than producing a signature that
+     * would be refused.
      */
-    private static final List<String> OPTIONAL_COMPONENTS = List.of(
-            "x-euclid-account-id", "x-euclid-namespace", "x-euclid-region", "x-euclid-user-id");
+    private static final List<String> OPTIONAL_COMPONENTS = List.of();
 
     /**
      * Headers {@link #sign} writes onto a request, in the order it writes them.
@@ -283,7 +300,10 @@ public final class Rfc9421 {
         List<String> components = coveredComponents(req);
         String params = serializeSignatureParams(components, Instant.now(), accessKeyId, newNonce());
         String base = signatureBase(req, components, params).orElseThrow(() ->
-                new IllegalArgumentException("request is missing a header that must be signed: " + components));
+                new IllegalArgumentException("request cannot be signed, it is missing "
+                        + missingComponents(req, components)
+                        + " - euclid signs a fixed set of components, so a client configured "
+                        + "without a region, account id or user id has nothing to sign with"));
 
         byte[] signature = hmacSha256(secretAccessKey.getBytes(StandardCharsets.UTF_8), base);
         req.header("Signature-Input", LABEL + "=" + params);
@@ -472,6 +492,14 @@ public final class Rfc9421 {
     }
 
     // --- internal helpers -------------------------------------------------------------------
+
+    /**
+     * The covered components the request cannot supply a value for, which is what a caller has to
+     * put right before the request can be signed at all.
+     */
+    private static List<String> missingComponents(SignableRequest req, List<String> components) {
+        return components.stream().filter(component -> componentValue(req, component).isEmpty()).toList();
+    }
 
     /**
      * Resolves one covered component to the value that goes in the signature base: the derived

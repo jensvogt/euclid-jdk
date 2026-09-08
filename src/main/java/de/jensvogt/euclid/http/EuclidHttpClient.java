@@ -11,6 +11,7 @@ import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.security.GeneralSecurityException;
@@ -25,6 +26,7 @@ import java.util.Map;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 import java.util.function.BiFunction;
+import java.util.function.Supplier;
 
 /**
  * Thin wrapper around {@link java.net.http.HttpClient} for issuing common
@@ -71,6 +73,18 @@ public class EuclidHttpClient {
      * {@link #post(String, String, String, String, Map)}.
      */
     private volatile BiFunction<String, String, Map<String, String>> headerFactory;
+
+    /**
+     * Rebuilds the authentication headers for a request whose body is opaque bytes, or {@code null}
+     * if this client was not given one.
+     *
+     * <p>Separate from {@link #headerFactory} because the binary actions authenticate differently:
+     * they always present a bearer token, never a signature, since a signature would have to cover
+     * a body that cannot survive being carried as text. So there is nothing per-request to rebuild
+     * from - the action and the body do not enter into it, and what comes back is simply the
+     * current token.
+     */
+    private volatile Supplier<Map<String, String>> binaryHeaderFactory;
 
     /**
      * Constructs a new {@code EuclidHttpClient} instance with a default request timeout
@@ -133,6 +147,23 @@ public class EuclidHttpClient {
      */
     public EuclidHttpClient headerFactory(BiFunction<String, String, Map<String, String>> factory) {
         this.headerFactory = factory;
+        return this;
+    }
+
+    /**
+     * Registers how to rebuild the authentication headers of a request carrying opaque bytes,
+     * enabling the same retry for {@link #postBinary}, {@link #postBinaryForBinary} and
+     * {@link #postForBinary} that {@link #post} already has.
+     *
+     * <p>Without one, an expired token fails an object write or read outright while every JSON
+     * action recovers from it - so a token that goes stale mid-delivery loses exactly the requests
+     * that were carrying the data.
+     *
+     * @param factory builds the authentication headers as they are built for a fresh request
+     * @return this client, for chaining onto the constructor
+     */
+    public EuclidHttpClient binaryHeaderFactory(Supplier<Map<String, String>> factory) {
+        this.binaryHeaderFactory = factory;
         return this;
     }
 
@@ -336,6 +367,62 @@ public class EuclidHttpClient {
     }
 
     /**
+     * The binary counterpart of {@link #refreshedHeaders}: decides whether a request carrying or
+     * returning opaque bytes is worth sending again with fresh credentials.
+     *
+     * <p>Narrower than the JSON one has to be, because there is less to get wrong: these requests
+     * authenticate with a bearer token and nothing else, so the only credential that can go stale
+     * is the token, and rebuilding the headers either produces a new one or produces the same one -
+     * in which case there is nothing to retry with and the original answer stands.
+     *
+     * @param statusCode status of the first attempt
+     * @param body       the first attempt's body, decoded far enough to read the server's reason
+     * @param headers    the headers the first attempt used, kept so per-request headers - the
+     *                   bucket, the key, the upload id - survive into the retry
+     * @return the headers to retry with, or {@code null} if the request should not be retried
+     */
+    private Map<String, String> refreshedBinaryHeaders(int statusCode, String body, Map<String, String> headers) {
+        Supplier<Map<String, String>> factory = binaryHeaderFactory;
+        if (factory == null || statusCode != 401) {
+            return null;
+        }
+
+        if (body == null || !body.toLowerCase().contains("expired")) {
+            return null;
+        }
+
+        Map<String, String> refreshed = new LinkedHashMap<>(headers);
+        refreshed.putAll(factory.get());
+        return refreshed.equals(headers) ? null : refreshed;
+    }
+
+    /**
+     * A byte-array response's body as text, for the one purpose a failed binary request has for it:
+     * reading the server's JSON error. Only called on a non-2xx, where the body is an error message
+     * rather than object bytes.
+     */
+    private static String errorBody(HttpResponse<byte[]> response) {
+        byte[] body = response.body();
+        return body == null ? null : new String(body, StandardCharsets.UTF_8);
+    }
+
+    /**
+     * {@link #send} for the responses read as bytes, so that a connection closed while it sat in
+     * the pool is retried on an object read the same way it is on every other request.
+     */
+    private HttpResponse<byte[]> sendForBytes(HttpRequest request) throws IOException, InterruptedException {
+        try {
+            return client.send(request, HttpResponse.BodyHandlers.ofByteArray());
+        } catch (IOException e) {
+            if (!isConnectionClosedBeforeResponse(e)) {
+                throw e;
+            }
+            LOG.log(Level.FINE, "Connection closed before a response arrived, retrying once", e);
+            return client.send(request, HttpResponse.BodyHandlers.ofByteArray());
+        }
+    }
+
+    /**
      * Sends a POST request with a raw binary body instead of JSON, mirroring euclid-cli's
      * {@code HttpClient::PostBinary()}: used by ESM's upload-part, where request-specific metadata
      * (upload ID, part number) travels in {@code headers} instead of a JSON field since the body
@@ -351,10 +438,18 @@ public class EuclidHttpClient {
      * @throws InterruptedException if the operation is interrupted while waiting for the response
      */
     public HttpResponse<String> postBinary(String url, byte[] data, String target, String action, Map<String, String> headers) throws IOException, InterruptedException {
-        HttpRequest request = newRequestBuilder(url, target, action, headers)
-                .POST(HttpRequest.BodyPublishers.ofByteArray(data))
-                .build();
-        return send(request);
+        HttpResponse<String> response = send(newRequestBuilder(url, target, action, headers)
+                                                     .POST(HttpRequest.BodyPublishers.ofByteArray(data))
+                                                     .build());
+
+        Map<String, String> refreshed = refreshedBinaryHeaders(response.statusCode(), response.body(), headers);
+        if (refreshed == null) {
+            return response;
+        }
+
+        return send(newRequestBuilder(url, target, action, refreshed)
+                            .POST(HttpRequest.BodyPublishers.ofByteArray(data))
+                            .build());
     }
 
     /**
@@ -378,10 +473,18 @@ public class EuclidHttpClient {
     public HttpResponse<byte[]> postBinaryForBinary(String url, byte[] data, String target, String action,
                                                     Map<String, String> headers)
             throws IOException, InterruptedException {
-        HttpRequest request = newRequestBuilder(url, target, action, headers)
-                .POST(HttpRequest.BodyPublishers.ofByteArray(data))
-                .build();
-        return client.send(request, HttpResponse.BodyHandlers.ofByteArray());
+        HttpResponse<byte[]> response = sendForBytes(newRequestBuilder(url, target, action, headers)
+                                                             .POST(HttpRequest.BodyPublishers.ofByteArray(data))
+                                                             .build());
+
+        Map<String, String> refreshed = refreshedBinaryHeaders(response.statusCode(), errorBody(response), headers);
+        if (refreshed == null) {
+            return response;
+        }
+
+        return sendForBytes(newRequestBuilder(url, target, action, refreshed)
+                                    .POST(HttpRequest.BodyPublishers.ofByteArray(data))
+                                    .build());
     }
 
     /**
@@ -403,10 +506,18 @@ public class EuclidHttpClient {
      */
     public HttpResponse<byte[]> postForBinary(String url, String target, String action, Map<String, String> headers)
             throws IOException, InterruptedException {
-        HttpRequest request = newRequestBuilder(url, target, action, headers)
-                .POST(HttpRequest.BodyPublishers.noBody())
-                .build();
-        return client.send(request, HttpResponse.BodyHandlers.ofByteArray());
+        HttpResponse<byte[]> response = sendForBytes(newRequestBuilder(url, target, action, headers)
+                                                             .POST(HttpRequest.BodyPublishers.noBody())
+                                                             .build());
+
+        Map<String, String> refreshed = refreshedBinaryHeaders(response.statusCode(), errorBody(response), headers);
+        if (refreshed == null) {
+            return response;
+        }
+
+        return sendForBytes(newRequestBuilder(url, target, action, refreshed)
+                                    .POST(HttpRequest.BodyPublishers.noBody())
+                                    .build());
     }
 
     /**

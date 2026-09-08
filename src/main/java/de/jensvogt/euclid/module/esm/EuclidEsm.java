@@ -251,9 +251,14 @@ public final class EuclidEsm implements TokenRefreshable, SigningSchemeSelectabl
         this.accessKeyId = accessKeyId;
         this.secretAccessKey = secretAccessKey;
         this.nameSpace = nameSpace;
-        // The header factory is what lets a request whose token or signature expired in flight be
-        // built again and sent once more - see EuclidHttpClient#headerFactory.
-        this.httpClient = new EuclidHttpClient(caCertPath).headerFactory(this::requestHeaders);
+        // The header factories are what let a request whose token or signature expired in flight be
+        // built again and sent once more - see EuclidHttpClient#headerFactory. Two of them, because
+        // the object reads and writes authenticate with a bearer token rather than a signature and
+        // so rebuild their headers differently; without the second one, an expired token would fail
+        // exactly the requests carrying the objects while every JSON action recovered.
+        this.httpClient = new EuclidHttpClient(caCertPath)
+                .headerFactory(this::requestHeaders)
+                .binaryHeaderFactory(this::binaryRequestHeaders);
     }
 
     /**
@@ -930,11 +935,12 @@ public final class EuclidEsm implements TokenRefreshable, SigningSchemeSelectabl
      * @param bucketErn the Euclid Resource Name (ERN) of the target bucket
      * @param key the key (path) within the bucket to store the object under
      * @param data the object's bytes
+     * @return the stored object, described the same way {@link #uploadFile} describes it
      * @throws IOException if an I/O error occurs during the HTTP request
      * @throws InterruptedException if the operation is interrupted while waiting for a response
      */
-    public void putObject(String bucketErn, String key, byte[] data) throws IOException, InterruptedException {
-        putObject(bucketErn, key, data, null, null);
+    public CompleteUploadResponse putObject(String bucketErn, String key, byte[] data) throws IOException, InterruptedException {
+        return putObject(bucketErn, key, data, null, null);
     }
 
     /**
@@ -957,11 +963,14 @@ public final class EuclidEsm implements TokenRefreshable, SigningSchemeSelectabl
      * @param data the object's bytes
      * @param attributes the caller's own attributes, or {@code null} for none
      * @param systemAttributes euclid's envelope, or {@code null} for none
+     * @return the stored object, described the same way {@link #uploadFile} describes it - the
+     * server answers put-object with the same payload it answers complete-upload with, so a caller
+     * that needs the object's ERN does not have to choose the multipart path to get one
      * @throws IOException if an I/O error occurs during the HTTP request
      * @throws InterruptedException if the operation is interrupted while waiting for a response
      */
-    public void putObject(String bucketErn, String key, byte[] data, Map<String, Variant> attributes,
-                          Map<String, Variant> systemAttributes) throws IOException, InterruptedException {
+    public CompleteUploadResponse putObject(String bucketErn, String key, byte[] data, Map<String, Variant> attributes,
+                                            Map<String, Variant> systemAttributes) throws IOException, InterruptedException {
         Map<String, String> headers = binaryRequestHeaders();
         headers.put("x-euclid-bucket-ern", bucketErn);
         headers.put("x-euclid-key", key);
@@ -976,6 +985,8 @@ public final class EuclidEsm implements TokenRefreshable, SigningSchemeSelectabl
         if (response.statusCode() / 100 != 2) {
             throw new EuclidServiceException("esm", "put-object", response.statusCode(), response.body());
         }
+
+        return extractCompleteUploadResponse(response.body());
     }
 
     /**
