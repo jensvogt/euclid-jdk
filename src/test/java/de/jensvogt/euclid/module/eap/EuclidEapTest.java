@@ -8,6 +8,7 @@ import de.jensvogt.euclid.auth.SigV4;
 import de.jensvogt.euclid.auth.SignableRequest;
 import de.jensvogt.euclid.dto.eap.CreateApplicationRequest;
 import de.jensvogt.euclid.dto.eap.RedeployApplicationRequest;
+import de.jensvogt.euclid.dto.eap.SetLogLevelResponse;
 import de.jensvogt.euclid.dto.eap.UpdateApplicationRequest;
 import de.jensvogt.euclid.dto.eap.model.Application;
 import de.jensvogt.euclid.exception.EuclidServiceException;
@@ -396,6 +397,59 @@ class EuclidEapTest {
     private static CreateApplicationRequest minimalRequest() {
         return CreateApplicationRequest.builder()
                 .applicationId("billing").runtime("JAVA").bucket("artifacts").artifact("billing-1.0.jar").build();
+    }
+
+    @Test
+    void setLogLevelSendsTheLevelAndParsesTheAppliedChannel() throws Exception {
+        AtomicReference<SignableRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(captureRequest(exchange));
+            sendResponse(exchange, 200, "{\"applicationId\":\"billing\",\"logLevel\":\"debug\","
+                    + "\"channel\":\"application.billing\"}");
+        });
+
+        SetLogLevelResponse response = newClient().setLogLevel("billing", "debug");
+
+        assertEquals("set-log-level", received.get().header("x-euclid-action"));
+        assertBodyContains(received.get().body(), "\"applicationId\":\"billing\"", "\"level\":\"debug\"");
+        assertEquals("billing", response.applicationId());
+        assertEquals("debug", response.logLevel());
+        assertEquals("application.billing", response.channel());
+    }
+
+    // An empty level is how the override is withdrawn rather than merely changed, so it has to
+    // reach the server as an empty string and not be dropped from the body.
+    @Test
+    void resetLogLevelSendsAnEmptyLevel() throws Exception {
+        AtomicReference<SignableRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(captureRequest(exchange));
+            sendResponse(exchange, 200, "{\"applicationId\":\"billing\",\"logLevel\":\"\","
+                    + "\"channel\":\"application.billing\"}");
+        });
+
+        SetLogLevelResponse response = newClient().resetLogLevel("billing");
+
+        assertEquals("set-log-level", received.get().header("x-euclid-action"));
+        assertBodyContains(received.get().body(), "\"level\":\"\"");
+        assertEquals("", response.logLevel());
+    }
+
+    // The server refuses a level it does not recognise rather than defaulting it, so the client
+    // must surface that instead of pretending the level took effect.
+    @Test
+    void setLogLevelSurfacesARejectedLevel() throws Exception {
+        server = startServer(exchange -> {
+            exchange.getRequestBody().readAllBytes();
+            sendResponse(exchange, 400, "{\"error\":\"level must be \\\"trace\\\", ...\"}");
+        });
+
+        EuclidServiceException exception = assertThrows(EuclidServiceException.class,
+                () -> newClient().setLogLevel("billing", "warnign"));
+
+        assertEquals("eap", exception.service());
+        assertEquals("set-log-level", exception.action());
+        assertEquals(400, exception.statusCode());
     }
 
     private static String applicationJson() {

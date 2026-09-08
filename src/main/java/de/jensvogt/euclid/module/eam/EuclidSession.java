@@ -40,6 +40,7 @@ import de.jensvogt.euclid.module.ekm.EuclidEkm;
 import de.jensvogt.euclid.module.ens.EuclidEns;
 import de.jensvogt.euclid.module.eqs.EuclidEqs;
 import de.jensvogt.euclid.module.esm.EuclidEsm;
+import de.jensvogt.euclid.module.ess.EuclidEss;
 import de.jensvogt.euclid.module.emo.EuclidEmo;
 import de.jensvogt.euclid.module.ets.EuclidEts;
 
@@ -193,6 +194,22 @@ public record EuclidSession(String token, String userId, String accountId, Strin
      */
     public EuclidEes ees() {
         return new EuclidEes(baseUrl, token, region, accountId, userId, accessKeyId, secretAccessKey, caCertPath, nameSpace);
+    }
+
+    /**
+     * ESS (secret store) operations for this session - named secrets, stored encrypted under an EKM
+     * key. Requests are signed with SigV4 using
+     * {@link #accessKeyId()}/{@link #secretAccessKey()} when both are present, falling back to
+     * the bearer token otherwise - mirroring how euclid-cli authenticates service calls.
+     * <p>
+     * Secrets are looked up per account and namespace, so a session scoped to a namespace reaches
+     * that namespace's secrets and no others - and a secret created without a key of its own is
+     * protected by that namespace's key.
+     *
+     * @return EuclidEss instance
+     */
+    public EuclidEss ess() {
+        return new EuclidEss(baseUrl, token, region, accountId, userId, accessKeyId, secretAccessKey, caCertPath, nameSpace);
     }
 
     /**

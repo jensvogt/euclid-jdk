@@ -53,7 +53,10 @@ sqs.deleteQueue(ern);
 ```
 
 Other supported operations include `listQueues`, `getQueueErn`, `getMessageCount`,
-`receiveAllMessages`, and `purgeAllQueues`.
+`receiveAllMessages`, and `purgeAllQueues`. A queue can also be taken out of
+service and put back with `stopQueue`/`startQueue`, have its default visibility
+timeout changed with `setQueueVisibility`, and a dead letter queue drained back
+onto the queues its messages came from with `redriveDlq`.
 
 ### Events
 
@@ -94,6 +97,27 @@ hour of events it missed while nobody was looking at it.
 One stream can carry several listeners, and the same connection also still serves
 `stream.awaitEvent(topic, filter, timeoutMillis)` for the simple "wait for the
 next one" case.
+
+### Secrets
+
+ESS stores named secrets, encrypted under an EKM key - the namespace's own unless
+one is named on creation:
+
+```java
+EuclidEss ess = session.ess();
+
+ess.createSecret("db-password", "hunter2");
+
+String password = ess.getSecret("db-password").value();
+
+ess.rotateSecret("db-password", "hunter3");
+```
+
+`getSecret` is the only action that decrypts anything; `listSecrets`,
+`addSecretTag` and the rest return metadata with no value attached. `updateSecret`
+takes a request rather than positional arguments because it distinguishes an
+absent field from an empty one: leaving the description null leaves the stored
+description alone, while passing `""` clears it.
 
 ### Tokens in a deployed application
 

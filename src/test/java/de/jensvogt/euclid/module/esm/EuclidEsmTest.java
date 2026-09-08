@@ -9,6 +9,9 @@ import de.jensvogt.euclid.auth.SignableRequest;
 import de.jensvogt.euclid.dto.com.Variant;
 import de.jensvogt.euclid.dto.esm.CompleteUploadResponse;
 import de.jensvogt.euclid.dto.esm.CreateBucketResponse;
+import de.jensvogt.euclid.dto.esm.DeleteObjectsResponse;
+import de.jensvogt.euclid.dto.esm.DisableEncryptionResponse;
+import de.jensvogt.euclid.dto.esm.EnableEncryptionResponse;
 import de.jensvogt.euclid.dto.esm.GetBucketErnResponse;
 import de.jensvogt.euclid.dto.esm.GetBucketSizeResponse;
 import de.jensvogt.euclid.dto.esm.GetObjectCountResponse;
@@ -18,7 +21,10 @@ import de.jensvogt.euclid.dto.esm.ListObjectsResponse;
 import de.jensvogt.euclid.dto.esm.ListSubscriptionsResponse;
 import de.jensvogt.euclid.dto.esm.ObjectAttributeResponse;
 import de.jensvogt.euclid.dto.esm.PurgeBucketResponse;
+import de.jensvogt.euclid.dto.esm.RenameBucketResponse;
+import de.jensvogt.euclid.dto.esm.SetBucketInternalResponse;
 import de.jensvogt.euclid.dto.esm.SubscribeResponse;
+import de.jensvogt.euclid.dto.esm.TouchObjectResponse;
 import de.jensvogt.euclid.dto.esm.model.Bucket;
 import de.jensvogt.euclid.dto.esm.model.BucketEvent;
 import de.jensvogt.euclid.dto.esm.model.EsmObject;
@@ -45,6 +51,7 @@ import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -1046,6 +1053,200 @@ class EuclidEsmTest {
     @Test
     void parseBucketEventRejectsABodyThatIsNotJson() {
         assertThrows(IOException.class, () -> EuclidEsm.parseBucketEvent("not json at all"));
+    }
+
+    @Test
+    void renameBucketSendsErnAndNewNameAndParsesTheNewErn() throws Exception {
+        AtomicReference<SignableRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(captureRequest(exchange));
+            sendResponse(exchange, 200, "{\"name\":\"archive\",\"ern\":\"ern:esm:archive\","
+                    + "\"objects\":12,\"subscriptions\":2}");
+        });
+
+        RenameBucketResponse response = newClient().renameBucket("ern:esm:inbox", "archive");
+
+        assertEquals("rename-bucket", received.get().header("x-euclid-action"));
+        assertBodyContains(received.get().body(), "\"ern\":\"ern:esm:inbox\"", "\"newName\":\"archive\"");
+        assertEquals("archive", response.name());
+        assertEquals("ern:esm:archive", response.ern());
+        assertEquals(12, response.objects());
+        assertEquals(2, response.subscriptions());
+    }
+
+    @Test
+    void renameBucketSurfacesAConflictAsAServiceException() throws Exception {
+        server = startServer(exchange -> sendResponse(exchange, 409, "{\"message\":\"Bucket already exists\"}"));
+
+        EuclidServiceException exception = assertThrows(EuclidServiceException.class,
+                () -> newClient().renameBucket("ern:esm:inbox", "archive"));
+
+        assertEquals(409, exception.statusCode());
+    }
+
+    @Test
+    void setBucketInternalSendsTheFlagItWasGiven() throws Exception {
+        AtomicReference<SignableRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(captureRequest(exchange));
+            sendResponse(exchange, 200, "{\"ern\":\"bucket-ern\",\"name\":\"artifacts\",\"internal\":true}");
+        });
+
+        SetBucketInternalResponse response = newClient().setBucketInternal("bucket-ern", true);
+
+        assertEquals("set-bucket-internal", received.get().header("x-euclid-action"));
+        assertBodyContains(received.get().body(), "\"ern\":\"bucket-ern\"", "\"internal\":true");
+        assertTrue(response.internal());
+    }
+
+    @Test
+    void setBucketInternalCanClearTheFlagAgain() throws Exception {
+        AtomicReference<SignableRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(captureRequest(exchange));
+            sendResponse(exchange, 200, "{\"ern\":\"bucket-ern\",\"name\":\"artifacts\",\"internal\":false}");
+        });
+
+        SetBucketInternalResponse response = newClient().setBucketInternal("bucket-ern", false);
+
+        assertBodyContains(received.get().body(), "\"internal\":false");
+        assertFalse(response.internal());
+    }
+
+    @Test
+    void deleteObjectsSendsTheKeysAndReportsWhatWentAgainstWhatWasAsked() throws Exception {
+        AtomicReference<SignableRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(captureRequest(exchange));
+            sendResponse(exchange, 200, "{\"ern\":\"bucket-ern\",\"asked\":3,\"objects\":2}");
+        });
+
+        DeleteObjectsResponse response = newClient().deleteObjects("bucket-ern", List.of("a.txt", "b.txt", "gone.txt"));
+
+        assertEquals("delete-objects", received.get().header("x-euclid-action"));
+        assertBodyContains(received.get().body(), "\"ern\":\"bucket-ern\"",
+                "\"keys\":[\"a.txt\",\"b.txt\",\"gone.txt\"]", "\"async\":false");
+        assertEquals(3, response.asked());
+        assertEquals(2, response.objects());
+        assertFalse(response.async());
+    }
+
+    // The server answers 202 rather than 200 when it took the work on rather than finished it,
+    // which is still a success - the client must not treat it as an error.
+    @Test
+    void deleteObjectsAsyncAcceptsTheAcceptedResponse() throws Exception {
+        AtomicReference<SignableRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(captureRequest(exchange));
+            sendResponse(exchange, 202, "{\"ern\":\"bucket-ern\",\"async\":true,\"objects\":40}");
+        });
+
+        DeleteObjectsResponse response = newClient().deleteObjects("bucket-ern", List.of("a.txt"), true);
+
+        assertBodyContains(received.get().body(), "\"async\":true");
+        assertTrue(response.async());
+        assertEquals(40, response.objects());
+    }
+
+    @Test
+    void touchObjectDefaultsToTheWholeBucketAndASynchronousRun() throws Exception {
+        AtomicReference<SignableRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(captureRequest(exchange));
+            sendResponse(exchange, 200, "{\"ern\":\"bucket-ern\",\"bucketName\":\"inbox\","
+                    + "\"prefix\":\"\",\"objects\":5}");
+        });
+
+        TouchObjectResponse response = newClient().touchObject("bucket-ern");
+
+        assertEquals("touch-object", received.get().header("x-euclid-action"));
+        assertBodyContains(received.get().body(), "\"ern\":\"bucket-ern\"", "\"prefix\":\"\"", "\"async\":false");
+        assertEquals("inbox", response.bucketName());
+        assertEquals(5, response.objects());
+        assertFalse(response.async());
+    }
+
+    @Test
+    void touchObjectCarriesThePrefixAndTheAsyncFlag() throws Exception {
+        AtomicReference<SignableRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(captureRequest(exchange));
+            sendResponse(exchange, 202, "{\"ern\":\"bucket-ern\",\"bucketName\":\"inbox\","
+                    + "\"prefix\":\"2026/\",\"async\":true,\"objects\":900}");
+        });
+
+        TouchObjectResponse response = newClient().touchObject("bucket-ern", "2026/", true);
+
+        assertBodyContains(received.get().body(), "\"prefix\":\"2026/\"", "\"async\":true");
+        assertEquals("2026/", response.prefix());
+        assertTrue(response.async());
+        assertEquals(900, response.objects());
+    }
+
+    @Test
+    void enableEncryptionWithoutAKeyIdAsksTheServerToMakeOne() throws Exception {
+        AtomicReference<SignableRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(captureRequest(exchange));
+            sendResponse(exchange, 200, "{\"ern\":\"bucket-ern\",\"name\":\"inbox\",\"keyErn\":\"ern:ekm:k1\","
+                    + "\"keyId\":\"esm-inbox\",\"algorithm\":\"AES-256\",\"keyCreated\":true,\"existingObjects\":3}");
+        });
+
+        EnableEncryptionResponse response = newClient().enableEncryption("bucket-ern");
+
+        assertEquals("enable-encryption", received.get().header("x-euclid-action"));
+        assertBodyContains(received.get().body(), "\"bucketErn\":\"bucket-ern\"", "\"keyId\":\"\"");
+        assertEquals("ern:ekm:k1", response.keyErn());
+        assertEquals("AES-256", response.algorithm());
+        assertTrue(response.keyCreated());
+        assertEquals(3, response.existingObjects());
+    }
+
+    @Test
+    void enableEncryptionNamesAnExistingKeyWhenGivenOne() throws Exception {
+        AtomicReference<SignableRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(captureRequest(exchange));
+            sendResponse(exchange, 200, "{\"ern\":\"bucket-ern\",\"name\":\"inbox\",\"keyErn\":\"ern:ekm:k9\","
+                    + "\"keyId\":\"shared\",\"algorithm\":\"AES-256\",\"keyCreated\":false,\"existingObjects\":0}");
+        });
+
+        EnableEncryptionResponse response = newClient().enableEncryption("bucket-ern", "shared");
+
+        assertBodyContains(received.get().body(), "\"keyId\":\"shared\"");
+        assertFalse(response.keyCreated());
+    }
+
+    // Disabling on a bucket that was never encrypting is the caller getting what they asked for,
+    // and the empty previousKeyErn is how the answer says nothing changed.
+    @Test
+    void disableEncryptionReportsAnEmptyPreviousKeyWhenTheBucketWasNotEncrypting() throws Exception {
+        AtomicReference<SignableRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(captureRequest(exchange));
+            sendResponse(exchange, 200, "{\"ern\":\"bucket-ern\",\"name\":\"inbox\",\"previousKeyErn\":\"\","
+                    + "\"previousKeyId\":\"\",\"encryptedObjects\":0}");
+        });
+
+        DisableEncryptionResponse response = newClient().disableEncryption("bucket-ern");
+
+        assertEquals("disable-encryption", received.get().header("x-euclid-action"));
+        assertBodyContains(received.get().body(), "\"bucketErn\":\"bucket-ern\"");
+        assertEquals("", response.previousKeyErn());
+        assertEquals(0, response.encryptedObjects());
+    }
+
+    @Test
+    void disableEncryptionReportsTheObjectsStillUnderTheOldKey() throws Exception {
+        server = startServer(exchange -> sendResponse(exchange, 200,
+                "{\"ern\":\"bucket-ern\",\"name\":\"inbox\",\"previousKeyErn\":\"ern:ekm:k1\","
+                        + "\"previousKeyId\":\"esm-inbox\",\"encryptedObjects\":17}"));
+
+        DisableEncryptionResponse response = newClient().disableEncryption("bucket-ern");
+
+        assertEquals("ern:ekm:k1", response.previousKeyErn());
+        assertEquals("esm-inbox", response.previousKeyId());
+        assertEquals(17, response.encryptedObjects());
     }
 
     private EuclidEsm newClient() {

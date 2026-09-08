@@ -8,17 +8,24 @@ import de.jensvogt.euclid.auth.SigningScheme;
 import de.jensvogt.euclid.auth.SigningSchemeSelectable;
 import de.jensvogt.euclid.auth.TokenRefreshable;
 import de.jensvogt.euclid.dto.ekm.AddKeyTagRequest;
+import de.jensvogt.euclid.dto.ekm.CertificateNameRequest;
+import de.jensvogt.euclid.dto.ekm.CreateCertificateRequest;
 import de.jensvogt.euclid.dto.ekm.CreateKeyRequest;
 import de.jensvogt.euclid.dto.ekm.CreateKeyResponse;
+import de.jensvogt.euclid.dto.ekm.DeleteCertificateResponse;
 import de.jensvogt.euclid.dto.ekm.DeleteKeyRequest;
 import de.jensvogt.euclid.dto.ekm.DeleteKeyResponse;
 import de.jensvogt.euclid.dto.ekm.DeleteKeyTagRequest;
+import de.jensvogt.euclid.dto.ekm.ImportCertificateRequest;
+import de.jensvogt.euclid.dto.ekm.ListCertificatesRequest;
+import de.jensvogt.euclid.dto.ekm.ListCertificatesResponse;
 import de.jensvogt.euclid.dto.ekm.ListKeysRequest;
 import de.jensvogt.euclid.dto.ekm.ListKeysResponse;
 import de.jensvogt.euclid.dto.ekm.RevokeKeyRequest;
 import de.jensvogt.euclid.dto.ekm.SetKeyDescriptionRequest;
 import de.jensvogt.euclid.dto.ekm.SetKeyDescriptionResponse;
 import de.jensvogt.euclid.dto.ekm.RevokeKeyResponse;
+import de.jensvogt.euclid.dto.ekm.model.Certificate;
 import de.jensvogt.euclid.dto.ekm.model.Key;
 import de.jensvogt.euclid.exception.EuclidServiceException;
 import de.jensvogt.euclid.http.EuclidHttpClient;
@@ -46,6 +53,12 @@ import java.util.function.Supplier;
  * <p>
  * Key material never leaves the server. There is no export action - encryption and decryption are
  * round trips, with the plaintext or ciphertext travelling as the raw request and response body.
+ * <p>
+ * EKM also stores X.509 certificates, which are a separate collection addressed by name rather than
+ * by ID or ERN: {@link #importCertificate} for one somebody else issued, {@link #createCertificate}
+ * for a self-signed one, then {@link #getCertificate}, {@link #listCertificates} and
+ * {@link #deleteCertificate}. The same rule applies to the private key that comes with an import -
+ * it goes in and is never handed back.
  */
 public final class EuclidEkm implements TokenRefreshable, SigningSchemeSelectable {
 
@@ -400,6 +413,195 @@ public final class EuclidEkm implements TokenRefreshable, SigningSchemeSelectabl
     public void deleteKeyTag(String ern, String key) throws IOException, InterruptedException {
         post("delete-key-tag", OBJECT_MAPPER.writeValueAsString(
                 DeleteKeyTagRequest.builder().ern(ern).key(key).build()));
+    }
+
+    /**
+     * Stores a certificate somebody else issued, together with the private key that proves it.
+     * <p>
+     * Both halves are required, and the server checks them against each other: a certificate stored
+     * with a key that is not its own is accepted silently by every step after this one, and only
+     * shows itself as a handshake that fails for every caller. A mismatch is HTTP 400 here instead.
+     * <p>
+     * The private key stays with EKM. It goes in and is never handed back - {@link Certificate} has
+     * no field for it, and no action returns one.
+     *
+     * @param name           the name to store the certificate under
+     * @param description    what the certificate is for, or {@code null}/empty
+     * @param certificatePem the PEM-encoded X.509 certificate
+     * @param privateKeyPem  the PEM-encoded private key belonging to that certificate
+     * @return the stored certificate
+     * @throws IOException if an I/O error occurs during the operation
+     * @throws InterruptedException if the operation is interrupted
+     */
+    public Certificate importCertificate(String name, String description, String certificatePem, String privateKeyPem)
+            throws IOException, InterruptedException {
+        String body = OBJECT_MAPPER.writeValueAsString(ImportCertificateRequest.builder().name(name)
+                .description(description).certificate(certificatePem).privateKey(privateKeyPem).build());
+        return toCertificate(post("import-certificate", body).get("certificate"));
+    }
+
+    /**
+     * Generates a self-signed certificate under the given name, valid for that name, with the
+     * server's defaults for everything else.
+     *
+     * @param name the name to store the certificate under, also used as the subject common name
+     * @return the generated certificate
+     * @throws IOException if an I/O error occurs during the operation
+     * @throws InterruptedException if the operation is interrupted
+     */
+    public Certificate createCertificate(String name) throws IOException, InterruptedException {
+        return createCertificate(CreateCertificateRequest.builder().name(name).build());
+    }
+
+    /**
+     * Generates a self-signed certificate, for an installation that has to serve HTTPS before
+     * anybody has bought it a real one.
+     * <p>
+     * Nobody has vouched for the result: {@link Certificate#generated()} says so, and a client still
+     * has to be told to trust it. Leaving the common name empty uses the certificate's own name,
+     * since for a listener certificate those are usually the same word and a certificate with an
+     * empty subject is refused by everything that reads it.
+     *
+     * @param request the certificate to generate
+     * @return the generated certificate
+     * @throws IOException if an I/O error occurs during the operation
+     * @throws InterruptedException if the operation is interrupted
+     */
+    public Certificate createCertificate(CreateCertificateRequest request) throws IOException, InterruptedException {
+        return toCertificate(post("create-certificate", OBJECT_MAPPER.writeValueAsString(request)).get("certificate"));
+    }
+
+    /**
+     * Lists the certificates of this session's account and namespace, using default paging.
+     *
+     * @return a {@code ListCertificatesResponse} carrying the certificates and their total
+     * @throws IOException if an I/O error occurs during the operation
+     * @throws InterruptedException if the operation is interrupted
+     */
+    public ListCertificatesResponse listCertificates() throws IOException, InterruptedException {
+        return listCertificates("", 10, 0, "name", "asc");
+    }
+
+    /**
+     * Lists certificates, optionally filtered by name prefix and paginated.
+     *
+     * @param prefix only certificates whose name starts with this prefix are returned
+     * @param pageSize the maximum number of certificates to return in a single page
+     * @param pageIndex the zero-based index of the page to return
+     * @param sortColumn the column results are sorted by
+     * @param sortDirection the direction to sort in, {@code "asc"} or {@code "desc"}
+     * @return a {@code ListCertificatesResponse} carrying the certificates and their total
+     * @throws IOException if an I/O error occurs during the operation
+     * @throws InterruptedException if the operation is interrupted
+     */
+    public ListCertificatesResponse listCertificates(String prefix, long pageSize, long pageIndex, String sortColumn,
+                                                     String sortDirection) throws IOException, InterruptedException {
+        String body = OBJECT_MAPPER.writeValueAsString(
+                ListCertificatesRequest.builder().prefix(prefix).pageSize(pageSize).pageIndex(pageIndex)
+                        .sortColumn(sortColumn).sortDirection(sortDirection).build());
+        JsonNode root = post("list-certificates", body);
+        return ListCertificatesResponse.builder().certificates(toCertificateList(root.get("certificates")))
+                .total(root.path("total").asLong(0)).build();
+    }
+
+    /**
+     * Fetches a certificate by name.
+     *
+     * @param name the name of the certificate
+     * @return the stored certificate
+     * @throws IOException if an I/O error occurs during the operation
+     * @throws InterruptedException if the operation is interrupted
+     */
+    public Certificate getCertificate(String name) throws IOException, InterruptedException {
+        return toCertificate(post("get-certificate", certificateNameBody(name)).get("certificate"));
+    }
+
+    /**
+     * Deletes a certificate, outright and with no grace period.
+     * <p>
+     * Unlike {@link #deleteKey(String)} this needs none: nothing becomes unreadable, because a
+     * certificate is public. A listener already serving it keeps the copy it loaded until it is
+     * restarted, which is what makes this recoverable - import a replacement under the same name.
+     *
+     * @param name the name of the certificate to delete
+     * @return the ERN and name of the deleted certificate
+     * @throws IOException if an I/O error occurs during the operation
+     * @throws InterruptedException if the operation is interrupted
+     */
+    public DeleteCertificateResponse deleteCertificate(String name) throws IOException, InterruptedException {
+        JsonNode root = post("delete-certificate", certificateNameBody(name));
+        return DeleteCertificateResponse.builder().ern(textOrNull(root, "ern")).name(textOrNull(root, "name")).build();
+    }
+
+    /**
+     * Builds the request body for the two actions that name nothing but a certificate.
+     *
+     * @param name the name of the certificate the action applies to
+     * @return the serialized request body
+     * @throws IOException if the request cannot be serialized
+     */
+    private static String certificateNameBody(String name) throws IOException {
+        return OBJECT_MAPPER.writeValueAsString(CertificateNameRequest.builder().name(name).build());
+    }
+
+    /**
+     * Converts a JsonNode holding an array of certificates into a list of Certificate instances.
+     *
+     * @param certificatesNode the JsonNode representing the array of certificates
+     * @return a list of Certificate instances, or an empty list if the node is null or not an array
+     */
+    private static List<Certificate> toCertificateList(JsonNode certificatesNode) {
+        List<Certificate> certificates = new ArrayList<>();
+        if (certificatesNode != null && certificatesNode.isArray()) {
+            for (JsonNode certificateNode : certificatesNode) {
+                certificates.add(toCertificate(certificateNode));
+            }
+        }
+        return certificates;
+    }
+
+    /**
+     * Builds a {@link Certificate} from the certificate JSON import, create, get and list answer with.
+     *
+     * @param node the JSON object describing the certificate
+     * @return the parsed certificate, or {@code null} if the node is null
+     */
+    private static Certificate toCertificate(JsonNode node) {
+        if (node == null || node.isNull()) {
+            return null;
+        }
+        return new Certificate(
+                textOrNull(node, "name"),
+                textOrNull(node, "ern"),
+                textOrNull(node, "description"),
+                textOrNull(node, "certificate"),
+                textOrNull(node, "subject"),
+                textOrNull(node, "issuer"),
+                textOrNull(node, "serialNumber"),
+                textOrNull(node, "fingerprint"),
+                toStringList(node.get("subjectAltNames")),
+                node.path("generated").asBoolean(false),
+                textOrNull(node, "notBefore"),
+                textOrNull(node, "notAfter"),
+                toStringMap(node.get("tags")),
+                textOrNull(node, "created"),
+                textOrNull(node, "modified"));
+    }
+
+    /**
+     * Converts a JsonNode holding an array of strings into a list.
+     *
+     * @param node the JsonNode to convert
+     * @return the strings, or an empty list if the node is null or not an array
+     */
+    private static List<String> toStringList(JsonNode node) {
+        List<String> values = new ArrayList<>();
+        if (node != null && node.isArray()) {
+            for (JsonNode value : node) {
+                values.add(value.asText());
+            }
+        }
+        return values;
     }
 
     /**
