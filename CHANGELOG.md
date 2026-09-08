@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.1.27](https://github.com/jensvogt/euclid-jdk/compare/euclid-jdk-v0.1.26...euclid-jdk-v0.1.27) (2026-09-08)
+
+
+### Bug Fixes
+
+* performance fixes for ESM object ([54d0fa8](https://github.com/jensvogt/euclid-jdk/commit/54d0fa8589a9a5aacb6c4f47f83b230f252ed393))
+* performance fixes for ESM object ([9d231cd](https://github.com/jensvogt/euclid-jdk/commit/9d231cd883e2d052397a633887313c7f8945d4e5))
+
 ## [0.1.26](https://github.com/jensvogt/euclid-jdk/compare/euclid-jdk-v0.1.25...euclid-jdk-v0.1.26) (2026-09-06)
 
 
