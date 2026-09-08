@@ -10,7 +10,7 @@ Requires Java 25.
 <dependency>
     <groupId>io.github.jensvogt</groupId>
     <artifactId>euclid-jdk</artifactId>
-    <version>0.1.0</version>
+    <version>0.1.28</version>
 </dependency>
 ```
 
