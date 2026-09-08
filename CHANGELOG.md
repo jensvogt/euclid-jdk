@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.1.28](https://github.com/jensvogt/euclid-jdk/compare/euclid-jdk-v0.1.27...euclid-jdk-v0.1.28) (2026-09-08)
+
+
+### Bug Fixes
+
+* add ESS and ESM request builders ([b4562d6](https://github.com/jensvogt/euclid-jdk/commit/b4562d6fb7d526fdf8c0b3738cfb4f556b3179ab))
+* add ESS and ESM request builders ([8203287](https://github.com/jensvogt/euclid-jdk/commit/8203287142c8a164b3dc9a72413d71e0909564bc))
+* add ESS and ESM request builders ([9ee8b74](https://github.com/jensvogt/euclid-jdk/commit/9ee8b74940b1a733af3849633494919c93a3bc7a))
+
 ## [0.1.27](https://github.com/jensvogt/euclid-jdk/compare/euclid-jdk-v0.1.26...euclid-jdk-v0.1.27) (2026-09-08)
 
 
