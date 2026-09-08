@@ -149,9 +149,13 @@ public final class EuclidEkm implements TokenRefreshable, SigningSchemeSelectabl
         this.accessKeyId = accessKeyId;
         this.secretAccessKey = secretAccessKey;
         this.nameSpace = nameSpace;
-        // The header factory is what lets a request whose token or signature expired in flight be
-        // built again and sent once more - see EuclidHttpClient#headerFactory.
-        this.httpClient = new EuclidHttpClient(caCertPath).headerFactory(this::requestHeaders);
+        // The header factories are what let a request whose token or signature expired in flight be
+        // built again and sent once more - see EuclidHttpClient#headerFactory. Two of them, because
+        // encrypt and decrypt authenticate with a bearer token rather than a signature and so
+        // rebuild their headers differently.
+        this.httpClient = new EuclidHttpClient(caCertPath)
+                .headerFactory(this::requestHeaders)
+                .binaryHeaderFactory(this::binaryRequestHeaders);
     }
 
     /**

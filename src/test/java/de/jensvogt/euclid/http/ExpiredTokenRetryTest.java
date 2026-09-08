@@ -5,6 +5,7 @@ import com.sun.net.httpserver.HttpHandler;
 import com.sun.net.httpserver.HttpServer;
 import de.jensvogt.euclid.exception.EuclidServiceException;
 import de.jensvogt.euclid.module.ens.EuclidEns;
+import de.jensvogt.euclid.module.esm.EuclidEsm;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
@@ -90,8 +91,49 @@ class ExpiredTokenRetryTest {
         assertEquals(1, authorizations.size());
     }
 
+    /**
+     * The object reads and writes need the same recovery, and used not to have it. They are the
+     * requests that carry the data, so a token going stale mid-delivery used to fail exactly the
+     * calls worth retrying while every JSON action around them recovered - and put-object cannot
+     * fall back on a signature, since a signature cannot cover an opaque body.
+     */
+    @Test
+    void anObjectWriteRecoversFromAnExpiredTokenToo() throws Exception {
+        server = startServer(List.of(
+                new Answer(401, "{\"error\":\"Bearer token expired\"}"),
+                new Answer(200, "{\"ern\":\"ern:object:1\",\"key\":\"k\",\"size\":5,\"status\":\"COMPLETED\"}")));
+
+        Iterator<String> tokens = List.of("expired-token", "fresh-token").iterator();
+        EuclidEsm esm = esmClient();
+        esm.token(tokens::next);
+
+        assertEquals("ern:object:1", esm.putObject("ern:bucket", "k", "hello".getBytes(StandardCharsets.UTF_8)).ern());
+
+        assertEquals(List.of("Bearer expired-token", "Bearer fresh-token"), authorizations,
+                     "the retry has to carry the token read after the rejection, not the one that was rejected");
+    }
+
+    @Test
+    void anObjectWriteRejectedForAnyOtherReasonIsNotRetried() throws Exception {
+        server = startServer(List.of(
+                new Answer(401, "{\"error\":\"Access denied\"}"),
+                new Answer(200, "{\"ern\":\"ern:object:1\"}")));
+
+        Iterator<String> tokens = List.of("token-one", "token-two").iterator();
+        EuclidEsm esm = esmClient();
+        esm.token(tokens::next);
+
+        assertThrows(EuclidServiceException.class,
+                     () -> esm.putObject("ern:bucket", "k", "hello".getBytes(StandardCharsets.UTF_8)));
+        assertEquals(1, authorizations.size());
+    }
+
     private EuclidEns client() {
         return new EuclidEns(baseUrl(), "unused", "eu-central-1", "000000000000", "alice", null, null, null, null);
+    }
+
+    private EuclidEsm esmClient() {
+        return new EuclidEsm(baseUrl(), "unused", "eu-central-1", "000000000000", "alice", null, null, null, null);
     }
 
     /**
