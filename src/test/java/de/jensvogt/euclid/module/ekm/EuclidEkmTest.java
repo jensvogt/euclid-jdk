@@ -6,11 +6,15 @@ import com.sun.net.httpserver.HttpHandler;
 import com.sun.net.httpserver.HttpServer;
 import de.jensvogt.euclid.auth.SigV4;
 import de.jensvogt.euclid.auth.SignableRequest;
+import de.jensvogt.euclid.dto.ekm.CreateCertificateRequest;
 import de.jensvogt.euclid.dto.ekm.CreateKeyResponse;
+import de.jensvogt.euclid.dto.ekm.DeleteCertificateResponse;
 import de.jensvogt.euclid.dto.ekm.DeleteKeyResponse;
+import de.jensvogt.euclid.dto.ekm.ListCertificatesResponse;
 import de.jensvogt.euclid.dto.ekm.ListKeysResponse;
 import de.jensvogt.euclid.dto.ekm.RevokeKeyResponse;
 import de.jensvogt.euclid.dto.ekm.SetKeyDescriptionResponse;
+import de.jensvogt.euclid.dto.ekm.model.Certificate;
 import de.jensvogt.euclid.dto.ekm.model.Key;
 import de.jensvogt.euclid.exception.EuclidServiceException;
 import org.junit.jupiter.api.AfterEach;
@@ -27,6 +31,7 @@ import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -420,6 +425,162 @@ class EuclidEkmTest {
         assertEquals("encrypt", exception.action());
         assertEquals(403, exception.statusCode());
         assertTrue(exception.responseBody().contains("REVOKED"));
+    }
+
+    @Test
+    void importCertificateSendsBothHalvesAndParsesTheStoredCertificate() throws Exception {
+        AtomicReference<SignableRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(captureRequest(exchange));
+            sendResponse(exchange, 200, "{\"certificate\":" + certificateJson(false) + "}");
+        });
+
+        Certificate certificate = newClient()
+                .importCertificate("edge", "the edge listener", "-----BEGIN CERTIFICATE-----\nMII\n-----END CERTIFICATE-----",
+                        "-----BEGIN PRIVATE KEY-----\nMII\n-----END PRIVATE KEY-----");
+
+        assertEquals("import-certificate", received.get().header("x-euclid-action"));
+        assertBodyContains(received.get().body(), "\"name\":\"edge\"", "\"description\":\"the edge listener\"",
+                "BEGIN CERTIFICATE", "BEGIN PRIVATE KEY");
+        assertEquals("edge", certificate.name());
+        assertEquals("CN=edge.example.com", certificate.subject());
+        assertEquals(List.of("edge.example.com", "edge"), certificate.subjectAltNames());
+        assertFalse(certificate.generated());
+    }
+
+    // The private key goes in on an import and is never handed back, so there is nothing on the
+    // parsed certificate that could leak it.
+    @Test
+    void importedCertificateCarriesNoPrivateKeyBack() throws Exception {
+        server = startServer(exchange -> {
+            exchange.getRequestBody().readAllBytes();
+            sendResponse(exchange, 200, "{\"certificate\":" + certificateJson(false) + "}");
+        });
+
+        Certificate certificate = newClient().importCertificate("edge", "", "cert-pem", "key-pem");
+
+        assertTrue(certificate.certificate().contains("BEGIN CERTIFICATE"));
+        assertFalse(certificate.certificate().contains("PRIVATE KEY"));
+    }
+
+    @Test
+    void createCertificateWithJustANameUsesTheServerDefaults() throws Exception {
+        AtomicReference<SignableRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(captureRequest(exchange));
+            sendResponse(exchange, 200, "{\"certificate\":" + certificateJson(true) + "}");
+        });
+
+        Certificate certificate = newClient().createCertificate("edge");
+
+        assertEquals("create-certificate", received.get().header("x-euclid-action"));
+        assertBodyContains(received.get().body(), "\"name\":\"edge\"", "\"commonName\":\"\"",
+                "\"validDays\":825", "\"keyBits\":2048");
+        assertTrue(certificate.generated(), "a generated certificate says so, and is not to be trusted blindly");
+    }
+
+    @Test
+    void createCertificateCarriesTheSubjectAltNamesAndValidity() throws Exception {
+        AtomicReference<SignableRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(captureRequest(exchange));
+            sendResponse(exchange, 200, "{\"certificate\":" + certificateJson(true) + "}");
+        });
+
+        newClient().createCertificate(CreateCertificateRequest.builder().name("edge")
+                .commonName("edge.example.com").subjectAltNames(List.of("edge.example.com", "edge"))
+                .validDays(90).keyBits(4096).build());
+
+        assertBodyContains(received.get().body(), "\"commonName\":\"edge.example.com\"",
+                "\"subjectAltNames\":[\"edge.example.com\",\"edge\"]", "\"validDays\":90", "\"keyBits\":4096");
+    }
+
+    @Test
+    void listCertificatesParsesThePageAndTheTotal() throws Exception {
+        AtomicReference<SignableRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(captureRequest(exchange));
+            sendResponse(exchange, 200, "{\"certificates\":[" + certificateJson(false) + "],\"total\":3}");
+        });
+
+        ListCertificatesResponse response = newClient().listCertificates("ed", 5, 1, "name", "desc");
+
+        assertEquals("list-certificates", received.get().header("x-euclid-action"));
+        assertBodyContains(received.get().body(), "\"prefix\":\"ed\"", "\"pageSize\":5", "\"pageIndex\":1",
+                "\"sortDirection\":\"desc\"");
+        assertEquals(1, response.certificates().size());
+        assertEquals(3, response.total());
+        assertEquals("edge", response.certificates().getFirst().name());
+        assertEquals(Map.of("env", "prod"), response.certificates().getFirst().tags());
+    }
+
+    @Test
+    void listCertificatesToleratesAnEmptyResult() throws Exception {
+        server = startServer(exchange -> {
+            exchange.getRequestBody().readAllBytes();
+            sendResponse(exchange, 200, "{\"total\":0}");
+        });
+
+        ListCertificatesResponse response = newClient().listCertificates();
+
+        assertTrue(response.certificates().isEmpty());
+        assertEquals(0, response.total());
+    }
+
+    @Test
+    void getCertificateSendsOnlyTheName() throws Exception {
+        AtomicReference<SignableRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(captureRequest(exchange));
+            sendResponse(exchange, 200, "{\"certificate\":" + certificateJson(false) + "}");
+        });
+
+        Certificate certificate = newClient().getCertificate("edge");
+
+        assertEquals("get-certificate", received.get().header("x-euclid-action"));
+        assertBodyContains(received.get().body(), "\"name\":\"edge\"");
+        assertEquals("2027-01-01T00:00:00Z", certificate.notAfter());
+    }
+
+    @Test
+    void getCertificateSurfacesNotFound() throws Exception {
+        server = startServer(exchange -> {
+            exchange.getRequestBody().readAllBytes();
+            sendResponse(exchange, 404, "{\"error\":\"Certificate not found, name: missing\"}");
+        });
+
+        EuclidServiceException exception = assertThrows(EuclidServiceException.class,
+                () -> newClient().getCertificate("missing"));
+
+        assertEquals("ekm", exception.service());
+        assertEquals("get-certificate", exception.action());
+        assertEquals(404, exception.statusCode());
+    }
+
+    @Test
+    void deleteCertificateReturnsTheErnAndName() throws Exception {
+        AtomicReference<SignableRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(captureRequest(exchange));
+            sendResponse(exchange, 200, "{\"ern\":\"ern:ekm:certificate/edge\",\"name\":\"edge\"}");
+        });
+
+        DeleteCertificateResponse response = newClient().deleteCertificate("edge");
+
+        assertEquals("delete-certificate", received.get().header("x-euclid-action"));
+        assertBodyContains(received.get().body(), "\"name\":\"edge\"");
+        assertEquals("ern:ekm:certificate/edge", response.ern());
+        assertEquals("edge", response.name());
+    }
+
+    private static String certificateJson(boolean generated) {
+        return "{\"name\":\"edge\",\"ern\":\"ern:ekm:certificate/edge\",\"description\":\"the edge listener\","
+                + "\"certificate\":\"-----BEGIN CERTIFICATE-----\\nMII\\n-----END CERTIFICATE-----\","
+                + "\"subject\":\"CN=edge.example.com\",\"issuer\":\"CN=edge.example.com\","
+                + "\"serialNumber\":\"0A1B2C\",\"fingerprint\":\"ab:cd:ef\","
+                + "\"subjectAltNames\":[\"edge.example.com\",\"edge\"],\"generated\":" + generated + ","
+                + "\"notBefore\":\"2026-01-01T00:00:00Z\",\"notAfter\":\"2027-01-01T00:00:00Z\","
+                + "\"tags\":{\"env\":\"prod\"},\"created\":\"2026-01-01\",\"modified\":\"2026-01-02\"}";
     }
 
     private EuclidEkm newClient() {

@@ -27,15 +27,22 @@ import de.jensvogt.euclid.dto.eqs.ListQueueRequest;
 import de.jensvogt.euclid.dto.eqs.ListQueueResponse;
 import de.jensvogt.euclid.dto.eqs.PurgeAllQueuesRequest;
 import de.jensvogt.euclid.dto.eqs.PurgeQueueRequest;
+import de.jensvogt.euclid.dto.eqs.QueueStatusRequest;
+import de.jensvogt.euclid.dto.eqs.QueueStatusResponse;
 import de.jensvogt.euclid.dto.eqs.ReceiveMessagesRequest;
 import de.jensvogt.euclid.dto.eqs.ReceiveMessagesResponse;
+import de.jensvogt.euclid.dto.eqs.RedriveDlqRequest;
+import de.jensvogt.euclid.dto.eqs.RedriveDlqResponse;
 import de.jensvogt.euclid.dto.eqs.SendMessageRequest;
 import de.jensvogt.euclid.dto.eqs.SendMessageResponse;
 import de.jensvogt.euclid.dto.eqs.SetMessageAttributeRequest;
 import de.jensvogt.euclid.dto.eqs.SetMessageVisibilityRequest;
 import de.jensvogt.euclid.dto.eqs.SetQueueTagRequest;
+import de.jensvogt.euclid.dto.eqs.SetQueueVisibilityRequest;
+import de.jensvogt.euclid.dto.eqs.SetQueueVisibilityResponse;
 import de.jensvogt.euclid.dto.eqs.model.Message;
 import de.jensvogt.euclid.dto.eqs.model.Queue;
+import de.jensvogt.euclid.dto.eqs.model.RedriveTarget;
 import de.jensvogt.euclid.http.EuclidHttpClient;
 import de.jensvogt.euclid.exception.EuclidServiceException;
 import de.jensvogt.euclid.auth.SignableRequest;
@@ -640,6 +647,128 @@ public final class EuclidEqs implements TokenRefreshable, SigningSchemeSelectabl
     }
 
     /**
+     * Stops a queue, so it stops handing messages out.
+     * <p>
+     * Messages already in flight are left alone: their consumer took them before the queue was
+     * stopped and is still entitled to finish, so deleting one still works. Only new receives are
+     * refused.
+     *
+     * @param ern the ERN (Entity Resource Name) of the queue to stop
+     * @return the queue's status afterwards and how many messages are waiting on it
+     * @throws IOException          If an I/O error occurs during the operation.
+     * @throws InterruptedException If the operation is interrupted.
+     */
+    public QueueStatusResponse stopQueue(String ern) throws IOException, InterruptedException {
+        return setQueueStatus("stop-queue", ern);
+    }
+
+    /**
+     * Starts a queue that was stopped, so it hands messages out again.
+     *
+     * @param ern the ERN (Entity Resource Name) of the queue to start
+     * @return the queue's status afterwards and how many messages are waiting on it
+     * @throws IOException          If an I/O error occurs during the operation.
+     * @throws InterruptedException If the operation is interrupted.
+     */
+    public QueueStatusResponse startQueue(String ern) throws IOException, InterruptedException {
+        return setQueueStatus("start-queue", ern);
+    }
+
+    /**
+     * Sends one of the two actions that differ only in the status they record.
+     *
+     * @param action  {@code "stop-queue"} or {@code "start-queue"}
+     * @param ern     the ERN of the queue
+     * @return the queue's status afterwards
+     * @throws IOException          If an I/O error occurs during the operation.
+     * @throws InterruptedException If the operation is interrupted.
+     */
+    private QueueStatusResponse setQueueStatus(String action, String ern) throws IOException, InterruptedException {
+        String body = OBJECT_MAPPER.writeValueAsString(QueueStatusRequest.builder().ern(ern).build());
+        HttpResponse<String> response = httpClient.post(baseUrl + "/", body, "eqs", action,
+                requestHeaders(action, body));
+
+        if (response.statusCode() / 100 != 2) {
+            throw new EuclidServiceException("eqs", action, response.statusCode(), response.body());
+        }
+
+        return extractQueueStatusResponse(response.body());
+    }
+
+    /**
+     * Changes a queue's default visibility timeout - the window a message is held invisible for
+     * after it has been received, unless {@link #receiveMessages(String, long, long)} overrides it.
+     * <p>
+     * Only the default changes. Messages already in flight keep the window they were given when
+     * they were received, so this cannot expire a lease a consumer is still working on, nor hold
+     * back a message its consumer has already given up on.
+     *
+     * @param ern        the ERN (Entity Resource Name) of the queue
+     * @param visibility the new default visibility timeout in seconds, between 0 and 43200
+     * @return the ERN and the visibility timeout the queue now has
+     * @throws IOException          If an I/O error occurs during the operation.
+     * @throws InterruptedException If the operation is interrupted.
+     */
+    public SetQueueVisibilityResponse setQueueVisibility(String ern, long visibility)
+            throws IOException, InterruptedException {
+        String body = OBJECT_MAPPER.writeValueAsString(
+                SetQueueVisibilityRequest.builder().ern(ern).visibility(visibility).build());
+        HttpResponse<String> response = httpClient.post(baseUrl + "/", body, "eqs", "set-queue-visibility",
+                requestHeaders("set-queue-visibility", body));
+
+        if (response.statusCode() / 100 != 2) {
+            throw new EuclidServiceException("eqs", "set-queue-visibility", response.statusCode(), response.body());
+        }
+
+        return extractSetQueueVisibilityResponse(response.body());
+    }
+
+    /**
+     * Moves messages out of a dead letter queue and back onto the queues they came from.
+     *
+     * @param ern the ERN (Entity Resource Name) of the dead letter queue to drain
+     * @return how many messages moved, where they went, and how many were left behind
+     * @throws IOException          If an I/O error occurs during the operation.
+     * @throws InterruptedException If the operation is interrupted.
+     */
+    public RedriveDlqResponse redriveDlq(String ern) throws IOException, InterruptedException {
+        return redriveDlq(ern, "");
+    }
+
+    /**
+     * Moves messages out of a dead letter queue, optionally all onto one named queue.
+     * <p>
+     * {@code ern} has to name a queue that some other queue points at as its dead letter queue; an
+     * ordinary queue is refused rather than redriven into itself or into nothing. A named
+     * {@code targetErn} has to be one of the queues that feed it, since anything else would be a
+     * move rather than a redrive, and would put messages somewhere they were never sent.
+     * <p>
+     * Left unnamed, each message goes back where it came from. Several queues can share a dead
+     * letter queue, in which case a message that predates the recording of its origin has no answer
+     * to that question and is left alone rather than guessed at - the response says how many, so a
+     * caller can name a target and deal with them deliberately.
+     *
+     * @param ern       the ERN of the dead letter queue to drain
+     * @param targetErn the ERN of the single queue to move every message to, or {@code null}/empty
+     *                  to return each message to the queue it came from
+     * @return how many messages moved, where they went, and how many were left behind
+     * @throws IOException          If an I/O error occurs during the operation.
+     * @throws InterruptedException If the operation is interrupted.
+     */
+    public RedriveDlqResponse redriveDlq(String ern, String targetErn) throws IOException, InterruptedException {
+        String body = OBJECT_MAPPER.writeValueAsString(
+                RedriveDlqRequest.builder().ern(ern).targetErn(targetErn).build());
+        HttpResponse<String> response = httpClient.post(baseUrl + "/", body, "eqs", "redrive-dlq",
+                requestHeaders("redrive-dlq", body));
+
+        if (response.statusCode() / 100 != 2) {
+            throw new EuclidServiceException("eqs", "redrive-dlq", response.statusCode(), response.body());
+        }
+
+        return extractRedriveDlqResponse(response.body());
+    }
+
+    /**
      * Sends a message with the specified content to the specified endpoint.
      *
      * @param ern  The endpoint resource name to which the message will be sent.
@@ -887,6 +1016,11 @@ public final class EuclidEqs implements TokenRefreshable, SigningSchemeSelectabl
 
     /**
      * Updates the visibility timeout for a specific message identified by its messageId.
+     * <p>
+     * Sent as {@code set-message-visibility}, the name that says what it changes and pairs with
+     * {@link #setQueueVisibility(String, long)}. euclid answers to {@code set-visibility} as well,
+     * which is what this sent first and what servers from that era know it by - a server older than
+     * the alias will refuse this with HTTP 404 "Action not implemented".
      *
      * @param messageId The unique identifier of the message for which the visibility timeout is being updated.
      * @param visibility The new visibility timeout value, in seconds.
@@ -896,11 +1030,11 @@ public final class EuclidEqs implements TokenRefreshable, SigningSchemeSelectabl
     public void setVisibility(String messageId, long visibility) throws IOException, InterruptedException {
         String body = OBJECT_MAPPER.writeValueAsString(
                 SetMessageVisibilityRequest.builder().messageId(messageId).visibility(visibility).build());
-        HttpResponse<String> response = httpClient.post(baseUrl + "/", body, "eqs", "set-visibility",
-                requestHeaders("set-visibility", body));
+        HttpResponse<String> response = httpClient.post(baseUrl + "/", body, "eqs", "set-message-visibility",
+                requestHeaders("set-message-visibility", body));
 
         if (response.statusCode() / 100 != 2) {
-            throw new EuclidServiceException("eqs", "set-visibility", response.statusCode(), response.body());
+            throw new EuclidServiceException("eqs", "set-message-visibility", response.statusCode(), response.body());
         }
     }
 
@@ -1139,6 +1273,62 @@ public final class EuclidEqs implements TokenRefreshable, SigningSchemeSelectabl
                 .size(root.path("size").asLong(0)).receivedCount(root.path("receivedCount").asLong(0))
                 .visibilityTimeout(root.path("visibilityTimeout").asLong(0)).contentType(textOrNull(root, "contentType"))
                 .created(textOrNull(root, "created")).modified(textOrNull(root, "modified")).build();
+    }
+
+    /**
+     * Extracts a {@link QueueStatusResponse} object from the provided JSON response string.
+     *
+     * @param responseBody The JSON response body as a string.
+     * @return A {@link QueueStatusResponse} object with the queue's status and message count.
+     * @throws IOException If an error occurs while parsing the JSON response.
+     */
+    private static QueueStatusResponse extractQueueStatusResponse(String responseBody) throws IOException {
+        JsonNode root = OBJECT_MAPPER.readTree(responseBody);
+        return QueueStatusResponse.builder().ern(textOrNull(root, "ern")).status(textOrNull(root, "status"))
+                .available(root.path("available").asLong(0)).build();
+    }
+
+    /**
+     * Extracts a {@link SetQueueVisibilityResponse} object from the provided JSON response string.
+     *
+     * @param responseBody The JSON response body as a string.
+     * @return A {@link SetQueueVisibilityResponse} object with the queue's new default visibility.
+     * @throws IOException If an error occurs while parsing the JSON response.
+     */
+    private static SetQueueVisibilityResponse extractSetQueueVisibilityResponse(String responseBody) throws IOException {
+        JsonNode root = OBJECT_MAPPER.readTree(responseBody);
+        return SetQueueVisibilityResponse.builder().ern(textOrNull(root, "ern"))
+                .visibility(root.path("visibility").asLong(0)).build();
+    }
+
+    /**
+     * Extracts a {@link RedriveDlqResponse} object from the provided JSON response string.
+     *
+     * @param responseBody The JSON response body as a string.
+     * @return A {@link RedriveDlqResponse} object with the counts and the per-queue breakdown.
+     * @throws IOException If an error occurs while parsing the JSON response.
+     */
+    private static RedriveDlqResponse extractRedriveDlqResponse(String responseBody) throws IOException {
+        JsonNode root = OBJECT_MAPPER.readTree(responseBody);
+        return RedriveDlqResponse.builder().ern(textOrNull(root, "ern")).messages(root.path("messages").asLong(0))
+                .remaining(root.path("remaining").asLong(0)).targets(toRedriveTargetList(root.get("targets")))
+                .note(textOrNull(root, "note")).build();
+    }
+
+    /**
+     * Converts a JSON array node of redrive targets into a list of {@link RedriveTarget} objects.
+     *
+     * @param targetsNode the JSON node representing the array of targets.
+     * @return a list of {@link RedriveTarget} objects, or an empty list if the node is null or not an array.
+     */
+    private static List<RedriveTarget> toRedriveTargetList(JsonNode targetsNode) {
+        List<RedriveTarget> targets = new ArrayList<>();
+        if (targetsNode != null && targetsNode.isArray()) {
+            for (JsonNode targetNode : targetsNode) {
+                targets.add(new RedriveTarget(textOrNull(targetNode, "queueErn"), targetNode.path("messages").asLong(0)));
+            }
+        }
+        return targets;
     }
 
     /**

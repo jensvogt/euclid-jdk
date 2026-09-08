@@ -12,6 +12,8 @@ import de.jensvogt.euclid.dto.eap.ApplicationRequest;
 import de.jensvogt.euclid.dto.eap.CreateApplicationRequest;
 import de.jensvogt.euclid.dto.eap.ListApplicationsRequest;
 import de.jensvogt.euclid.dto.eap.RedeployApplicationRequest;
+import de.jensvogt.euclid.dto.eap.SetLogLevelRequest;
+import de.jensvogt.euclid.dto.eap.SetLogLevelResponse;
 import de.jensvogt.euclid.dto.eap.UpdateApplicationRequest;
 import de.jensvogt.euclid.dto.eap.model.Application;
 import de.jensvogt.euclid.exception.EuclidServiceException;
@@ -327,6 +329,54 @@ public final class EuclidEap implements TokenRefreshable, SigningSchemeSelectabl
      */
     public Application stopApplication(String applicationId) throws IOException, InterruptedException {
         return toApplication(post("stop-application", applicationBody(applicationId)));
+    }
+
+    /**
+     * Overrides the level an application logs at, without redeploying or restarting it.
+     * <p>
+     * An unrecognised level is refused with HTTP 400 rather than defaulted: "warnign" quietly
+     * meaning "info" is an application logging more than somebody asked for, and quietly meaning
+     * "off" is silence nobody asked for at all.
+     *
+     * @param applicationId the ID of the application
+     * @param level         one of {@code "trace"}, {@code "debug"}, {@code "info"},
+     *                      {@code "warning"}, {@code "error"}, {@code "fatal"} or {@code "off"}
+     * @return the level the application now logs at and the channel it was applied to
+     * @throws IOException if an I/O error occurs during the operation
+     * @throws InterruptedException if the operation is interrupted
+     */
+    public SetLogLevelResponse setLogLevel(String applicationId, String level)
+            throws IOException, InterruptedException {
+        String body = OBJECT_MAPPER.writeValueAsString(
+                SetLogLevelRequest.builder().applicationId(applicationId).level(level).build());
+        return toSetLogLevelResponse(post("set-log-level", body));
+    }
+
+    /**
+     * Takes back a level set with {@link #setLogLevel(String, String)}, putting the application back
+     * under whatever its channel is configured with.
+     * <p>
+     * Sends the same action with an empty level, which is how an override is withdrawn rather than
+     * merely changed - there is no level name that means "whatever was configured".
+     *
+     * @param applicationId the ID of the application
+     * @return the response, whose {@code logLevel} is empty now the configured default applies
+     * @throws IOException if an I/O error occurs during the operation
+     * @throws InterruptedException if the operation is interrupted
+     */
+    public SetLogLevelResponse resetLogLevel(String applicationId) throws IOException, InterruptedException {
+        return setLogLevel(applicationId, "");
+    }
+
+    /**
+     * Builds a {@link SetLogLevelResponse} from the JSON set-log-level answers with.
+     *
+     * @param node the JSON object describing the applied level
+     * @return the parsed response
+     */
+    private static SetLogLevelResponse toSetLogLevelResponse(JsonNode node) {
+        return SetLogLevelResponse.builder().applicationId(textOrNull(node, "applicationId"))
+                .logLevel(textOrNull(node, "logLevel")).channel(textOrNull(node, "channel")).build();
     }
 
     /**

@@ -15,8 +15,11 @@ import de.jensvogt.euclid.dto.eqs.GetQueueErnResponse;
 import de.jensvogt.euclid.dto.eqs.GetQueueMetadataResponse;
 import de.jensvogt.euclid.dto.eqs.ListMessagesResponse;
 import de.jensvogt.euclid.dto.eqs.ListQueueResponse;
+import de.jensvogt.euclid.dto.eqs.QueueStatusResponse;
 import de.jensvogt.euclid.dto.eqs.ReceiveMessagesResponse;
+import de.jensvogt.euclid.dto.eqs.RedriveDlqResponse;
 import de.jensvogt.euclid.dto.eqs.SendMessageResponse;
+import de.jensvogt.euclid.dto.eqs.SetQueueVisibilityResponse;
 import de.jensvogt.euclid.dto.eqs.model.Message;
 import de.jensvogt.euclid.dto.eqs.model.Queue;
 import de.jensvogt.euclid.exception.EuclidServiceException;
@@ -606,7 +609,7 @@ class EuclidEqsTest {
 
         newClient().setVisibility("msg-1", 45);
 
-        assertEquals("set-visibility", received.get().header("x-euclid-action"));
+        assertEquals("set-message-visibility", received.get().header("x-euclid-action"));
         assertBodyContains(received.get().body(), "\"messageId\":\"msg-1\"", "\"visibility\":45");
     }
 
@@ -748,6 +751,111 @@ class EuclidEqsTest {
         newClient().createQueue("orders");
 
         assertEquals("", received.get().header("x-euclid-namespace"));
+    }
+
+    @Test
+    void stopQueueSendsStopActionAndParsesStatus() throws Exception {
+        AtomicReference<SignableRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(captureRequest(exchange));
+            sendResponse(exchange, 200, "{\"ern\":\"queue-ern\",\"status\":\"STOPPED\",\"available\":7}");
+        });
+
+        QueueStatusResponse response = newClient().stopQueue("queue-ern");
+
+        assertEquals("stop-queue", received.get().header("x-euclid-action"));
+        assertBodyContains(received.get().body(), "\"ern\":\"queue-ern\"");
+        assertEquals("queue-ern", response.ern());
+        assertEquals("STOPPED", response.status());
+        assertEquals(7, response.available());
+    }
+
+    @Test
+    void startQueueSendsStartActionAndParsesStatus() throws Exception {
+        AtomicReference<SignableRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(captureRequest(exchange));
+            sendResponse(exchange, 200, "{\"ern\":\"queue-ern\",\"status\":\"AVAILABLE\",\"available\":0}");
+        });
+
+        QueueStatusResponse response = newClient().startQueue("queue-ern");
+
+        assertEquals("start-queue", received.get().header("x-euclid-action"));
+        assertEquals("AVAILABLE", response.status());
+    }
+
+    @Test
+    void stopQueueSurfacesErrorResponse() throws Exception {
+        server = startServer(exchange -> sendResponse(exchange, 404, "{\"message\":\"Queue not found\"}"));
+
+        EuclidServiceException exception = assertThrows(EuclidServiceException.class,
+                () -> newClient().stopQueue("missing-ern"));
+
+        assertEquals(404, exception.statusCode());
+    }
+
+    @Test
+    void setQueueVisibilitySendsErnAndVisibility() throws Exception {
+        AtomicReference<SignableRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(captureRequest(exchange));
+            sendResponse(exchange, 200, "{\"ern\":\"queue-ern\",\"visibility\":90}");
+        });
+
+        SetQueueVisibilityResponse response = newClient().setQueueVisibility("queue-ern", 90);
+
+        assertEquals("set-queue-visibility", received.get().header("x-euclid-action"));
+        assertBodyContains(received.get().body(), "\"ern\":\"queue-ern\"", "\"visibility\":90");
+        assertEquals(90, response.visibility());
+    }
+
+    @Test
+    void redriveDlqWithoutTargetReturnsEveryMessageToItsOwnQueue() throws Exception {
+        AtomicReference<SignableRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(captureRequest(exchange));
+            sendResponse(exchange, 200, "{\"ern\":\"dlq-ern\",\"messages\":5,\"remaining\":0,"
+                    + "\"targets\":[{\"queueErn\":\"orders-ern\",\"messages\":3},"
+                    + "{\"queueErn\":\"invoices-ern\",\"messages\":2}]}");
+        });
+
+        RedriveDlqResponse response = newClient().redriveDlq("dlq-ern");
+
+        assertEquals("redrive-dlq", received.get().header("x-euclid-action"));
+        assertBodyContains(received.get().body(), "\"ern\":\"dlq-ern\"", "\"targetErn\":\"\"");
+        assertEquals(5, response.messages());
+        assertEquals(0, response.remaining());
+        assertEquals(2, response.targets().size());
+        assertEquals("orders-ern", response.targets().getFirst().queueErn());
+        assertEquals(3, response.targets().getFirst().messages());
+        assertNullSafe(response.note());
+    }
+
+    @Test
+    void redriveDlqWithTargetCarriesTheTargetAndTheNoteForWhatIsLeft() throws Exception {
+        AtomicReference<SignableRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(captureRequest(exchange));
+            sendResponse(exchange, 200, "{\"ern\":\"dlq-ern\",\"messages\":1,\"remaining\":2,"
+                    + "\"targets\":[{\"queueErn\":\"orders-ern\",\"messages\":1}],"
+                    + "\"note\":\"Messages remain in the dead letter queue\"}");
+        });
+
+        RedriveDlqResponse response = newClient().redriveDlq("dlq-ern", "orders-ern");
+
+        assertBodyContains(received.get().body(), "\"targetErn\":\"orders-ern\"");
+        assertEquals(2, response.remaining());
+        assertEquals("Messages remain in the dead letter queue", response.note());
+    }
+
+    @Test
+    void redriveDlqToleratesAResponseWithoutTargets() throws Exception {
+        server = startServer(exchange -> sendResponse(exchange, 200,
+                "{\"ern\":\"dlq-ern\",\"messages\":0,\"remaining\":0}"));
+
+        RedriveDlqResponse response = newClient().redriveDlq("dlq-ern");
+
+        assertTrue(response.targets().isEmpty());
     }
 
     private EuclidEqs newClient() {

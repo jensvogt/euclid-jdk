@@ -23,6 +23,12 @@ import de.jensvogt.euclid.dto.esm.DeleteBucketRequest;
 import de.jensvogt.euclid.dto.esm.DeleteBucketTagRequest;
 import de.jensvogt.euclid.dto.esm.DeleteObjectAttributeRequest;
 import de.jensvogt.euclid.dto.esm.DeleteObjectRequest;
+import de.jensvogt.euclid.dto.esm.DeleteObjectsRequest;
+import de.jensvogt.euclid.dto.esm.DeleteObjectsResponse;
+import de.jensvogt.euclid.dto.esm.DisableEncryptionRequest;
+import de.jensvogt.euclid.dto.esm.DisableEncryptionResponse;
+import de.jensvogt.euclid.dto.esm.EnableEncryptionRequest;
+import de.jensvogt.euclid.dto.esm.EnableEncryptionResponse;
 import de.jensvogt.euclid.dto.esm.GetBucketErnRequest;
 import de.jensvogt.euclid.dto.esm.GetBucketErnResponse;
 import de.jensvogt.euclid.dto.esm.GetBucketSizeRequest;
@@ -40,11 +46,17 @@ import de.jensvogt.euclid.dto.esm.ListSubscriptionsResponse;
 import de.jensvogt.euclid.dto.esm.ObjectAttributeRequest;
 import de.jensvogt.euclid.dto.esm.ObjectAttributeResponse;
 import de.jensvogt.euclid.dto.esm.PurgeBucketRequest;
+import de.jensvogt.euclid.dto.esm.RenameBucketRequest;
+import de.jensvogt.euclid.dto.esm.RenameBucketResponse;
 import de.jensvogt.euclid.dto.esm.RenameObjectRequest;
 import de.jensvogt.euclid.dto.esm.PurgeBucketResponse;
+import de.jensvogt.euclid.dto.esm.SetBucketInternalRequest;
+import de.jensvogt.euclid.dto.esm.SetBucketInternalResponse;
 import de.jensvogt.euclid.dto.esm.SetBucketTagRequest;
 import de.jensvogt.euclid.dto.esm.SubscribeRequest;
 import de.jensvogt.euclid.dto.esm.SubscribeResponse;
+import de.jensvogt.euclid.dto.esm.TouchObjectRequest;
+import de.jensvogt.euclid.dto.esm.TouchObjectResponse;
 import de.jensvogt.euclid.dto.esm.UnsubscribeRequest;
 import de.jensvogt.euclid.dto.esm.model.Bucket;
 import de.jensvogt.euclid.dto.esm.model.BucketEvent;
@@ -415,6 +427,140 @@ public final class EuclidEsm implements TokenRefreshable, SigningSchemeSelectabl
     }
 
     /**
+     * Renames a bucket, and with it every object and subscription that named the old one.
+     * <p>
+     * A rename changes the bucket's ERN as well as its name, so the ERN in the response is the one
+     * later calls have to use - nothing answers to the old one afterwards. Refused rather than
+     * merged when a bucket of the new name already exists, and refused while a transfer server is
+     * serving the bucket, since its clients are mid-session and would be left uploading to an ERN
+     * that no longer exists.
+     *
+     * @param ern     the ERN of the bucket to rename
+     * @param newName the name the bucket is to have
+     * @return the bucket's new name and ERN, and how many objects and subscriptions were repointed
+     * @throws IOException if an I/O error occurs during the HTTP request
+     * @throws InterruptedException if the operation is interrupted while waiting for a response
+     */
+    public RenameBucketResponse renameBucket(String ern, String newName) throws IOException, InterruptedException {
+        String body = OBJECT_MAPPER.writeValueAsString(
+                RenameBucketRequest.builder().ern(ern).newName(newName).build());
+        HttpResponse<String> response = httpClient.post(baseUrl + "/", body, "esm", "rename-bucket",
+                requestHeaders("rename-bucket", body));
+
+        if (response.statusCode() / 100 != 2) {
+            throw new EuclidServiceException("esm", "rename-bucket", response.statusCode(), response.body());
+        }
+
+        return extractRenameBucketResponse(response.body());
+    }
+
+    /**
+     * Marks a bucket as euclid's own plumbing, or stops doing so.
+     * <p>
+     * An internal bucket is left out of an ordinary listing, so a listing shows what a person would
+     * recognise rather than the artifact bucket applications are deployed from. Separate from
+     * bucket creation because the bucket this exists for usually predates anybody thinking about
+     * it, and reversible for the same reason: a flag that can only be set is one nobody dares set.
+     *
+     * @param ern      the ERN of the bucket
+     * @param internal true to hide the bucket from ordinary listings, false to show it again
+     * @return the bucket and the flag it now carries
+     * @throws IOException if an I/O error occurs during the HTTP request
+     * @throws InterruptedException if the operation is interrupted while waiting for a response
+     */
+    public SetBucketInternalResponse setBucketInternal(String ern, boolean internal)
+            throws IOException, InterruptedException {
+        String body = OBJECT_MAPPER.writeValueAsString(
+                SetBucketInternalRequest.builder().ern(ern).internal(internal).build());
+        HttpResponse<String> response = httpClient.post(baseUrl + "/", body, "esm", "set-bucket-internal",
+                requestHeaders("set-bucket-internal", body));
+
+        if (response.statusCode() / 100 != 2) {
+            throw new EuclidServiceException("esm", "set-bucket-internal", response.statusCode(), response.body());
+        }
+
+        return extractSetBucketInternalResponse(response.body());
+    }
+
+    /**
+     * Turns on encryption at rest for a bucket, under a key EKM creates for it.
+     *
+     * @param bucketErn the ERN of the bucket to encrypt
+     * @return the key the bucket now encrypts under, and how many objects predate the change
+     * @throws IOException if an I/O error occurs during the HTTP request
+     * @throws InterruptedException if the operation is interrupted while waiting for a response
+     */
+    public EnableEncryptionResponse enableEncryption(String bucketErn) throws IOException, InterruptedException {
+        return enableEncryption(bucketErn, "");
+    }
+
+    /**
+     * Turns on encryption at rest for a bucket: from here on, every object written to it is
+     * encrypted under an EKM key before it reaches the disk, and read back through the same key.
+     * <p>
+     * What this does not do is touch the objects already in the bucket. Their bytes are on disk as
+     * they were stored and they stay that way - each object records the key it is under - so an
+     * encrypted bucket goes on serving what it held before, and the response says how many such
+     * objects there are. Re-encrypting them is a decision for whoever owns the data: copy them
+     * through a new bucket, or re-upload them.
+     * <p>
+     * A named key has to exist, belong to the caller's account and be usable for encryption. An
+     * unnamed one is created here as AES-256 and belongs to EKM from that moment on, with the same
+     * lifecycle as any other key - which means deleting it there is what makes this bucket's
+     * objects unrecoverable.
+     *
+     * @param bucketErn the ERN of the bucket to encrypt
+     * @param keyId     the name of an existing EKM key to encrypt under, or {@code null}/empty to
+     *                  have one created
+     * @return the key the bucket now encrypts under, and how many objects predate the change
+     * @throws IOException if an I/O error occurs during the HTTP request
+     * @throws InterruptedException if the operation is interrupted while waiting for a response
+     */
+    public EnableEncryptionResponse enableEncryption(String bucketErn, String keyId)
+            throws IOException, InterruptedException {
+        String body = OBJECT_MAPPER.writeValueAsString(
+                EnableEncryptionRequest.builder().bucketErn(bucketErn).keyId(keyId).build());
+        HttpResponse<String> response = httpClient.post(baseUrl + "/", body, "esm", "enable-encryption",
+                requestHeaders("enable-encryption", body));
+
+        if (response.statusCode() / 100 != 2) {
+            throw new EuclidServiceException("esm", "enable-encryption", response.statusCode(), response.body());
+        }
+
+        return extractEnableEncryptionResponse(response.body());
+    }
+
+    /**
+     * Stops encrypting new objects written to a bucket.
+     * <p>
+     * The mirror image of {@link #enableEncryption(String, String)} in exactly one respect and no
+     * other. It is the same kind of setting - it says what happens to the next upload, and nothing
+     * else - but it is not an undo. Nothing already in the bucket is decrypted, or rewritten, or
+     * touched at all: every object still names the key it was written under and is still read back
+     * through it, and the response says how many such objects there are.
+     * <p>
+     * Which is why the key is left strictly alone rather than revoked: those objects are under it,
+     * and EKM is where a key's life is decided.
+     *
+     * @param bucketErn the ERN of the bucket to stop encrypting
+     * @return the key the bucket was encrypting under, and how many objects are still under it
+     * @throws IOException if an I/O error occurs during the HTTP request
+     * @throws InterruptedException if the operation is interrupted while waiting for a response
+     */
+    public DisableEncryptionResponse disableEncryption(String bucketErn) throws IOException, InterruptedException {
+        String body = OBJECT_MAPPER.writeValueAsString(
+                DisableEncryptionRequest.builder().bucketErn(bucketErn).build());
+        HttpResponse<String> response = httpClient.post(baseUrl + "/", body, "esm", "disable-encryption",
+                requestHeaders("disable-encryption", body));
+
+        if (response.statusCode() / 100 != 2) {
+            throw new EuclidServiceException("esm", "disable-encryption", response.statusCode(), response.body());
+        }
+
+        return extractDisableEncryptionResponse(response.body());
+    }
+
+    /**
      * Lists the objects within the specified bucket.
      *
      * @param bucketErn the ARN of the bucket for which to fetch the object list
@@ -527,6 +673,117 @@ public final class EuclidEsm implements TokenRefreshable, SigningSchemeSelectabl
         }
 
         return extractPurgeBucketResponse(response.body());
+    }
+
+    /**
+     * Deletes several named objects from a bucket in one call.
+     * <p>
+     * A key that names no object is not an error - it simply is not there to delete - so the
+     * response reports both how many keys were asked for and how many objects went, and a caller
+     * that cares compares the two.
+     * <p>
+     * Deleting everything under a key prefix is {@link #purgeBucket(String, String)} rather than a
+     * variant of this: the server refuses keys and a prefix in the same request, since naming both
+     * asks two different questions and answering both would delete more than either.
+     *
+     * @param bucketErn the ERN of the bucket the objects are in
+     * @param keys      the keys of the objects to delete
+     * @return the number of keys asked for and the number of objects deleted
+     * @throws IOException if an I/O error occurs during the HTTP request
+     * @throws InterruptedException if the operation is interrupted while waiting for a response
+     */
+    public DeleteObjectsResponse deleteObjects(String bucketErn, List<String> keys)
+            throws IOException, InterruptedException {
+        return deleteObjects(bucketErn, keys, false);
+    }
+
+    /**
+     * Deletes several named objects from a bucket, optionally leaving the server to it.
+     * <p>
+     * Asked to run in the background, the server answers HTTP 202 as soon as it has taken the work
+     * on rather than when it has finished, and the response's {@code objects} is how many it took
+     * on rather than how many it has removed.
+     *
+     * @param bucketErn the ERN of the bucket the objects are in
+     * @param keys      the keys of the objects to delete
+     * @param async     whether the server answers before it has finished deleting
+     * @return the number of keys asked for and the number of objects deleted or taken on
+     * @throws IOException if an I/O error occurs during the HTTP request
+     * @throws InterruptedException if the operation is interrupted while waiting for a response
+     */
+    public DeleteObjectsResponse deleteObjects(String bucketErn, List<String> keys, boolean async)
+            throws IOException, InterruptedException {
+        String body = OBJECT_MAPPER.writeValueAsString(
+                DeleteObjectsRequest.builder().ern(bucketErn).keys(keys).async(async).build());
+        HttpResponse<String> response = httpClient.post(baseUrl + "/", body, "esm", "delete-objects",
+                requestHeaders("delete-objects", body));
+
+        if (response.statusCode() / 100 != 2) {
+            throw new EuclidServiceException("esm", "delete-objects", response.statusCode(), response.body());
+        }
+
+        return extractDeleteObjectsResponse(response.body());
+    }
+
+    /**
+     * Re-announces every object already in a bucket, so a listener that missed their creation
+     * events hears about them now.
+     * <p>
+     * Nothing about the objects changes - not a byte, not their modified time. "Touch" here means
+     * what it does to listeners, not what it does to storage: a timestamp is something consumers
+     * compare against, and moving it would make this destructive in exactly the way it is trying
+     * not to be.
+     *
+     * @param bucketErn the ERN of the bucket whose objects are re-announced
+     * @return the bucket and how many objects were announced
+     * @throws IOException if an I/O error occurs during the HTTP request
+     * @throws InterruptedException if the operation is interrupted while waiting for a response
+     */
+    public TouchObjectResponse touchObject(String bucketErn) throws IOException, InterruptedException {
+        return touchObject(bucketErn, "", false);
+    }
+
+    /**
+     * Re-announces the objects of a bucket whose key starts with the given prefix.
+     *
+     * @param bucketErn the ERN of the bucket whose objects are re-announced
+     * @param prefix    only objects whose key starts with this are announced; empty announces them all
+     * @return the bucket and how many objects were announced
+     * @throws IOException if an I/O error occurs during the HTTP request
+     * @throws InterruptedException if the operation is interrupted while waiting for a response
+     */
+    public TouchObjectResponse touchObject(String bucketErn, String prefix) throws IOException, InterruptedException {
+        return touchObject(bucketErn, prefix, false);
+    }
+
+    /**
+     * Re-announces the objects of a bucket, optionally leaving the server to it.
+     * <p>
+     * Asked to run in the background, the server answers HTTP 202 as soon as it has counted what it
+     * is about to do rather than when it has finished, and the response's {@code objects} is that
+     * count rather than a total announced. Which is what a bucket of any size wants: the
+     * announcement is per object, and holding a request open for all of them is a request that
+     * times out.
+     *
+     * @param bucketErn the ERN of the bucket whose objects are re-announced
+     * @param prefix    only objects whose key starts with this are announced; empty announces them all
+     * @param async     whether the server answers before it has finished announcing
+     * @return the bucket and how many objects were announced or taken on
+     * @throws IOException if an I/O error occurs during the HTTP request
+     * @throws InterruptedException if the operation is interrupted while waiting for a response
+     */
+    public TouchObjectResponse touchObject(String bucketErn, String prefix, boolean async)
+            throws IOException, InterruptedException {
+        String body = OBJECT_MAPPER.writeValueAsString(
+                TouchObjectRequest.builder().ern(bucketErn).prefix(prefix).async(async).build());
+        HttpResponse<String> response = httpClient.post(baseUrl + "/", body, "esm", "touch-object",
+                requestHeaders("touch-object", body));
+
+        if (response.statusCode() / 100 != 2) {
+            throw new EuclidServiceException("esm", "touch-object", response.statusCode(), response.body());
+        }
+
+        return extractTouchObjectResponse(response.body());
     }
 
     /**
@@ -1727,6 +1984,88 @@ public final class EuclidEsm implements TokenRefreshable, SigningSchemeSelectabl
     private static PurgeBucketResponse extractPurgeBucketResponse(String responseBody) throws IOException {
         JsonNode root = OBJECT_MAPPER.readTree(responseBody);
         return PurgeBucketResponse.builder().ern(textOrNull(root, "ern")).count(root.path("count").asLong(0)).build();
+    }
+
+    /**
+     * Extracts a {@code DeleteObjectsResponse} object from the given JSON response body.
+     *
+     * @param responseBody the JSON response body as a string
+     * @return a {@code DeleteObjectsResponse} object constructed from the extracted data
+     * @throws IOException if an error occurs while processing the JSON response
+     */
+    private static DeleteObjectsResponse extractDeleteObjectsResponse(String responseBody) throws IOException {
+        JsonNode root = OBJECT_MAPPER.readTree(responseBody);
+        return DeleteObjectsResponse.builder().ern(textOrNull(root, "ern")).asked(root.path("asked").asLong(0))
+                .objects(root.path("objects").asLong(0)).async(root.path("async").asBoolean(false)).build();
+    }
+
+    /**
+     * Extracts a {@code TouchObjectResponse} object from the given JSON response body.
+     *
+     * @param responseBody the JSON response body as a string
+     * @return a {@code TouchObjectResponse} object constructed from the extracted data
+     * @throws IOException if an error occurs while processing the JSON response
+     */
+    private static TouchObjectResponse extractTouchObjectResponse(String responseBody) throws IOException {
+        JsonNode root = OBJECT_MAPPER.readTree(responseBody);
+        return TouchObjectResponse.builder().ern(textOrNull(root, "ern")).bucketName(textOrNull(root, "bucketName"))
+                .prefix(textOrNull(root, "prefix")).objects(root.path("objects").asLong(0))
+                .async(root.path("async").asBoolean(false)).build();
+    }
+
+    /**
+     * Extracts a {@code RenameBucketResponse} object from the given JSON response body.
+     *
+     * @param responseBody the JSON response body as a string
+     * @return a {@code RenameBucketResponse} object constructed from the extracted data
+     * @throws IOException if an error occurs while processing the JSON response
+     */
+    private static RenameBucketResponse extractRenameBucketResponse(String responseBody) throws IOException {
+        JsonNode root = OBJECT_MAPPER.readTree(responseBody);
+        return RenameBucketResponse.builder().name(textOrNull(root, "name")).ern(textOrNull(root, "ern"))
+                .objects(root.path("objects").asLong(0)).subscriptions(root.path("subscriptions").asLong(0)).build();
+    }
+
+    /**
+     * Extracts a {@code SetBucketInternalResponse} object from the given JSON response body.
+     *
+     * @param responseBody the JSON response body as a string
+     * @return a {@code SetBucketInternalResponse} object constructed from the extracted data
+     * @throws IOException if an error occurs while processing the JSON response
+     */
+    private static SetBucketInternalResponse extractSetBucketInternalResponse(String responseBody) throws IOException {
+        JsonNode root = OBJECT_MAPPER.readTree(responseBody);
+        return SetBucketInternalResponse.builder().ern(textOrNull(root, "ern")).name(textOrNull(root, "name"))
+                .internal(root.path("internal").asBoolean(false)).build();
+    }
+
+    /**
+     * Extracts an {@code EnableEncryptionResponse} object from the given JSON response body.
+     *
+     * @param responseBody the JSON response body as a string
+     * @return an {@code EnableEncryptionResponse} object constructed from the extracted data
+     * @throws IOException if an error occurs while processing the JSON response
+     */
+    private static EnableEncryptionResponse extractEnableEncryptionResponse(String responseBody) throws IOException {
+        JsonNode root = OBJECT_MAPPER.readTree(responseBody);
+        return EnableEncryptionResponse.builder().ern(textOrNull(root, "ern")).name(textOrNull(root, "name"))
+                .keyErn(textOrNull(root, "keyErn")).keyId(textOrNull(root, "keyId"))
+                .algorithm(textOrNull(root, "algorithm")).keyCreated(root.path("keyCreated").asBoolean(false))
+                .existingObjects(root.path("existingObjects").asLong(0)).build();
+    }
+
+    /**
+     * Extracts a {@code DisableEncryptionResponse} object from the given JSON response body.
+     *
+     * @param responseBody the JSON response body as a string
+     * @return a {@code DisableEncryptionResponse} object constructed from the extracted data
+     * @throws IOException if an error occurs while processing the JSON response
+     */
+    private static DisableEncryptionResponse extractDisableEncryptionResponse(String responseBody) throws IOException {
+        JsonNode root = OBJECT_MAPPER.readTree(responseBody);
+        return DisableEncryptionResponse.builder().ern(textOrNull(root, "ern")).name(textOrNull(root, "name"))
+                .previousKeyErn(textOrNull(root, "previousKeyErn")).previousKeyId(textOrNull(root, "previousKeyId"))
+                .encryptedObjects(root.path("encryptedObjects").asLong(0)).build();
     }
 
     /**
