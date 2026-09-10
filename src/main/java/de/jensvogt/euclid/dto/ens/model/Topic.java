@@ -12,9 +12,16 @@ import java.util.Map;
  * @param size             total size in bytes of all messages currently in the topic
  * @param messages         number of messages currently in the topic
  * @param maxMessageLength maximum allowed size, in bytes, of a single message
+ * @param status           whether the topic hands what is published to it to its subscribers,
+ *                         {@code "RUNNING"} or {@code "STOPPED"} - see
+ *                         {@link de.jensvogt.euclid.module.ens.EuclidEns#stopTopic(String)}
+ * @param retentionPeriod  how long a message published to this topic is kept, in seconds. Zero
+ *                         means the topic follows the installation default as that changes, rather
+ *                         than having frozen a copy of whatever it was on the day the topic was
+ *                         created
  * @param created          creation timestamp
  * @param modified         last-modified timestamp
  */
 public record Topic(String name, String owner, String ern, Map<String, String> tags, long size, long messages,
-                     long maxMessageLength, String created, String modified) {
+                     long maxMessageLength, String status, long retentionPeriod, String created, String modified) {
 }

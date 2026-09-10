@@ -32,9 +32,13 @@ import de.jensvogt.euclid.dto.ens.PublishMessageResponse;
 import de.jensvogt.euclid.dto.ens.PurgeAllTopicsRequest;
 import de.jensvogt.euclid.dto.ens.PurgeTopicRequest;
 import de.jensvogt.euclid.dto.ens.SetMessageAttributeRequest;
+import de.jensvogt.euclid.dto.ens.SetTopicRetentionRequest;
+import de.jensvogt.euclid.dto.ens.SetTopicRetentionResponse;
 import de.jensvogt.euclid.dto.ens.SetTopicTagRequest;
 import de.jensvogt.euclid.dto.ens.SubscribeRequest;
 import de.jensvogt.euclid.dto.ens.SubscribeResponse;
+import de.jensvogt.euclid.dto.ens.TopicStatusRequest;
+import de.jensvogt.euclid.dto.ens.TopicStatusResponse;
 import de.jensvogt.euclid.dto.ens.UnsubscribeRequest;
 import de.jensvogt.euclid.dto.ens.model.Message;
 import de.jensvogt.euclid.dto.ens.model.Subscription;
@@ -583,6 +587,99 @@ public final class EuclidEns implements TokenRefreshable, SigningSchemeSelectabl
     }
 
     /**
+     * Stops a topic delivering, so what is published to it is held instead of handed to its
+     * subscribers.
+     * <p>
+     * A stopped topic still accepts and stores what is published to it - it simply does not fan it
+     * out. That is the point: a subscriber being redeployed, or a downstream system taken down for
+     * the evening, is a reason to hold delivery rather than to lose what arrives meanwhile. The
+     * held messages are delivered, oldest first, when the topic is started again with
+     * {@link #startTopic(String)}.
+     *
+     * @param ern the ERN of the topic to stop
+     * @return the topic's status afterwards
+     * @throws IOException          if an I/O error occurs during the operation
+     * @throws InterruptedException if the operation is interrupted
+     */
+    public TopicStatusResponse stopTopic(String ern) throws IOException, InterruptedException {
+        return setTopicStatus("stop-topic", ern);
+    }
+
+    /**
+     * Starts a topic that was stopped, handing over what it held meanwhile before this answers.
+     * <p>
+     * The backlog is delivered a page at a time and each message marked as it goes, so a topic that
+     * collected a fortnight of traffic does not have to fit in memory - and a start interrupted
+     * halfway through has delivered a prefix of the backlog rather than none of it, so running it
+     * again picks up where it stopped. {@link TopicStatusResponse#released()} says how many went
+     * out.
+     * <p>
+     * Held messages are marked delivered whatever the fan-out found, so a topic whose subscriptions
+     * have since been removed does not walk past the same backlog on every later start.
+     *
+     * @param ern the ERN of the topic to start
+     * @return the topic's status afterwards and how many held messages were delivered
+     * @throws IOException          if an I/O error occurs during the operation
+     * @throws InterruptedException if the operation is interrupted
+     */
+    public TopicStatusResponse startTopic(String ern) throws IOException, InterruptedException {
+        return setTopicStatus("start-topic", ern);
+    }
+
+    /**
+     * Sends one of the two actions that differ only in whether the topic delivers afterwards.
+     *
+     * @param action {@code "stop-topic"} or {@code "start-topic"}
+     * @param ern    the ERN of the topic
+     * @return the topic's status afterwards
+     * @throws IOException          if an I/O error occurs during the operation
+     * @throws InterruptedException if the operation is interrupted
+     */
+    private TopicStatusResponse setTopicStatus(String action, String ern) throws IOException, InterruptedException {
+        String body = OBJECT_MAPPER.writeValueAsString(TopicStatusRequest.builder().ern(ern).build());
+        HttpResponse<String> response = httpClient.post(baseUrl + "/", body, "ens", action,
+                requestHeaders(action, body));
+
+        if (response.statusCode() / 100 != 2) {
+            throw new EuclidServiceException("ens", action, response.statusCode(), response.body());
+        }
+
+        return extractTopicStatusResponse(response.body());
+    }
+
+    /**
+     * Sets how long a topic keeps what is published to it.
+     * <p>
+     * This takes effect for messages published afterwards. The ones already stored keep the expiry
+     * they were given, because that is what the database's TTL index acts on, and rewriting every
+     * message of a busy topic to shorten its history is not something one call should quietly do.
+     * <p>
+     * Passing zero puts the topic back on the installation default and keeps it there as that
+     * changes, rather than freezing a copy of whatever it is today. A negative period is refused
+     * with HTTP 400.
+     *
+     * @param ern             the ERN of the topic
+     * @param retentionPeriod how long a published message is kept, in seconds; zero follows the
+     *                        installation default
+     * @return the retention period the topic now has
+     * @throws IOException          if an I/O error occurs during the operation
+     * @throws InterruptedException if the operation is interrupted
+     */
+    public SetTopicRetentionResponse setTopicRetention(String ern, long retentionPeriod)
+            throws IOException, InterruptedException {
+        String body = OBJECT_MAPPER.writeValueAsString(
+                SetTopicRetentionRequest.builder().ern(ern).retentionPeriod(retentionPeriod).build());
+        HttpResponse<String> response = httpClient.post(baseUrl + "/", body, "ens", "set-topic-retention",
+                requestHeaders("set-topic-retention", body));
+
+        if (response.statusCode() / 100 != 2) {
+            throw new EuclidServiceException("ens", "set-topic-retention", response.statusCode(), response.body());
+        }
+
+        return extractSetTopicRetentionResponse(response.body());
+    }
+
+    /**
      * Subscribes an EQS queue to a topic using the default "SQS" delivery protocol.
      *
      * @param sourceErn the ERN of the topic messages are published to
@@ -672,7 +769,21 @@ public final class EuclidEns implements TokenRefreshable, SigningSchemeSelectabl
         JsonNode root = OBJECT_MAPPER.readTree(responseBody);
         return GetTopicMetadataResponse.builder().region(textOrNull(root, "region")).accountId(textOrNull(root, "accountId"))
                 .owner(textOrNull(root, "owner")).nameSpace(textOrNull(root, "nameSpace")).name(textOrNull(root, "name"))
-                .ern(textOrNull(root, "ern")).size(root.path("size").asLong(0)).messages(root.path("messages").asLong(0)).build();
+                .ern(textOrNull(root, "ern")).size(root.path("size").asLong(0)).messages(root.path("messages").asLong(0))
+                .status(textOrNull(root, "status")).retentionPeriod(root.path("retentionPeriod").asLong(0))
+                .held(root.path("held").asLong(0)).build();
+    }
+
+    private static TopicStatusResponse extractTopicStatusResponse(String responseBody) throws IOException {
+        JsonNode root = OBJECT_MAPPER.readTree(responseBody);
+        return TopicStatusResponse.builder().ern(textOrNull(root, "ern")).status(textOrNull(root, "status"))
+                .released(root.path("released").asLong(0)).build();
+    }
+
+    private static SetTopicRetentionResponse extractSetTopicRetentionResponse(String responseBody) throws IOException {
+        JsonNode root = OBJECT_MAPPER.readTree(responseBody);
+        return SetTopicRetentionResponse.builder().ern(textOrNull(root, "ern"))
+                .retentionPeriod(root.path("retentionPeriod").asLong(0)).build();
     }
 
     private static PublishMessageResponse extractPublishMessageResponse(String responseBody) throws IOException {
@@ -843,6 +954,8 @@ public final class EuclidEns implements TokenRefreshable, SigningSchemeSelectabl
                         topicNode.path("size").asLong(0),
                         topicNode.path("messages").asLong(0),
                         topicNode.path("maxMessageLength").asLong(1024 * 1024),
+                        textOrNull(topicNode, "status"),
+                        topicNode.path("retentionPeriod").asLong(0),
                         textOrNull(topicNode, "created"),
                         textOrNull(topicNode, "modified")));
             }
