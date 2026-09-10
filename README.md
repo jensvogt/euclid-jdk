@@ -58,6 +58,48 @@ service and put back with `stopQueue`/`startQueue`, have its default visibility
 timeout changed with `setQueueVisibility`, and a dead letter queue drained back
 onto the queues its messages came from with `redriveDlq`.
 
+### Topics
+
+ENS fans a published message out to everything subscribed to the topic, at publish
+time - where a queue message is consumed and gone, what stays behind on a topic is a
+record of what was sent:
+
+```java
+EuclidEns ens = session.ens();
+
+String ern = ens.createTopic("orders").ern();
+ens.subscribe(ern, queueErn);
+
+ens.publishMessage(ern, "{\"orderId\":\"4711\"}");
+```
+
+A topic can be told to hold what arrives instead of handing it over, which is what a
+subscriber being redeployed or a downstream system taken down for the evening calls
+for. A stopped topic still accepts and stores what is published to it - it simply
+does not fan it out - and starting it again delivers the backlog, oldest first,
+before the call returns:
+
+```java
+ens.stopTopic(ern);
+// ... the subscriber is redeployed; publishes keep arriving and are held
+
+TopicStatusResponse started = ens.startTopic(ern);
+System.out.println(started.released() + " held messages delivered");
+```
+
+`getTopicMetadata(ern)` reports `status()` and, while stopped, `held()` - how much is
+waiting. A start interrupted halfway through has delivered a prefix of the backlog
+rather than none of it, so running it again picks up where it stopped.
+
+How long a topic keeps what is published to it is `setTopicRetention(ern, seconds)`;
+zero puts it back on the installation default and keeps it there as that changes,
+rather than freezing a copy of today's value. It applies to messages published
+afterwards - the ones already stored keep the expiry they were given.
+
+Other supported operations include `listTopics`, `getTopicErn`, `listMessages`,
+`getMessageCount`, `purgeTopic`, `purgeAllTopics`, `listSubscriptions`, and topic
+tagging with `addTopicTag`/`setTopicTag`/`deleteTopicTag`.
+
 ### Events
 
 Rather than polling for changes, an application can be called when they happen. A

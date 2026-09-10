@@ -16,7 +16,9 @@ import de.jensvogt.euclid.dto.ens.ListMessagesResponse;
 import de.jensvogt.euclid.dto.ens.ListSubscriptionsResponse;
 import de.jensvogt.euclid.dto.ens.ListTopicsResponse;
 import de.jensvogt.euclid.dto.ens.PublishMessageResponse;
+import de.jensvogt.euclid.dto.ens.SetTopicRetentionResponse;
 import de.jensvogt.euclid.dto.ens.SubscribeResponse;
+import de.jensvogt.euclid.dto.ens.TopicStatusResponse;
 import de.jensvogt.euclid.dto.ens.model.Topic;
 import de.jensvogt.euclid.exception.EuclidServiceException;
 import org.junit.jupiter.api.AfterEach;
@@ -32,6 +34,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -588,6 +591,151 @@ class EuclidEnsTest {
 
         assertBodyContains(bodyByAction.get("list-topics"), "\"sortDirection\":\"asc\"");
         assertBodyContains(bodyByAction.get("list-messages"), "\"sortDirection\":\"asc\"");
+    }
+
+    // Stopping is a way of holding what arrives, not of losing it: the topic keeps accepting
+    // publishes and simply stops fanning them out.
+    @Test
+    void stopTopicRecordsTheStatusAndReleasesNothing() throws Exception {
+        AtomicReference<SignableRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(captureRequest(exchange));
+            sendResponse(exchange, 200, "{\"ern\":\"topic-ern\",\"status\":\"STOPPED\",\"released\":0}");
+        });
+
+        TopicStatusResponse response = newClient().stopTopic("topic-ern");
+
+        assertEquals("stop-topic", received.get().header("x-euclid-action"));
+        assertBodyContains(received.get().body(), "\"ern\":\"topic-ern\"");
+        assertEquals("topic-ern", response.ern());
+        assertEquals("STOPPED", response.status());
+        assertEquals(0, response.released());
+    }
+
+    // The other half of the pair: starting hands over the backlog before it answers, and says how
+    // much went out - a start that delivered nothing would make a stop a quiet way of losing
+    // messages.
+    @Test
+    void startTopicReportsTheHeldMessagesItDelivered() throws Exception {
+        AtomicReference<SignableRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(captureRequest(exchange));
+            sendResponse(exchange, 200, "{\"ern\":\"topic-ern\",\"status\":\"RUNNING\",\"released\":1200}");
+        });
+
+        TopicStatusResponse response = newClient().startTopic("topic-ern");
+
+        assertEquals("start-topic", received.get().header("x-euclid-action"));
+        assertBodyContains(received.get().body(), "\"ern\":\"topic-ern\"");
+        assertEquals("RUNNING", response.status());
+        assertEquals(1200, response.released());
+    }
+
+    @Test
+    void startTopicSurfacesATopicThatDoesNotExist() throws Exception {
+        server = startServer(exchange -> {
+            exchange.getRequestBody().readAllBytes();
+            sendResponse(exchange, 404, "{\"error\":\"Topic not found, ern: nope\"}");
+        });
+
+        EuclidServiceException exception = assertThrows(EuclidServiceException.class,
+                () -> newClient().startTopic("nope"));
+
+        assertEquals("ens", exception.service());
+        assertEquals("start-topic", exception.action());
+        assertEquals(404, exception.statusCode());
+    }
+
+    @Test
+    void setTopicRetentionSendsTheErnAndPeriod() throws Exception {
+        AtomicReference<SignableRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(captureRequest(exchange));
+            sendResponse(exchange, 200, "{\"ern\":\"topic-ern\",\"retentionPeriod\":86400}");
+        });
+
+        SetTopicRetentionResponse response = newClient().setTopicRetention("topic-ern", 86400);
+
+        assertEquals("set-topic-retention", received.get().header("x-euclid-action"));
+        assertBodyContains(received.get().body(), "\"ern\":\"topic-ern\"", "\"retentionPeriod\":86400");
+        assertEquals(86400, response.retentionPeriod());
+    }
+
+    // Zero is not "keep nothing": it puts the topic back on the installation default and keeps it
+    // there as that changes, so it has to reach the server rather than being treated as unset.
+    @Test
+    void setTopicRetentionSendsZeroToFollowTheInstallationDefault() throws Exception {
+        AtomicReference<SignableRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(captureRequest(exchange));
+            sendResponse(exchange, 200, "{\"ern\":\"topic-ern\",\"retentionPeriod\":0}");
+        });
+
+        assertEquals(0, newClient().setTopicRetention("topic-ern", 0).retentionPeriod());
+        assertBodyContains(received.get().body(), "\"retentionPeriod\":0");
+    }
+
+    @Test
+    void setTopicRetentionSurfacesANegativePeriod() throws Exception {
+        server = startServer(exchange -> {
+            exchange.getRequestBody().readAllBytes();
+            sendResponse(exchange, 400, "{\"error\":\"retentionPeriod cannot be negative\"}");
+        });
+
+        EuclidServiceException exception = assertThrows(EuclidServiceException.class,
+                () -> newClient().setTopicRetention("topic-ern", -1));
+
+        assertEquals("set-topic-retention", exception.action());
+        assertEquals(400, exception.statusCode());
+    }
+
+    // A stopped topic reports what it is holding; a running one reports zero, because there is
+    // nothing being held then and the count is not one the server pays for.
+    @Test
+    void getTopicMetadataReportsStatusRetentionAndHeld() throws Exception {
+        server = startServer(exchange -> {
+            exchange.getRequestBody().readAllBytes();
+            sendResponse(exchange, 200, "{\"region\":\"eu-central-1\",\"accountId\":\"863459426936\","
+                    + "\"owner\":\"alice\",\"nameSpace\":\"prod\",\"name\":\"orders\",\"ern\":\"topic-ern\","
+                    + "\"size\":42,\"messages\":7,\"status\":\"STOPPED\",\"retentionPeriod\":1209600,\"held\":5}");
+        });
+
+        GetTopicMetadataResponse response = newClient().getTopicMetadata("topic-ern");
+
+        assertEquals("STOPPED", response.status());
+        assertEquals(1209600, response.retentionPeriod());
+        assertEquals(5, response.held());
+    }
+
+    @Test
+    void listTopicsCarriesStatusAndRetention() throws Exception {
+        server = startServer(exchange -> {
+            exchange.getRequestBody().readAllBytes();
+            sendResponse(exchange, 200, "{\"topics\":[{\"name\":\"orders\",\"owner\":\"alice\","
+                    + "\"ern\":\"topic-ern\",\"tags\":{},\"size\":100,\"messages\":3,"
+                    + "\"maxMessageLength\":1048576,\"status\":\"STOPPED\",\"retentionPeriod\":604800,"
+                    + "\"created\":\"2026-01-01\",\"modified\":\"2026-01-02\"}],\"total\":1}");
+        });
+
+        Topic topic = newClient().listTopics().topics().getFirst();
+
+        assertEquals("STOPPED", topic.status());
+        assertEquals(604800, topic.retentionPeriod());
+    }
+
+    // A topic written before either field existed answers without them, and has to stay readable:
+    // an absent retention period is zero, which is what "follow the installation default" is.
+    @Test
+    void aTopicWithoutStatusOrRetentionIsStillReadable() throws Exception {
+        server = startServer(exchange -> {
+            exchange.getRequestBody().readAllBytes();
+            sendResponse(exchange, 200, "{\"topics\":[{\"name\":\"orders\",\"ern\":\"topic-ern\"}],\"total\":1}");
+        });
+
+        Topic topic = newClient().listTopics().topics().getFirst();
+
+        assertNull(topic.status());
+        assertEquals(0, topic.retentionPeriod());
     }
 
     private EuclidEns newClient() {

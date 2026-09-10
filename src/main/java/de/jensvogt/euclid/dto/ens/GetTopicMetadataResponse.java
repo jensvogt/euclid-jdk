@@ -11,9 +11,18 @@ package de.jensvogt.euclid.dto.ens;
  * @param ern       the topic's ERN
  * @param size      total size in bytes of all messages currently in the topic
  * @param messages  number of messages currently in the topic
+ * @param status    whether the topic hands what is published to it to its subscribers,
+ *                  {@code "RUNNING"} or {@code "STOPPED"}
+ * @param retentionPeriod how long a message published to this topic is kept, in seconds. Zero means
+ *                  the topic follows the installation default as that changes, rather than having
+ *                  frozen a copy of whatever it was on the day the topic was created
+ * @param held      how many messages are waiting to be handed over when the topic is started again.
+ *                  Zero while the topic is running - there is nothing being held then, so the count
+ *                  is not one the server pays for
  */
 public record GetTopicMetadataResponse(String region, String accountId, String owner, String nameSpace, String name,
-                                        String ern, long size, long messages) {
+                                        String ern, long size, long messages, String status, long retentionPeriod,
+                                        long held) {
 
     /**
      * Creates a new instance of the Builder for constructing a GetTopicMetadataResponse object.
@@ -74,6 +83,21 @@ public record GetTopicMetadataResponse(String region, String accountId, String o
          * Number of messages currently in the topic.
          */
         private long messages;
+
+        /**
+         * Whether the topic hands what is published to it to its subscribers.
+         */
+        private String status;
+
+        /**
+         * How long a message published to this topic is kept, in seconds.
+         */
+        private long retentionPeriod;
+
+        /**
+         * How many messages are waiting to be handed over when the topic is started again.
+         */
+        private long held;
 
         /**
          * Sets the region the topic lives in.
@@ -164,12 +188,46 @@ public record GetTopicMetadataResponse(String region, String accountId, String o
         }
 
         /**
+         * Sets whether the topic hands what is published to it to its subscribers.
+         *
+         * @param status {@code "RUNNING"} or {@code "STOPPED"}
+         * @return the builder instance
+         */
+        public Builder status(String status) {
+            this.status = status;
+            return this;
+        }
+
+        /**
+         * Sets how long a message published to this topic is kept.
+         *
+         * @param retentionPeriod the retention period in seconds
+         * @return the builder instance
+         */
+        public Builder retentionPeriod(long retentionPeriod) {
+            this.retentionPeriod = retentionPeriod;
+            return this;
+        }
+
+        /**
+         * Sets how many messages are waiting to be handed over when the topic is started again.
+         *
+         * @param held the number of held messages
+         * @return the builder instance
+         */
+        public Builder held(long held) {
+            this.held = held;
+            return this;
+        }
+
+        /**
          * Builds and returns a new instance of GetTopicMetadataResponse using the properties set on the Builder.
          *
          * @return a new GetTopicMetadataResponse instance.
          */
         public GetTopicMetadataResponse build() {
-            return new GetTopicMetadataResponse(region, accountId, owner, nameSpace, name, ern, size, messages);
+            return new GetTopicMetadataResponse(region, accountId, owner, nameSpace, name, ern, size, messages, status,
+                    retentionPeriod, held);
         }
     }
 }
