@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.1.29](https://github.com/jensvogt/euclid-jdk/compare/euclid-jdk-v0.1.28...euclid-jdk-v0.1.29) (2026-09-10)
+
+
+### Features
+
+* add EAG and EKV modules ([2fef582](https://github.com/jensvogt/euclid-jdk/commit/2fef582f701c5c847b42739b15574246b32cb4e8))
+* add EAG and EKV modules ([5953869](https://github.com/jensvogt/euclid-jdk/commit/595386950be29493fd67eb34eb0880b3ba595361))
+
 ## [0.1.28](https://github.com/jensvogt/euclid-jdk/compare/euclid-jdk-v0.1.27...euclid-jdk-v0.1.28) (2026-09-08)
 
 
