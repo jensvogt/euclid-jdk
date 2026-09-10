@@ -58,11 +58,11 @@ service and put back with `stopQueue`/`startQueue`, have its default visibility
 timeout changed with `setQueueVisibility`, and a dead letter queue drained back
 onto the queues its messages came from with `redriveDlq`.
 
-### Topics
+### ENS topics
 
 ENS fans a published message out to everything subscribed to the topic, at publish
-time - where a queue message is consumed and gone, what stays behind on a topic is a
-record of what was sent:
+time. Where a queue message is consumed and gone, a topic is never consumed from -
+what stays behind on it is a record of what was sent:
 
 ```java
 EuclidEns ens = session.ens();
@@ -72,6 +72,38 @@ ens.subscribe(ern, queueErn);
 
 ens.publishMessage(ern, "{\"orderId\":\"4711\"}");
 ```
+
+`createTopic(name, maxMessageLength)` caps how large a single message may be; the
+default is 1 MiB. `deleteTopic(ern)` removes the topic, `purgeTopic(ern)` only what
+is stored on it.
+
+#### Publishing messages
+
+A message can carry typed attributes, and a priority for the queue messages it fans
+out into:
+
+```java
+ens.publishMessage(ern, "{\"orderId\":\"4711\"}",
+        Map.of("kind", new Variant("string", "order")), "HIGH");
+```
+
+The priority belongs to those queue messages rather than to the topic message - a
+topic is not consumed from, so a priority means nothing on it. It is carried so that
+a delivery crossing a topic is still worth what it was sent as, instead of arriving
+on the other side at `MIDDLE`.
+
+`listMessages(topicErn)` reads what a topic has stored without consuming anything,
+`getMessageCount(ern)` counts it, and a stored message's attributes can be read and
+changed afterwards with `getMessageAttribute`/`setMessageAttribute`.
+
+#### Subscriptions
+
+`subscribe(topicErn, queueErn)` uses the `"SQS"` delivery protocol, which is the only
+one there is for now, so the target is an EQS queue; the three-argument overload names
+the protocol explicitly. `listSubscriptions(topicErn)` reports what is attached and
+`unsubscribe(subscriptionErn)` detaches one.
+
+#### Holding delivery
 
 A topic can be told to hold what arrives instead of handing it over, which is what a
 subscriber being redeployed or a downstream system taken down for the evening calls
@@ -91,14 +123,16 @@ System.out.println(started.released() + " held messages delivered");
 waiting. A start interrupted halfway through has delivered a prefix of the backlog
 rather than none of it, so running it again picks up where it stopped.
 
+#### Retention
+
 How long a topic keeps what is published to it is `setTopicRetention(ern, seconds)`;
 zero puts it back on the installation default and keeps it there as that changes,
 rather than freezing a copy of today's value. It applies to messages published
-afterwards - the ones already stored keep the expiry they were given.
+afterwards - the ones already stored keep the expiry they were given, because that is
+what the database's TTL index acts on.
 
-Other supported operations include `listTopics`, `getTopicErn`, `listMessages`,
-`getMessageCount`, `purgeTopic`, `purgeAllTopics`, `listSubscriptions`, and topic
-tagging with `addTopicTag`/`setTopicTag`/`deleteTopicTag`.
+Other supported operations include `listTopics`, `getTopicErn`, `purgeAllTopics`, and
+topic tagging with `addTopicTag`/`setTopicTag`/`deleteTopicTag`.
 
 ### Events
 
