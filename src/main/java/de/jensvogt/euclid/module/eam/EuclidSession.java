@@ -34,9 +34,11 @@ import de.jensvogt.euclid.dto.eam.model.AccountGrant;
 import de.jensvogt.euclid.dto.eam.model.Namespace;
 import de.jensvogt.euclid.dto.eam.model.User;
 import de.jensvogt.euclid.dto.eam.model.UserGroup;
+import de.jensvogt.euclid.module.eag.EuclidEag;
 import de.jensvogt.euclid.module.eap.EuclidEap;
 import de.jensvogt.euclid.module.ees.EuclidEes;
 import de.jensvogt.euclid.module.ekm.EuclidEkm;
+import de.jensvogt.euclid.module.ekv.EuclidEkv;
 import de.jensvogt.euclid.module.ens.EuclidEns;
 import de.jensvogt.euclid.module.eqs.EuclidEqs;
 import de.jensvogt.euclid.module.esm.EuclidEsm;
@@ -210,6 +212,37 @@ public record EuclidSession(String token, String userId, String accountId, Strin
      */
     public EuclidEss ess() {
         return new EuclidEss(baseUrl, token, region, accountId, userId, accessKeyId, secretAccessKey, caCertPath, nameSpace);
+    }
+
+    /**
+     * EKV (key/value store) operations for this session - tables of items, looked up by key and
+     * queried by sort-key range. Requests are signed with SigV4 using
+     * {@link #accessKeyId()}/{@link #secretAccessKey()} when both are present, falling back to
+     * the bearer token otherwise - mirroring how euclid-cli authenticates service calls.
+     * <p>
+     * Tables are looked up per account and namespace, so a session scoped to a namespace reaches
+     * that namespace's tables and no others - and a table created here is created into it.
+     *
+     * @return EuclidEkv instance
+     */
+    public EuclidEkv ekv() {
+        return new EuclidEkv(baseUrl, token, region, accountId, userId, accessKeyId, secretAccessKey, caCertPath, nameSpace);
+    }
+
+    /**
+     * EAG (API gateway) operations for this session - the routes the gateway publishes to the
+     * outside world, and the listeners it publishes them on. Requests are signed with SigV4 using
+     * {@link #accessKeyId()}/{@link #secretAccessKey()} when both are present, falling back to
+     * the bearer token otherwise - mirroring how euclid-cli authenticates service calls.
+     * <p>
+     * Every EAG action decides what is exposed to the outside world and on what terms, so every one
+     * of them is administrator-only server-side: a session whose {@link #isAdmin()} is false gets
+     * HTTP 403 from all of them.
+     *
+     * @return EuclidEag instance
+     */
+    public EuclidEag eag() {
+        return new EuclidEag(baseUrl, token, region, accountId, userId, accessKeyId, secretAccessKey, caCertPath, nameSpace);
     }
 
     /**

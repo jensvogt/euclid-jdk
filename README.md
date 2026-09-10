@@ -119,6 +119,104 @@ takes a request rather than positional arguments because it distinguishes an
 absent field from an empty one: leaving the description null leaves the stored
 description alone, while passing `""` clears it.
 
+### The key/value store
+
+EKV holds tables of items: a record identified by a **partition key**, optionally ordered
+within that partition by a **sort key**. It is for the data that has no business being an object in
+a bucket - a record read one at a time by name and updated in place, rather than a file written
+once and listed by prefix:
+
+```java
+EuclidEkv ekv = session.ekv();
+
+ekv.createTable("suppliers", "supplierId");
+
+ekv.putItem("suppliers", Map.of("supplierId", "4711", "name", "Acme"));
+
+Item supplier = ekv.getItem("suppliers", Map.of("supplierId", "4711"));
+System.out.println(supplier.get("name"));
+```
+
+A sort key makes a partition readable as a range, which is the only reason to declare one:
+
+```java
+ekv.createTable(CreateTableRequest.builder().name("deliveries")
+        .partitionKey("supplierId").sortKey("deliveredAt").build());
+
+QueryResponse response = ekv.query("deliveries", "4711", SortOperator.BEGINS_WITH, "2026-09");
+```
+
+Items are ordinary JSON objects, carried here as `Map<String, Object>`, nested as deeply as you
+like, with no type annotations to write and none to read back - and the types survive the round
+trip: a number comes back a number, `3` does not become `3.0`, and an empty object stays an empty
+object. Keys are typed when the table is created (`KeyType.STRING`, `NUMBER` or `BINARY`), which is
+what makes a range query mean what it should: a number sort key orders 2, 9, 10, 100 rather than
+"10" before "9".
+
+Four things are worth knowing before you model against it:
+
+- **`putItem` replaces**, it does not merge. Writing `{"supplierId":"4711","name":"x"}` over a
+  fuller record leaves that record with two attributes. Read-modify-write until `updateItem` exists.
+- **Attribute names** may not be empty, start with `$` or contain `.` - refused at the door rather
+  than escaped, so what you read back is exactly what you wrote.
+- **`_created` and `_modified`** are added to every item that is read, and lifted back out into
+  `Item.created()` and `Item.modified()` so a read-modify-write does not store them. An attribute of
+  the same name is shadowed.
+- **A missing item is a 404**, and so an `EuclidServiceException` rather than a null: "there is no
+  such item" and "here is an item with nothing in it" are different, and a caller should not have to
+  tell them apart.
+
+`listTables`, `describeTable`, `deleteTable`, `deleteItem` and `scan` round it out. Paging is by
+page size and index, as everywhere else in euclid, rather than by cursor.
+
+### The API gateway
+
+EAG is a second, quite different listener from the one this library otherwise talks to. Where
+euclid's own gateway speaks euclid's protocol - a target, an action and a JSON body - the API
+gateway publishes paths to the outside world and proxies them to the applications EAP runs:
+
+```java
+EuclidEag eag = session.eag();
+
+eag.createRoute("suppliers", "/suppliers", "supplier-api");
+
+for (Route route : eag.listRoutes("/supp")) {
+    System.out.println(route.path() + " -> " + route.applicationId());
+}
+```
+
+A caller asks for `/suppliers/searchById?id=123` and has no idea which application answers it - that
+is what a route says, and it is why the application's name never appears in the URL. Matching is by
+longest path prefix on whole segments, so `/suppliers` carries everything beneath it but never
+claims `/suppliers-intern`, and two routes may share a path only if their methods do not overlap.
+
+A route can also reach one action of a euclid module instead of an application, which is the way in
+for a front end that has to log in before it can call anything - otherwise it would talk to the API
+gateway for the application and to euclid's own gateway for its credentials: two ports, two
+origins, and CORS between them:
+
+```java
+eag.createModuleRoute("euclid-login", "/euclid/login", "eam", "login");
+```
+
+What a caller must present is decided per route, so one application can serve both a public read
+and an operation only a euclid principal may perform:
+
+```java
+eag.createRoute(CreateRouteRequest.builder().routeId("suppliers-write").path("/suppliers")
+        .applicationId("supplier-api").methods(List.of("POST", "PUT", "DELETE"))
+        .authentication(RouteAuthentication.EUCLID).build());
+```
+
+`setRouteActive(routeId, false)` takes a route out of service without deleting it, so it comes back
+exactly as it was; `updateRoute` changes only the fields it names, leaving the rest alone.
+`listListeners()` reports which port speaks what, and for an HTTPS listener the certificate it
+serves - including whether euclid minted it itself, which is what decides whether the port works
+for a caller who has not been given it.
+
+Every EAG action decides what is exposed to the outside world and on what terms, so all of them are
+administrator-only: an ordinary principal gets HTTP 403.
+
 ### Tokens in a deployed application
 
 An application euclid deploys is not handed a token. It is handed the name of a
