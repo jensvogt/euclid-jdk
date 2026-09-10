@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.1.30](https://github.com/jensvogt/euclid-jdk/compare/euclid-jdk-v0.1.29...euclid-jdk-v0.1.30) (2026-09-10)
+
+
+### Bug Fixes
+
+* sync with backend changes, ENS start/stop Topic, ENS set retention ([5d55fed](https://github.com/jensvogt/euclid-jdk/commit/5d55fed51d17e7b3f0a3bb45c1b248bd70aa1f1e))
+* sync with backend changes, ENS start/stop Topic, ENS set retention ([54c2c63](https://github.com/jensvogt/euclid-jdk/commit/54c2c63ae162625e4663b5ff05ca9e7e366a981b))
+
 ## [0.1.29](https://github.com/jensvogt/euclid-jdk/compare/euclid-jdk-v0.1.28...euclid-jdk-v0.1.29) (2026-09-10)
 
 
