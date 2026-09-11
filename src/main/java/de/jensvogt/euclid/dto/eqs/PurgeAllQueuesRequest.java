@@ -5,8 +5,10 @@ package de.jensvogt.euclid.dto.eqs;
  *
  * @param region    the region whose queues are purged
  * @param accountId ID of the account whose queues are purged
+ * @param nameSpace the namespace to restrict the purge to; empty purges every namespace of the
+ *                  account, which is what this action did before namespaces were part of it
  */
-public record PurgeAllQueuesRequest(String region, String accountId) {
+public record PurgeAllQueuesRequest(String region, String accountId, String nameSpace) {
 
     /**
      * Creates a new instance of the Builder for constructing a PurgeAllQueuesRequest object.
@@ -38,6 +40,11 @@ public record PurgeAllQueuesRequest(String region, String accountId) {
         private String accountId;
 
         /**
+         * The namespace to restrict the purge to; empty purges every namespace of the account.
+         */
+        private String nameSpace = "";
+
+        /**
          * Sets the region whose queues are purged.
          *
          * @param region the region
@@ -60,12 +67,23 @@ public record PurgeAllQueuesRequest(String region, String accountId) {
         }
 
         /**
+         * Sets the namespace to restrict the purge to.
+         *
+         * @param nameSpace the namespace, or empty to purge every namespace of the account
+         * @return the builder instance
+         */
+        public Builder nameSpace(String nameSpace) {
+            this.nameSpace = nameSpace;
+            return this;
+        }
+
+        /**
          * Builds and returns a new instance of PurgeAllQueuesRequest using the properties set on the Builder.
          *
-         * @return a new PurgeAllQueuesRequest instance populated with the region and account id values.
+         * @return a new PurgeAllQueuesRequest instance populated with the region, account id and namespace values.
          */
         public PurgeAllQueuesRequest build() {
-            return new PurgeAllQueuesRequest(region, accountId);
+            return new PurgeAllQueuesRequest(region, accountId, nameSpace);
         }
     }
 }

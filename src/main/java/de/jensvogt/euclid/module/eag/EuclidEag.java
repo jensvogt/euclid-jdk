@@ -190,7 +190,7 @@ public final class EuclidEag implements TokenRefreshable, SigningSchemeSelectabl
      * Publishes a path on the gateway and sends everything beneath it to an application, for every
      * HTTP method and without requiring a credential.
      *
-     * @param routeId       the name to manage this route under, unique across the installation
+     * @param routeId       the name to manage this route under, unique within its account and namespace
      * @param path          the path prefix to publish, e.g. {@code /resource}
      * @param applicationId the application requests are sent to, which has to exist already
      * @return the route as it was stored
@@ -232,6 +232,18 @@ public final class EuclidEag implements TokenRefreshable, SigningSchemeSelectabl
      * path and one of these methods. An application that does not exist is refused with 404 rather
      * than becoming a route that answers 503 for every request - which looks like an application
      * that is down rather than one that was never deployed.
+     * <p>
+     * The two conflicts are scoped differently, deliberately. A <em>route ID</em> belongs to an
+     * account and a namespace, so two of them may each manage a route called {@code "suppliers"}.
+     * A <em>path</em> is claimed from whoever asks for it next, installation-wide: a listener is
+     * bound to a namespace and knows nothing about accounts, so two accounts publishing the same
+     * path in one namespace would leave the gateway picking between them by sort order. That is
+     * what the 409 refuses, and it means a path can be taken by an account whose routes this
+     * client cannot see.
+     * <p>
+     * An {@code applicationId} is looked for in the route's own account and namespace - the pair
+     * the gateway will later look in for the application's instances - so an application of that
+     * name deployed elsewhere is not the one this route would reach.
      *
      * @param request the route to publish
      * @return the route as it was stored
@@ -278,7 +290,11 @@ public final class EuclidEag implements TokenRefreshable, SigningSchemeSelectabl
     }
 
     /**
-     * Lists every route the gateway knows about.
+     * Lists the routes of this client's account and namespace.
+     * <p>
+     * Not every route the gateway serves: a listener carries the routes of its own namespace, and
+     * every other action here resolves a route ID in the namespace the request was made in, so a
+     * listing that crossed namespaces would show routes this client cannot address.
      *
      * @return the routes, in no particular order
      * @throws IOException          if an I/O error occurs during the operation

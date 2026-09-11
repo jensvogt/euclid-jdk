@@ -19,8 +19,9 @@ import java.util.List;
  * @param pasvMin    FTP only: lowest passive data port
  * @param pasvMax    FTP only: highest passive data port
  */
-public record UpdateServerRequest(String serverId, String address, Long port, String bucket, List<String> userIds,
-                                  List<String> userGroups, String hostKey, Long pasvMin, Long pasvMax) {
+public record UpdateServerRequest(String serverId, String address, Long port, String bucket, String homeDirectory,
+                                  List<String> userIds, List<String> userGroups, List<String> directories,
+                                  String hostKey, Long pasvMin, Long pasvMax) {
 
     /**
      * Creates a new instance of the Builder for constructing an UpdateServerRequest object.
@@ -63,6 +64,11 @@ public record UpdateServerRequest(String serverId, String address, Long port, St
         private String bucket;
 
         /**
+         * Key prefix template each client's session is rooted at.
+         */
+        private String homeDirectory;
+
+        /**
          * EAM user IDs allowed to log in, replacing the current list.
          */
         private List<String> userIds;
@@ -71,6 +77,11 @@ public record UpdateServerRequest(String serverId, String address, Long port, St
          * EAM user groups whose members may log in, replacing the current list.
          */
         private List<String> userGroups;
+
+        /**
+         * Directories every session should find under its home, created at login.
+         */
+        private List<String> directories;
 
         /**
          * SFTP only: private SSH host key file.
@@ -186,13 +197,37 @@ public record UpdateServerRequest(String serverId, String address, Long port, St
             return this;
         }
 
+
+        /**
+         * Sets the key prefix template each client's session is rooted at.
+         *
+         * @param homeDirectory the template, e.g. {@code "{user}"}, or empty for the bucket root
+         * @return the builder instance
+         */
+        public Builder homeDirectory(String homeDirectory) {
+            this.homeDirectory = homeDirectory;
+            return this;
+        }
+
+        /**
+         * Sets the directories every session should find under its home.
+         *
+         * @param directories paths relative to the home prefix, created at login
+         * @return the builder instance
+         */
+        public Builder directories(List<String> directories) {
+            this.directories = directories;
+            return this;
+        }
+
         /**
          * Builds and returns a new instance of UpdateServerRequest using the properties set on the Builder.
          *
          * @return a new UpdateServerRequest instance.
          */
         public UpdateServerRequest build() {
-            return new UpdateServerRequest(serverId, address, port, bucket, userIds, userGroups, hostKey, pasvMin, pasvMax);
+            return new UpdateServerRequest(serverId, address, port, bucket, homeDirectory, userIds, userGroups,
+                    directories, hostKey, pasvMin, pasvMax);
         }
     }
 }

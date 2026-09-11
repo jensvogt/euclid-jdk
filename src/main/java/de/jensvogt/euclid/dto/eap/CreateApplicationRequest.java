@@ -10,7 +10,7 @@ import java.util.Map;
  * Fields left unset are omitted from the request rather than sent as null, so the server applies
  * its own default for them - which is why the optional numbers are boxed types.
  *
- * @param applicationId  name identifying the application, unique across the installation
+ * @param applicationId  name identifying the application, unique within its account and namespace
  * @param runtime        how the artifact is executed: {@code "JAVA"}, {@code "PYTHON"}, {@code "NODEJS"} or {@code "BINARY"}
  * @param bucket         name of the ESM bucket holding the artifact
  * @param artifact       key of the artifact object within that bucket
@@ -52,7 +52,7 @@ public record CreateApplicationRequest(String applicationId, String runtime, Str
         }
 
         /**
-         * Name identifying the application, unique across the installation.
+         * Name identifying the application, unique within its account and namespace.
          */
         private String applicationId;
 
@@ -122,9 +122,9 @@ public record CreateApplicationRequest(String applicationId, String runtime, Str
         private Long readyTimeoutMs;
 
         /**
-         * Sets name identifying the application, unique across the installation.
+         * Sets name identifying the application, unique within its account and namespace.
          *
-         * @param applicationId name identifying the application, unique across the installation
+         * @param applicationId name identifying the application, unique within its account and namespace
          * @return the builder instance
          */
         public Builder applicationId(String applicationId) {

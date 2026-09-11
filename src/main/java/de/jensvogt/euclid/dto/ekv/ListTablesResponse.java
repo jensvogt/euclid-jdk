@@ -7,11 +7,18 @@ import java.util.List;
 /**
  * Response carrying a page of tables and how many the account has.
  *
+ * <p>One namespace's tables, not the account's: a listing that crossed namespaces would show a
+ * caller tables they cannot address, since every other EKV action resolves a table name in the
+ * namespace the request was made in.
+ *
  * <p>Each description carries an item count, which the server counts rather than looks up, so a
  * listing of many tables is not free.
  *
  * @param tables the tables on the requested page
- * @param total  how many tables the account has, across every page
+ * @param total  how many tables this account and namespace hold, across every page. Scoped to the
+ *               namespace rather than the account, because every other action resolves a table name
+ *               in the namespace the request was made in - a count that crossed namespaces would
+ *               not match what a caller can reach
  */
 public record ListTablesResponse(List<TableDescription> tables, long total) {
 
@@ -41,7 +48,7 @@ public record ListTablesResponse(List<TableDescription> tables, long total) {
         private List<TableDescription> tables = List.of();
 
         /**
-         * How many tables the account has, across every page.
+         * How many tables this account and namespace hold, across every page.
          */
         private long total;
 
@@ -57,7 +64,7 @@ public record ListTablesResponse(List<TableDescription> tables, long total) {
         }
 
         /**
-         * Sets how many tables the account has in total.
+         * Sets how many tables this account and namespace hold in total.
          *
          * @param total the total count
          * @return the builder instance

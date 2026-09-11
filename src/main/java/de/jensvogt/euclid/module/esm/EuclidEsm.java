@@ -388,6 +388,12 @@ public final class EuclidEsm implements TokenRefreshable, SigningSchemeSelectabl
 
     /**
      * Retrieves the bucket ERN (Entity Resource Name) for the given bucket name.
+     * <p>
+     * The name is resolved in this client's own account and namespace - the same pair
+     * {@link #createBucket} built the ERN from. A bare name means "my bucket of that name" and
+     * cannot reach into another account's or another namespace's bucket of the same name, so two
+     * namespaces may each have an {@code "inbox"} and each will get its own back. A name that
+     * exists only in some other namespace is HTTP 404 here.
      *
      * @param name The name of the bucket for which the ERN is being requested.
      * @return An instance of {@code GetBucketErnResponse} containing the ERN of the specified bucket.

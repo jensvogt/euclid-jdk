@@ -285,6 +285,38 @@ class EuclidEqsTest {
         assertBodyContains(received.get().body(), "\"region\":\"us-east-1\"", "\"accountId\":\"111111111111\"");
     }
 
+    // The account is what this action has always been scoped to, so the forms that name no
+    // namespace have to keep purging every one of them rather than quietly narrowing to the
+    // client's own.
+    @Test
+    void purgeAllQueuesWithoutANamespacePurgesEveryOne() throws Exception {
+        AtomicReference<SignableRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(captureRequest(exchange));
+            sendResponse(exchange, 200, "{}");
+        });
+
+        new EuclidEqs(baseUrl(), "test-token", "eu-central-1", "863459426936", "alice", null, null, null, "prod")
+                .purgeAllQueues();
+
+        assertBodyContains(received.get().body(), "\"nameSpace\":\"\"");
+    }
+
+    @Test
+    void purgeAllQueuesCanBeRestrictedToOneNamespace() throws Exception {
+        AtomicReference<SignableRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(captureRequest(exchange));
+            sendResponse(exchange, 200, "{}");
+        });
+
+        newClient().purgeAllQueues("eu-central-1", "863459426936", "development");
+
+        assertEquals("purge-all-queues", received.get().header("x-euclid-action"));
+        assertBodyContains(received.get().body(), "\"region\":\"eu-central-1\"",
+                "\"accountId\":\"863459426936\"", "\"nameSpace\":\"development\"");
+    }
+
     @Test
     void sendMessageWithDefaultsUsesMiddlePriorityAndEmptyAttributes() throws Exception {
         AtomicReference<SignableRequest> received = new AtomicReference<>();

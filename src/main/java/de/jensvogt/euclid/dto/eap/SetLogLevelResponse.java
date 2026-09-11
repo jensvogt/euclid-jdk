@@ -6,7 +6,10 @@ package de.jensvogt.euclid.dto.eap;
  * @param applicationId the ID of the application
  * @param logLevel      the level the application now logs at, canonicalised by the server; empty
  *                      when the override was taken back and the configured default applies again
- * @param channel       the logging channel the level was applied to
+ * @param channel       the logging channel the level was applied to, {@code "application."} followed
+ *                      by the application's {@code runtimeName} - the manager logs an application
+ *                      on what it runs as rather than on what it is defined as, since a log channel
+ *                      is installation-wide and an applicationId is only unique within a namespace
  */
 public record SetLogLevelResponse(String applicationId, String logLevel, String channel) {
 

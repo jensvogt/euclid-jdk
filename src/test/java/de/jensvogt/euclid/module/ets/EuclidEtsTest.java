@@ -188,6 +188,54 @@ class EuclidEtsTest {
     // stay out of the body - sending "userIds":null would be read as an empty list and would
     // silently clear the server's access list.
     @Test
+    void createServerCanSetTheHomeTemplateAndDirectories() throws Exception {
+        AtomicReference<SignableRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(captureRequest(exchange));
+            sendResponse(exchange, 200, serverJson());
+        });
+
+        newClient().createServer(CreateServerRequest.builder()
+                .serverId("sftp-1").port(2222L).bucket("transfer").userIds(List.of("alice"))
+                .homeDirectory("{user}").directories(List.of("incoming/mix", "outgoing")).build());
+
+        assertBodyContains(received.get().body(), "\"homeDirectory\":\"{user}\"",
+                "\"directories\":[\"incoming/mix\",\"outgoing\"]");
+    }
+
+    // Absent means "leave it alone" here as everywhere else in update-server, so an unset home
+    // template must not reach the server and reset it to the bucket root.
+    @Test
+    void updateServerOmitsAnUnsetHomeTemplate() throws Exception {
+        AtomicReference<SignableRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(captureRequest(exchange));
+            sendResponse(exchange, 200, serverJson());
+        });
+
+        newClient().updateServer(UpdateServerRequest.builder().serverId("sftp-1").port(2223L).build());
+
+        String body = received.get().body();
+        assertBodyContains(body, "\"port\":2223");
+        assertFalse(body.contains("homeDirectory"), "an unset home template must not reach the server: " + body);
+        assertFalse(body.contains("directories"), "an unset directory list must not reach the server: " + body);
+    }
+
+    @Test
+    void updateServerCanChangeTheHomeTemplate() throws Exception {
+        AtomicReference<SignableRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(captureRequest(exchange));
+            sendResponse(exchange, 200, serverJson());
+        });
+
+        newClient().updateServer(UpdateServerRequest.builder().serverId("sftp-1")
+                .homeDirectory("").directories(List.of()).build());
+
+        assertBodyContains(received.get().body(), "\"homeDirectory\":\"\"", "\"directories\":[]");
+    }
+
+    @Test
     void updateServerSendsOnlyTheFieldsThatWereSet() throws Exception {
         AtomicReference<SignableRequest> received = new AtomicReference<>();
         server = startServer(exchange -> {
@@ -232,6 +280,68 @@ class EuclidEtsTest {
         assertBodyContains(received.get().body(), "\"prefix\":\"\"");
         assertEquals(1, servers.size());
         assertEquals("sftp-1", servers.getFirst().serverId());
+    }
+
+    // A serverId is only unique within an account and a namespace, so the definition carries the
+    // namespace it belongs to - and the runtime name, which is what euclid actually calls the
+    // process pool, the socket, the log channel and the --transfer-server argument.
+    @Test
+    void aServerCarriesItsNamespaceAndRuntimeName() throws Exception {
+        server = startServer(exchange -> {
+            exchange.getRequestBody().readAllBytes();
+            sendResponse(exchange, 200, serverJson());
+        });
+
+        TransferServer found = newClient().getServer("sftp-1");
+
+        assertEquals("development", found.namespace());
+        assertEquals("sftp-1-2b9d04", found.runtimeName());
+    }
+
+    // A transfer workflow expects a shape - an inbox to deliver into, somewhere feedback comes back
+    // - and the home template is what decides where per-client copies of it end up.
+    @Test
+    void aServerCarriesItsHomeTemplateAndDirectories() throws Exception {
+        server = startServer(exchange -> {
+            exchange.getRequestBody().readAllBytes();
+            sendResponse(exchange, 200, serverJson());
+        });
+
+        TransferServer found = newClient().getServer("sftp-1");
+
+        assertEquals("{user}", found.homeDirectory());
+        assertEquals(List.of("incoming/mix", "outgoing"), found.directories());
+    }
+
+    // A server defined before either existed answers without them; empty means the bucket root and
+    // no directories created, which is what every server did before.
+    @Test
+    void aServerWithoutAHomeTemplateIsStillReadable() throws Exception {
+        server = startServer(exchange -> {
+            exchange.getRequestBody().readAllBytes();
+            sendResponse(exchange, 200, "{\"serverId\":\"sftp-1\",\"protocol\":\"SFTP\"}");
+        });
+
+        TransferServer found = newClient().getServer("sftp-1");
+
+        assertNull(found.homeDirectory());
+        assertTrue(found.directories().isEmpty());
+    }
+
+    // A definition written before either field existed answers without them, and has to stay
+    // readable rather than failing to parse.
+    @Test
+    void aServerWithoutNamespaceOrRuntimeNameIsStillReadable() throws Exception {
+        server = startServer(exchange -> {
+            exchange.getRequestBody().readAllBytes();
+            sendResponse(exchange, 200, "{\"serverId\":\"sftp-1\",\"protocol\":\"SFTP\"}");
+        });
+
+        TransferServer found = newClient().getServer("sftp-1");
+
+        assertEquals("sftp-1", found.serverId());
+        assertNull(found.namespace());
+        assertNull(found.runtimeName());
     }
 
     @Test
@@ -388,11 +498,15 @@ class EuclidEtsTest {
     }
 
     private static String serverJson(String desiredState, String state) {
-        return "{\"serverId\":\"sftp-1\",\"ern\":\"ern:ets:eu-central-1:863459426936:server/sftp-1\","
-                + "\"accountId\":\"863459426936\",\"region\":\"eu-central-1\",\"protocol\":\"SFTP\","
+        return "{\"serverId\":\"sftp-1\",\"runtimeName\":\"sftp-1-2b9d04\","
+                + "\"ern\":\"ern:ets:eu-central-1:863459426936:server/sftp-1\","
+                + "\"accountId\":\"863459426936\",\"namespace\":\"development\","
+                + "\"region\":\"eu-central-1\",\"protocol\":\"SFTP\","
                 + "\"address\":\"0.0.0.0\",\"port\":2222,\"bucketName\":\"transfer\","
                 + "\"bucketErn\":\"ern:esm:eu-central-1:863459426936:development:bucket:transfer\","
+                + "\"homeDirectory\":\"{user}\","
                 + "\"userIds\":[\"alice\",\"bob\"],\"userGroups\":[\"admins\"],"
+                + "\"directories\":[\"incoming/mix\",\"outgoing\"],"
                 + "\"desiredState\":\"" + desiredState + "\",\"state\":\"" + state + "\",\"hostKey\":\"\","
                 + "\"pasvMin\":6000,\"pasvMax\":6100,\"created\":\"2026-01-01\",\"modified\":\"2026-01-02\"}";
     }
