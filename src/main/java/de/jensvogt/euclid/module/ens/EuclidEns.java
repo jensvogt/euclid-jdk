@@ -233,6 +233,12 @@ public final class EuclidEns implements TokenRefreshable, SigningSchemeSelectabl
 
     /**
      * Resolves a topic's ERN by name.
+     * <p>
+     * The name is resolved in this client's own account and namespace - the same pair
+     * {@link #createTopic} built the ERN from. A bare name means "my topic of that name" and cannot
+     * reach into another account's or another namespace's topic of the same name, so two namespaces
+     * may each have an {@code "orders"} and each will get its own back. A name that exists only in
+     * some other namespace is HTTP 404 here.
      *
      * @param name the topic name
      * @return a {@code GetTopicErnResponse} containing the topic's ERN

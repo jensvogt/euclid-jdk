@@ -17,7 +17,7 @@ import java.util.List;
  * principal's region, and to the namespace the request is made in - rather than being set to
  * nothing.
  *
- * @param routeId        the name to manage this route under, unique across the installation.
+ * @param routeId        the name to manage this route under, unique within its account and namespace.
  *                       Required, and it never appears in a URL
  * @param path           the path prefix to publish, e.g. {@code /resource}. Required, and it has to
  *                       start with {@code /} - one that does not could never match a request target

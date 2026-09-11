@@ -8,7 +8,7 @@ import java.util.List;
  * Fields left unset are omitted from the request rather than sent as null, so the server applies
  * its own default for them - which is why the optional ones are boxed types.
  *
- * @param serverId   name identifying the server, unique across the installation
+ * @param serverId   name identifying the server, unique within its account and namespace
  * @param protocol   transfer protocol, {@code "FTP"} or {@code "SFTP"}
  * @param port       TCP port to listen on; must be 1-65535 and not used by another transfer server
  * @param bucket     name of the ESM bucket this server's clients read and write
@@ -20,7 +20,8 @@ import java.util.List;
  * @param pasvMax    FTP only: highest passive data port; the server defaults to 6100
  */
 public record CreateServerRequest(String serverId, String protocol, Long port, String bucket, String address,
-                                  List<String> userIds, List<String> userGroups, String hostKey, Long pasvMin, Long pasvMax) {
+                                  String homeDirectory, List<String> userIds, List<String> userGroups,
+                                  List<String> directories, String hostKey, Long pasvMin, Long pasvMax) {
 
     /**
      * Creates a new instance of the Builder for constructing a CreateServerRequest object.
@@ -43,7 +44,7 @@ public record CreateServerRequest(String serverId, String protocol, Long port, S
         }
 
         /**
-         * Name identifying the server, unique across the installation.
+         * Name identifying the server, unique within its account and namespace.
          */
         private String serverId;
 
@@ -68,6 +69,11 @@ public record CreateServerRequest(String serverId, String protocol, Long port, S
         private String address = "0.0.0.0";
 
         /**
+         * Key prefix template each client's session is rooted at.
+         */
+        private String homeDirectory;
+
+        /**
          * EAM user IDs allowed to log in.
          */
         private List<String> userIds;
@@ -76,6 +82,11 @@ public record CreateServerRequest(String serverId, String protocol, Long port, S
          * EAM user groups whose members may log in.
          */
         private List<String> userGroups;
+
+        /**
+         * Directories every session should find under its home, created at login.
+         */
+        private List<String> directories;
 
         /**
          * SFTP only: private SSH host key file, generated on first start if absent.
@@ -93,9 +104,9 @@ public record CreateServerRequest(String serverId, String protocol, Long port, S
         private Long pasvMax;
 
         /**
-         * Sets name identifying the server, unique across the installation.
+         * Sets name identifying the server, unique within its account and namespace.
          *
-         * @param serverId name identifying the server, unique across the installation
+         * @param serverId name identifying the server, unique within its account and namespace
          * @return the builder instance
          */
         public Builder serverId(String serverId) {
@@ -202,13 +213,37 @@ public record CreateServerRequest(String serverId, String protocol, Long port, S
             return this;
         }
 
+
+        /**
+         * Sets the key prefix template each client's session is rooted at.
+         *
+         * @param homeDirectory the template, e.g. {@code "{user}"}, or empty for the bucket root
+         * @return the builder instance
+         */
+        public Builder homeDirectory(String homeDirectory) {
+            this.homeDirectory = homeDirectory;
+            return this;
+        }
+
+        /**
+         * Sets the directories every session should find under its home.
+         *
+         * @param directories paths relative to the home prefix, created at login
+         * @return the builder instance
+         */
+        public Builder directories(List<String> directories) {
+            this.directories = directories;
+            return this;
+        }
+
         /**
          * Builds and returns a new instance of CreateServerRequest using the properties set on the Builder.
          *
          * @return a new CreateServerRequest instance.
          */
         public CreateServerRequest build() {
-            return new CreateServerRequest(serverId, protocol, port, bucket, address, userIds, userGroups, hostKey, pasvMin, pasvMax);
+            return new CreateServerRequest(serverId, protocol, port, bucket, address, homeDirectory, userIds,
+                    userGroups, directories, hostKey, pasvMin, pasvMax);
         }
     }
 }

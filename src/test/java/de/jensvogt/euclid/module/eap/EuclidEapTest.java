@@ -26,6 +26,7 @@ import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -222,6 +223,68 @@ class EuclidEapTest {
         assertBodyContains(received.get().body(), "\"applicationId\":\"billing\"");
         assertEquals("ern:eap:eu-central-1:863459426936:application/billing", found.ern());
         assertEquals("JAVA", found.runtime());
+    }
+
+    // An applicationId is only unique within an account and a namespace, so the definition carries
+    // the namespace it belongs to - and the runtime name, which is what euclid actually calls the
+    // process pool, the data directory, the socket and the log channel.
+    @Test
+    void anApplicationCarriesItsNamespaceAndRuntimeName() throws Exception {
+        server = startServer(exchange -> {
+            exchange.getRequestBody().readAllBytes();
+            sendResponse(exchange, 200, applicationJson());
+        });
+
+        Application found = newClient().getApplication("billing");
+
+        assertEquals("development", found.namespace());
+        assertEquals("billing-7f3a91", found.runtimeName());
+    }
+
+    // Where the pool actually is. Ports are handed out at spawn time and change as the pool scales,
+    // so this is the only place an API gateway in front of the application can discover them.
+    @Test
+    void anApplicationCarriesItsRunningEndpointsAndLogLevel() throws Exception {
+        server = startServer(exchange -> {
+            exchange.getRequestBody().readAllBytes();
+            sendResponse(exchange, 200, applicationJson());
+        });
+
+        Application found = newClient().getApplication("billing");
+
+        assertEquals("info", found.logLevel());
+        assertEquals(2, found.endpoints().size());
+        assertEquals("i-1", found.endpoints().getFirst().instanceId());
+        assertEquals(4711, found.endpoints().getFirst().pid());
+        assertEquals(34001, found.endpoints().getFirst().httpPort());
+        assertEquals(34002, found.endpoints().get(1).httpPort());
+    }
+
+    // A stopped application reports none, which has to read back as an empty list rather than null.
+    @Test
+    void anApplicationWithNoRunningInstancesHasNoEndpoints() throws Exception {
+        server = startServer(exchange -> {
+            exchange.getRequestBody().readAllBytes();
+            sendResponse(exchange, 200, "{\"applicationId\":\"billing\",\"instances\":0}");
+        });
+
+        assertTrue(newClient().getApplication("billing").endpoints().isEmpty());
+    }
+
+    // A definition written before either field existed answers without them, and has to stay
+    // readable rather than failing to parse.
+    @Test
+    void anApplicationWithoutNamespaceOrRuntimeNameIsStillReadable() throws Exception {
+        server = startServer(exchange -> {
+            exchange.getRequestBody().readAllBytes();
+            sendResponse(exchange, 200, "{\"applicationId\":\"billing\",\"runtime\":\"JAVA\"}");
+        });
+
+        Application found = newClient().getApplication("billing");
+
+        assertEquals("billing", found.applicationId());
+        assertNull(found.namespace());
+        assertNull(found.runtimeName());
     }
 
     @Test
@@ -457,15 +520,20 @@ class EuclidEapTest {
     }
 
     private static String applicationJson(String desiredState, String state, int instances) {
-        return "{\"applicationId\":\"billing\",\"ern\":\"ern:eap:eu-central-1:863459426936:application/billing\","
-                + "\"accountId\":\"863459426936\",\"region\":\"eu-central-1\",\"runtime\":\"JAVA\","
+        return "{\"applicationId\":\"billing\",\"runtimeName\":\"billing-7f3a91\","
+                + "\"ern\":\"ern:eap:eu-central-1:863459426936:application/billing\","
+                + "\"accountId\":\"863459426936\",\"namespace\":\"development\","
+                + "\"region\":\"eu-central-1\",\"runtime\":\"JAVA\","
                 + "\"bucketErn\":\"ern:esm:eu-central-1:863459426936:bucket/artifacts\","
                 + "\"artifactKey\":\"billing-1.0.0.jar\",\"version\":\"1.0.0\","
                 + "\"md5Sum\":\"0dc7cdef5e707bae7f7b6bbb5be4c32a\",\"command\":\"java\","
                 + "\"arguments\":[\"-jar\",\"billing-1.0.jar\"],\"environment\":{\"LOG_LEVEL\":\"info\"},"
                 + "\"resources\":[\"ern:esm:eu-central-1:863459426936:bucket/invoices\"],"
-                + "\"userId\":\"eap-billing\",\"minInstances\":2,\"maxInstances\":5,\"readyTimeoutMs\":60000,"
+                + "\"userId\":\"eap-billing\",\"logLevel\":\"info\","
+                + "\"minInstances\":2,\"maxInstances\":5,\"readyTimeoutMs\":60000,"
                 + "\"desiredState\":\"" + desiredState + "\",\"state\":\"" + state + "\",\"instances\":" + instances
+                + ",\"endpoints\":[{\"instanceId\":\"i-1\",\"pid\":4711,\"httpPort\":34001},"
+                + "{\"instanceId\":\"i-2\",\"pid\":4712,\"httpPort\":34002}]"
                 + ",\"created\":\"2026-01-01\",\"modified\":\"2026-01-02\"}";
     }
 

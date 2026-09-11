@@ -16,6 +16,7 @@ import de.jensvogt.euclid.dto.eap.SetLogLevelRequest;
 import de.jensvogt.euclid.dto.eap.SetLogLevelResponse;
 import de.jensvogt.euclid.dto.eap.UpdateApplicationRequest;
 import de.jensvogt.euclid.dto.eap.model.Application;
+import de.jensvogt.euclid.dto.eap.model.ApplicationEndpoint;
 import de.jensvogt.euclid.exception.EuclidServiceException;
 import de.jensvogt.euclid.http.EuclidHttpClient;
 
@@ -40,7 +41,10 @@ import java.util.function.Supplier;
  * <p>
  * Deploying resolves names eagerly: the bucket, the artifact within it, and every bucket or queue
  * named as a resource grant must already exist, so a typo is a rejected deployment rather than an
- * application that starts and is then denied everything.
+ * application that starts and is then denied everything. Those names resolve in the account and
+ * namespace being deployed into - the same pair the application's technical principal is granted
+ * and runs in - so a name means the deployer's own bucket or queue rather than whoever else in the
+ * installation has one called that.
  * <p>
  * Starting and stopping only record intent. {@link #startApplication} and {@link #stopApplication}
  * set {@code desiredState}; euclid-mgr's reconciler is what launches or tears down the processes,
@@ -178,7 +182,8 @@ public final class EuclidEap implements TokenRefreshable, SigningSchemeSelectabl
      * <p>
      * Everything named is resolved now rather than at start-up, so a bucket, artifact, granted
      * resource or user that does not exist is reported here as HTTP 404. An application ID already
-     * in use is refused with HTTP 409.
+     * in use <em>in this account and namespace</em> is refused with HTTP 409 - two namespaces may
+     * each deploy a {@code "billing"}, and they are different applications.
      * <p>
      * Leaving {@code user} unset is the usual choice: EAP mints a technical principal for the
      * application, grants it exactly the named resources, and removes it again when the application
@@ -421,8 +426,10 @@ public final class EuclidEap implements TokenRefreshable, SigningSchemeSelectabl
     private static Application toApplication(JsonNode node) {
         return new Application(
                 textOrNull(node, "applicationId"),
+                textOrNull(node, "runtimeName"),
                 textOrNull(node, "ern"),
                 textOrNull(node, "accountId"),
+                textOrNull(node, "namespace"),
                 textOrNull(node, "region"),
                 textOrNull(node, "runtime"),
                 textOrNull(node, "bucketErn"),
@@ -434,14 +441,35 @@ public final class EuclidEap implements TokenRefreshable, SigningSchemeSelectabl
                 toStringMap(node.get("environment")),
                 toStringList(node.get("resources")),
                 textOrNull(node, "userId"),
+                textOrNull(node, "logLevel"),
                 node.path("minInstances").asLong(0),
                 node.path("maxInstances").asLong(0),
                 node.path("readyTimeoutMs").asLong(0),
                 textOrNull(node, "desiredState"),
                 textOrNull(node, "state"),
                 node.path("instances").asLong(0),
+                toEndpointList(node.get("endpoints")),
                 textOrNull(node, "created"),
                 textOrNull(node, "modified"));
+    }
+
+    /**
+     * Converts a JsonNode holding an array of endpoints into a list of them.
+     *
+     * @param endpointsNode the JsonNode representing the array of endpoints
+     * @return the parsed endpoints, or an empty list if the node is null or not an array
+     */
+    private static List<ApplicationEndpoint> toEndpointList(JsonNode endpointsNode) {
+        List<ApplicationEndpoint> endpoints = new ArrayList<>();
+        if (endpointsNode != null && endpointsNode.isArray()) {
+            for (JsonNode endpointNode : endpointsNode) {
+                endpoints.add(new ApplicationEndpoint(
+                        textOrNull(endpointNode, "instanceId"),
+                        endpointNode.path("pid").asInt(-1),
+                        endpointNode.path("httpPort").asInt(0)));
+            }
+        }
+        return endpoints;
     }
 
     /**

@@ -554,11 +554,16 @@ public final class EuclidEqs implements TokenRefreshable, SigningSchemeSelectabl
     }
 
     /**
-     * Retrieves the ARN (Amazon Resource Name) of a specific queue based on the provided name.
-     * This method sends a POST request to the service endpoint to fetch the queue's details.
+     * Resolves a queue's ERN by name.
+     * <p>
+     * The name is resolved in this client's own account and namespace - the same pair
+     * {@link #createQueue} built the ERN from. A bare name means "my queue of that name" and cannot
+     * reach into another account's or another namespace's queue of the same name, so two namespaces
+     * may each have an {@code "orders"} and each will get its own back. A name that exists only in
+     * some other namespace is HTTP 404 here.
      *
-     * @param name the name of the queue whose ARN is to be retrieved
-     * @return a {@code GetQueueErnResponse} object containing details about the queue's ARN
+     * @param name the name of the queue whose ERN is to be retrieved
+     * @return a {@code GetQueueErnResponse} object containing details about the queue's ERN
      * @throws IOException if an I/O error occurs during the request
      * @throws InterruptedException if the operation is interrupted while waiting for the response
      */
@@ -613,22 +618,23 @@ public final class EuclidEqs implements TokenRefreshable, SigningSchemeSelectabl
     }
 
     /**
-     * Purges all message queues associated with a given region and account ID.
+     * Deletes all messages from every queue in this instance's region/account, across every
+     * namespace.
      * <p>
-     * This method clears all messages from the queues owned by the specified
-     * account within the specified region. It invokes an internal mechanism
-     * to perform this operation and may throw exceptions if the process
-     * encounters issues such as I/O errors or interruptions.
+     * Across every namespace rather than this client's own: the account is what this action has
+     * always been scoped to, and narrowing it here would quietly stop purging queues a caller
+     * expects it to. Name a namespace with {@link #purgeAllQueues(String, String, String)} to
+     * restrict it.
      *
      * @throws IOException if an I/O error occurs during the purging process.
      * @throws InterruptedException if the thread executing the operation is interrupted.
      */
     public void purgeAllQueues() throws IOException, InterruptedException {
-        purgeAllQueues(region, accountId);
+        purgeAllQueues(region, accountId, "");
     }
 
     /**
-     * Purges all message queues for the specified region and account.
+     * Deletes all messages from every queue in the given region/account, across every namespace.
      *
      * @param region    The region for which queues need to be purged.
      * @param accountId The account ID for which queues need to be purged.
@@ -636,8 +642,23 @@ public final class EuclidEqs implements TokenRefreshable, SigningSchemeSelectabl
      * @throws InterruptedException If the operation is interrupted.
      */
     public void purgeAllQueues(String region, String accountId) throws IOException, InterruptedException {
+        purgeAllQueues(region, accountId, "");
+    }
+
+    /**
+     * Deletes all messages from every queue in the given region/account, optionally restricted to
+     * a single namespace.
+     *
+     * @param region    The region for which queues need to be purged.
+     * @param accountId The account ID for which queues need to be purged.
+     * @param nameSpace the namespace to restrict the purge to, or empty to purge every namespace
+     * @throws IOException          If an I/O error occurs during the operation.
+     * @throws InterruptedException If the operation is interrupted.
+     */
+    public void purgeAllQueues(String region, String accountId, String nameSpace)
+            throws IOException, InterruptedException {
         String body = OBJECT_MAPPER.writeValueAsString(
-                PurgeAllQueuesRequest.builder().region(region).accountId(accountId).build());
+                PurgeAllQueuesRequest.builder().region(region).accountId(accountId).nameSpace(nameSpace).build());
         HttpResponse<String> response = httpClient.post(baseUrl + "/", body, "eqs", "purge-all-queues",
                 requestHeaders("purge-all-queues", body));
 
