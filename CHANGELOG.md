@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.1.31](https://github.com/jensvogt/euclid-jdk/compare/euclid-jdk-v0.1.30...euclid-jdk-v0.1.31) (2026-09-11)
+
+
+### Bug Fixes
+
+* full acount/namespace scopes ([3646c76](https://github.com/jensvogt/euclid-jdk/commit/3646c76d95631fbbe38b54bd57bc8efc33eb7629))
+* full acount/namespace scopes ([1f4a081](https://github.com/jensvogt/euclid-jdk/commit/1f4a081ecf8368e66318c974791b27d86288cec8))
+
 ## [0.1.30](https://github.com/jensvogt/euclid-jdk/compare/euclid-jdk-v0.1.29...euclid-jdk-v0.1.30) (2026-09-10)
 
 
