@@ -9,15 +9,17 @@ import java.util.List;
  * a caller can flip one setting without resending the whole definition. That is why every field
  * but {@code serverId} is a boxed type: null means "leave alone", not "clear".
  *
- * @param serverId   the server to change; the only required field
- * @param address    address to bind to
- * @param port       TCP port to listen on
- * @param bucket     name of the ESM bucket this server fronts
- * @param userIds    EAM user IDs allowed to log in, replacing the current list
- * @param userGroups EAM user groups whose members may log in, replacing the current list
- * @param hostKey    SFTP only: private SSH host key file
- * @param pasvMin    FTP only: lowest passive data port
- * @param pasvMax    FTP only: highest passive data port
+ * @param serverId      the server to change; the only required field
+ * @param address       address to bind to
+ * @param port          TCP port to listen on
+ * @param bucket        name of the ESM bucket this server fronts
+ * @param homeDirectory users home directory
+ * @param userIds       EAM user IDs allowed to log in, replacing the current list
+ * @param userGroups    EAM user groups whose members may log in, replacing the current list
+ * @param directories   default directory layout
+ * @param hostKey       SFTP only: private SSH host key file
+ * @param pasvMin       FTP only: lowest passive data port
+ * @param pasvMax       FTP only: highest passive data port
  */
 public record UpdateServerRequest(String serverId, String address, Long port, String bucket, String homeDirectory,
                                   List<String> userIds, List<String> userGroups, List<String> directories,

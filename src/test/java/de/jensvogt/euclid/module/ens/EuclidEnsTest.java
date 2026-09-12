@@ -16,6 +16,7 @@ import de.jensvogt.euclid.dto.ens.ListMessagesResponse;
 import de.jensvogt.euclid.dto.ens.ListSubscriptionsResponse;
 import de.jensvogt.euclid.dto.ens.ListTopicsResponse;
 import de.jensvogt.euclid.dto.ens.PublishMessageResponse;
+import de.jensvogt.euclid.dto.ens.SetTopicMaxMessageLengthResponse;
 import de.jensvogt.euclid.dto.ens.SetTopicRetentionResponse;
 import de.jensvogt.euclid.dto.ens.SubscribeResponse;
 import de.jensvogt.euclid.dto.ens.TopicStatusResponse;
@@ -702,6 +703,54 @@ class EuclidEnsTest {
                 () -> newClient().setTopicRetention("topic-ern", -2));
 
         assertEquals("set-topic-retention", exception.action());
+        assertEquals(400, exception.statusCode());
+    }
+
+    @Test
+    void setTopicMaxMessageLengthSendsErnAndLimit() throws Exception {
+        AtomicReference<SignableRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(captureRequest(exchange));
+            sendResponse(exchange, 200, "{\"ern\":\"topic-ern\",\"maxMessageLength\":262144}");
+        });
+
+        SetTopicMaxMessageLengthResponse response = newClient().setTopicMaxMessageLength("topic-ern", 262144);
+
+        assertEquals("set-topic-max-message-length", received.get().header("x-euclid-action"));
+        assertBodyContains(received.get().body(), "\"ern\":\"topic-ern\"", "\"maxMessageLength\":262144");
+        assertEquals(262144, response.maxMessageLength());
+    }
+
+    // Stricter than the queue equivalent, deliberately: zero there means "carry no limit of your
+    // own", here it would mean a topic that accepts nothing - which stop-topic says reversibly.
+    @Test
+    void setTopicMaxMessageLengthRefusesZero() throws Exception {
+        server = startServer(exchange -> {
+            exchange.getRequestBody().readAllBytes();
+            sendResponse(exchange, 400, "{\"error\":\"maxMessageLength has to be a positive number of bytes\"}");
+        });
+
+        EuclidServiceException exception = assertThrows(EuclidServiceException.class,
+                () -> newClient().setTopicMaxMessageLength("topic-ern", 0));
+
+        assertEquals("ens", exception.service());
+        assertEquals("set-topic-max-message-length", exception.action());
+        assertEquals(400, exception.statusCode());
+    }
+
+    // New enforcement: the server now measures the published body against the topic's limit.
+    @Test
+    void publishMessageSurfacesABodyOverTheTopicLimit() throws Exception {
+        server = startServer(exchange -> {
+            exchange.getRequestBody().readAllBytes();
+            sendResponse(exchange, 400, "{\"error\":\"message is 2000 bytes, and this topic accepts 1024"
+                    + " - see set-topic-max-message-length\"}");
+        });
+
+        EuclidServiceException exception = assertThrows(EuclidServiceException.class,
+                () -> newClient().publishMessage("topic-ern", "x".repeat(2000)));
+
+        assertEquals("publish-message", exception.action());
         assertEquals(400, exception.statusCode());
     }
 
