@@ -63,6 +63,16 @@ import java.util.function.Supplier;
  */
 public final class EuclidEns implements TokenRefreshable, SigningSchemeSelectable {
 
+    /**
+     * The retention period that keeps every message published to a topic - see
+     * {@link #setTopicRetention(String, long)}.
+     *
+     * <p>Not a very large number of seconds: the server stores such a message with no expiry at all,
+     * which is what its TTL index ignores, so nothing is ever going to remove it. The topic then
+     * grows without limit and only {@code purgeTopic} empties it.
+     */
+    public static final long RETENTION_FOREVER = -1;
+
     private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
     private static final String TARGET = "ens";
 
@@ -661,12 +671,13 @@ public final class EuclidEns implements TokenRefreshable, SigningSchemeSelectabl
      * message of a busy topic to shorten its history is not something one call should quietly do.
      * <p>
      * Passing zero puts the topic back on the installation default and keeps it there as that
-     * changes, rather than freezing a copy of whatever it is today. A negative period is refused
-     * with HTTP 400.
+     * changes, rather than freezing a copy of whatever it is today. Passing
+     * {@link #RETENTION_FOREVER} keeps every message published to the topic. A period below that is
+     * refused with HTTP 400.
      *
      * @param ern             the ERN of the topic
      * @param retentionPeriod how long a published message is kept, in seconds; zero follows the
-     *                        installation default
+     *                        installation default, {@link #RETENTION_FOREVER} keeps everything
      * @return the retention period the topic now has
      * @throws IOException          if an I/O error occurs during the operation
      * @throws InterruptedException if the operation is interrupted

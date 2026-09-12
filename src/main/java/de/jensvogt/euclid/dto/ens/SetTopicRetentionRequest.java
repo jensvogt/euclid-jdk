@@ -11,8 +11,10 @@ package de.jensvogt.euclid.dto.ens;
  * @param retentionPeriod how long a published message is kept, in seconds. Zero follows the
  *                        installation default rather than freezing a copy of it, so a topic that
  *                        has never been told what it wants tracks
- *                        {@code euclid.modules.ens.retention-period} as that changes. A negative
- *                        value is refused with HTTP 400
+ *                        {@code euclid.modules.ens.retention-period} as that changes. Minus one
+ *                        keeps everything: the message is stored with no expiry at all rather than
+ *                        with a very distant one, so nothing ever removes it. A value below -1 is
+ *                        refused with HTTP 400
  */
 public record SetTopicRetentionRequest(String ern, long retentionPeriod) {
 

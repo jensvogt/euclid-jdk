@@ -675,15 +675,31 @@ class EuclidEnsTest {
         assertBodyContains(received.get().body(), "\"retentionPeriod\":0");
     }
 
+    // Minus one is the one negative that means something: the server stores such a message with no
+    // expiry at all rather than with a very distant one, so it has to reach the server as -1.
     @Test
-    void setTopicRetentionSurfacesANegativePeriod() throws Exception {
+    void setTopicRetentionSendsMinusOneToKeepEverything() throws Exception {
+        AtomicReference<SignableRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(captureRequest(exchange));
+            sendResponse(exchange, 200, "{\"ern\":\"topic-ern\",\"retentionPeriod\":-1}");
+        });
+
+        assertEquals(EuclidEns.RETENTION_FOREVER,
+                newClient().setTopicRetention("topic-ern", EuclidEns.RETENTION_FOREVER).retentionPeriod());
+        assertBodyContains(received.get().body(), "\"retentionPeriod\":-1");
+    }
+
+    @Test
+    void setTopicRetentionSurfacesAPeriodBelowMinusOne() throws Exception {
         server = startServer(exchange -> {
             exchange.getRequestBody().readAllBytes();
-            sendResponse(exchange, 400, "{\"error\":\"retentionPeriod cannot be negative\"}");
+            sendResponse(exchange, 400, "{\"error\":\"retentionPeriod has to be seconds, 0 to follow the "
+                    + "installation default, or -1 to keep messages forever\"}");
         });
 
         EuclidServiceException exception = assertThrows(EuclidServiceException.class,
-                () -> newClient().setTopicRetention("topic-ern", -1));
+                () -> newClient().setTopicRetention("topic-ern", -2));
 
         assertEquals("set-topic-retention", exception.action());
         assertEquals(400, exception.statusCode());
