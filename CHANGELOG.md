@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.1.33](https://github.com/jensvogt/euclid-jdk/compare/euclid-jdk-v0.1.32...euclid-jdk-v0.1.33) (2026-09-12)
+
+
+### Bug Fixes
+
+* ENS/EQS retention, delay, visibility editable ([dffc390](https://github.com/jensvogt/euclid-jdk/commit/dffc3905adc7f9f9687c8004bc9eee8e9aaccc51))
+* ENS/EQS retention, delay, visibility editable ([606e0c8](https://github.com/jensvogt/euclid-jdk/commit/606e0c8f632ad97f9a202801aa6150077faed081))
+
 ## [0.1.32](https://github.com/jensvogt/euclid-jdk/compare/euclid-jdk-v0.1.31...euclid-jdk-v0.1.32) (2026-09-12)
 
 
