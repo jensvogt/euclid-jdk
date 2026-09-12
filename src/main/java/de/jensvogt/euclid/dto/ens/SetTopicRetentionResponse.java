@@ -5,7 +5,8 @@ package de.jensvogt.euclid.dto.ens;
  *
  * @param ern             the ERN of the topic
  * @param retentionPeriod the retention period the topic now has, in seconds. Zero means it follows
- *                        the installation default rather than a period of its own
+ *                        the installation default rather than a period of its own; minus one means
+ *                        it keeps everything published to it
  */
 public record SetTopicRetentionResponse(String ern, long retentionPeriod) {
 

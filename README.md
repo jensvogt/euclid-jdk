@@ -127,9 +127,12 @@ rather than none of it, so running it again picks up where it stopped.
 
 How long a topic keeps what is published to it is `setTopicRetention(ern, seconds)`;
 zero puts it back on the installation default and keeps it there as that changes,
-rather than freezing a copy of today's value. It applies to messages published
-afterwards - the ones already stored keep the expiry they were given, because that is
-what the database's TTL index acts on.
+rather than freezing a copy of today's value. `EuclidEns.RETENTION_FOREVER` (-1) keeps
+everything - not a very long period but the absence of one, since the server stores
+such a message with no expiry at all, which is what its TTL index ignores. That topic
+then grows without limit and only `purgeTopic` empties it. Retention applies to
+messages published afterwards - the ones already stored keep the expiry they were
+given, because that is what the database's TTL index acts on.
 
 Other supported operations include `listTopics`, `getTopicErn`, `purgeAllTopics`, and
 topic tagging with `addTopicTag`/`setTopicTag`/`deleteTopicTag`.
