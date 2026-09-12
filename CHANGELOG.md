@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.1.32](https://github.com/jensvogt/euclid-jdk/compare/euclid-jdk-v0.1.31...euclid-jdk-v0.1.32) (2026-09-12)
+
+
+### Bug Fixes
+
+* ENS retention can be -1 (unlimited) ([a041830](https://github.com/jensvogt/euclid-jdk/commit/a04183028772ca70394fc630946de739dc265e06))
+* ENS retention can be -1 (unlimited) ([cae74db](https://github.com/jensvogt/euclid-jdk/commit/cae74db3b4396284e883839a61a03d21c4bc0ce9))
+
 ## [0.1.31](https://github.com/jensvogt/euclid-jdk/compare/euclid-jdk-v0.1.30...euclid-jdk-v0.1.31) (2026-09-11)
 
 
