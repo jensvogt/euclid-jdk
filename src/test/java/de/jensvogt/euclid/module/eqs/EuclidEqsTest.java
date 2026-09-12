@@ -19,6 +19,8 @@ import de.jensvogt.euclid.dto.eqs.QueueStatusResponse;
 import de.jensvogt.euclid.dto.eqs.ReceiveMessagesResponse;
 import de.jensvogt.euclid.dto.eqs.RedriveDlqResponse;
 import de.jensvogt.euclid.dto.eqs.SendMessageResponse;
+import de.jensvogt.euclid.dto.eqs.SetQueueDelayResponse;
+import de.jensvogt.euclid.dto.eqs.SetQueueMaxMessageLengthResponse;
 import de.jensvogt.euclid.dto.eqs.SetQueueVisibilityResponse;
 import de.jensvogt.euclid.dto.eqs.model.Message;
 import de.jensvogt.euclid.dto.eqs.model.Queue;
@@ -839,6 +841,112 @@ class EuclidEqsTest {
         assertEquals("set-queue-visibility", received.get().header("x-euclid-action"));
         assertBodyContains(received.get().body(), "\"ern\":\"queue-ern\"", "\"visibility\":90");
         assertEquals(90, response.visibility());
+    }
+
+    @Test
+    void setQueueDelaySendsErnAndDelay() throws Exception {
+        AtomicReference<SignableRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(captureRequest(exchange));
+            sendResponse(exchange, 200, "{\"ern\":\"queue-ern\",\"delay\":45}");
+        });
+
+        SetQueueDelayResponse response = newClient().setQueueDelay("queue-ern", 45);
+
+        assertEquals("set-queue-delay", received.get().header("x-euclid-action"));
+        assertBodyContains(received.get().body(), "\"ern\":\"queue-ern\"", "\"delay\":45");
+        assertEquals(45, response.delay());
+    }
+
+    @Test
+    void setQueueDelaySurfacesADelayOutOfRange() throws Exception {
+        server = startServer(exchange -> {
+            exchange.getRequestBody().readAllBytes();
+            sendResponse(exchange, 400, "{\"error\":\"Delay must be between 0 and 900 seconds\"}");
+        });
+
+        EuclidServiceException exception = assertThrows(EuclidServiceException.class,
+                () -> newClient().setQueueDelay("queue-ern", 901));
+
+        assertEquals("eqs", exception.service());
+        assertEquals("set-queue-delay", exception.action());
+        assertEquals(400, exception.statusCode());
+    }
+
+    @Test
+    void setQueueMaxMessageLengthSendsErnAndLimit() throws Exception {
+        AtomicReference<SignableRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(captureRequest(exchange));
+            sendResponse(exchange, 200, "{\"ern\":\"queue-ern\",\"maxMessageLength\":262144,"
+                    + "\"effectiveMaxMessageLength\":262144}");
+        });
+
+        SetQueueMaxMessageLengthResponse response = newClient().setQueueMaxMessageLength("queue-ern", 262144);
+
+        assertEquals("set-queue-max-message-length", received.get().header("x-euclid-action"));
+        assertBodyContains(received.get().body(), "\"ern\":\"queue-ern\"", "\"maxMessageLength\":262144");
+        assertEquals(262144, response.maxMessageLength());
+        assertEquals(262144, response.effectiveMaxMessageLength());
+    }
+
+    // Zero is not "accept nothing" but "carry no limit of your own", and the effective figure is
+    // the only thing that says what a send is then measured against.
+    @Test
+    void setQueueMaxMessageLengthZeroReportsTheDefaultAsEffective() throws Exception {
+        AtomicReference<SignableRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(captureRequest(exchange));
+            sendResponse(exchange, 200, "{\"ern\":\"queue-ern\",\"maxMessageLength\":0,"
+                    + "\"effectiveMaxMessageLength\":1048576}");
+        });
+
+        SetQueueMaxMessageLengthResponse response = newClient().setQueueMaxMessageLength("queue-ern", 0);
+
+        assertBodyContains(received.get().body(), "\"maxMessageLength\":0");
+        assertEquals(0, response.maxMessageLength());
+        assertEquals(1048576, response.effectiveMaxMessageLength());
+    }
+
+    // A server from before this action reports no effective figure; resolving it the way the server
+    // would beats answering zero, which would read as "this queue accepts nothing".
+    @Test
+    void setQueueMaxMessageLengthResolvesAMissingEffectiveFigure() throws Exception {
+        server = startServer(exchange -> {
+            exchange.getRequestBody().readAllBytes();
+            sendResponse(exchange, 200, "{\"ern\":\"queue-ern\",\"maxMessageLength\":0}");
+        });
+
+        assertEquals(1048576, newClient().setQueueMaxMessageLength("queue-ern", 0).effectiveMaxMessageLength());
+    }
+
+    @Test
+    void setQueueMaxMessageLengthSurfacesANegativeLimit() throws Exception {
+        server = startServer(exchange -> {
+            exchange.getRequestBody().readAllBytes();
+            sendResponse(exchange, 400, "{\"error\":\"maxMessageLength cannot be negative\"}");
+        });
+
+        EuclidServiceException exception = assertThrows(EuclidServiceException.class,
+                () -> newClient().setQueueMaxMessageLength("queue-ern", -1));
+
+        assertEquals("set-queue-max-message-length", exception.action());
+        assertEquals(400, exception.statusCode());
+    }
+
+    // New enforcement: the server now measures the body against the queue's limit.
+    @Test
+    void sendMessageSurfacesABodyOverTheQueueLimit() throws Exception {
+        server = startServer(exchange -> {
+            exchange.getRequestBody().readAllBytes();
+            sendResponse(exchange, 400, "{\"error\":\"message is 2000 bytes, and this queue accepts 1024\"}");
+        });
+
+        EuclidServiceException exception = assertThrows(EuclidServiceException.class,
+                () -> newClient().sendMessage("queue-ern", "x".repeat(2000)));
+
+        assertEquals("send-message", exception.action());
+        assertEquals(400, exception.statusCode());
     }
 
     @Test

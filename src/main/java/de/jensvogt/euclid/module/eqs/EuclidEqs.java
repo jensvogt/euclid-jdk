@@ -38,6 +38,10 @@ import de.jensvogt.euclid.dto.eqs.SendMessageResponse;
 import de.jensvogt.euclid.dto.eqs.SetMessageAttributeRequest;
 import de.jensvogt.euclid.dto.eqs.SetMessageVisibilityRequest;
 import de.jensvogt.euclid.dto.eqs.SetQueueTagRequest;
+import de.jensvogt.euclid.dto.eqs.SetQueueDelayRequest;
+import de.jensvogt.euclid.dto.eqs.SetQueueDelayResponse;
+import de.jensvogt.euclid.dto.eqs.SetQueueMaxMessageLengthRequest;
+import de.jensvogt.euclid.dto.eqs.SetQueueMaxMessageLengthResponse;
 import de.jensvogt.euclid.dto.eqs.SetQueueVisibilityRequest;
 import de.jensvogt.euclid.dto.eqs.SetQueueVisibilityResponse;
 import de.jensvogt.euclid.dto.eqs.model.Message;
@@ -112,6 +116,13 @@ public final class EuclidEqs implements TokenRefreshable, SigningSchemeSelectabl
      * Being a static and final constant, the value of TARGET remains unchanged
      * throughout the runtime of the application.
      */
+    /**
+     * The size a message is measured against when a queue carries no limit of its own - one
+     * mebibyte, which is what the server's {@code kDefaultMaxMessageLength} is and what a queue
+     * created before the limit meant anything is held to.
+     */
+    private static final long DEFAULT_MAX_MESSAGE_LENGTH = 1024 * 1024;
+
     private static final String TARGET = "eqs";
 
     /**
@@ -745,6 +756,66 @@ public final class EuclidEqs implements TokenRefreshable, SigningSchemeSelectabl
     }
 
     /**
+     * Changes how long a message sent to this queue is held back before it can be received.
+     * <p>
+     * Only what is sent from here on. A message already waiting keeps the moment it was given when
+     * it arrived - its delay was turned into a timestamp then, and changing the queue's figure does
+     * not go back and move it.
+     *
+     * @param ern   the ERN (Entity Resource Name) of the queue
+     * @param delay the new delay, in seconds, between 0 and 900; anything outside that is refused
+     *              with HTTP 400
+     * @return the delay the queue now has
+     * @throws IOException          If an I/O error occurs during the operation.
+     * @throws InterruptedException If the operation is interrupted.
+     */
+    public SetQueueDelayResponse setQueueDelay(String ern, long delay) throws IOException, InterruptedException {
+        String body = OBJECT_MAPPER.writeValueAsString(
+                SetQueueDelayRequest.builder().ern(ern).delay(delay).build());
+        HttpResponse<String> response = httpClient.post(baseUrl + "/", body, "eqs", "set-queue-delay",
+                requestHeaders("set-queue-delay", body));
+
+        if (response.statusCode() / 100 != 2) {
+            throw new EuclidServiceException("eqs", "set-queue-delay", response.statusCode(), response.body());
+        }
+
+        return extractSetQueueDelayResponse(response.body());
+    }
+
+    /**
+     * Changes the largest message this queue accepts.
+     * <p>
+     * Only what is sent from here on. A message already in the queue was measured against the limit
+     * in force when it arrived and is not measured again, so lowering this does not remove
+     * anything.
+     * <p>
+     * Zero is not "accept nothing" but "carry no limit of your own", which puts the queue back on
+     * the 1 MiB default - the same figure a queue created before the limit meant anything is
+     * measured against. Because of that the answer carries two numbers: what the queue now holds,
+     * and {@link SetQueueMaxMessageLengthResponse#effectiveMaxMessageLength()}, which is what a
+     * send is actually measured against. A negative value is refused with HTTP 400.
+     *
+     * @param ern              the ERN (Entity Resource Name) of the queue
+     * @param maxMessageLength the limit in bytes, or zero to follow the default
+     * @return the limit the queue now carries and the one sends are measured against
+     * @throws IOException          If an I/O error occurs during the operation.
+     * @throws InterruptedException If the operation is interrupted.
+     */
+    public SetQueueMaxMessageLengthResponse setQueueMaxMessageLength(String ern, long maxMessageLength)
+            throws IOException, InterruptedException {
+        String body = OBJECT_MAPPER.writeValueAsString(
+                SetQueueMaxMessageLengthRequest.builder().ern(ern).maxMessageLength(maxMessageLength).build());
+        HttpResponse<String> response = httpClient.post(baseUrl + "/", body, "eqs", "set-queue-max-message-length",
+                requestHeaders("set-queue-max-message-length", body));
+
+        if (response.statusCode() / 100 != 2) {
+            throw new EuclidServiceException("eqs", "set-queue-max-message-length", response.statusCode(), response.body());
+        }
+
+        return extractSetQueueMaxMessageLengthResponse(response.body());
+    }
+
+    /**
      * Moves messages out of a dead letter queue and back onto the queues they came from.
      *
      * @param ern the ERN (Entity Resource Name) of the dead letter queue to drain
@@ -819,6 +890,11 @@ public final class EuclidEqs implements TokenRefreshable, SigningSchemeSelectabl
 
     /**
      * Sends a message to the specified endpoint with the provided details.
+     * <p>
+     * A body larger than the queue accepts is refused with HTTP 400. What is measured is the body
+     * alone - attributes travel alongside it and are not counted - against the queue's own limit,
+     * or against the 1 MiB default where it carries none. See
+     * {@link #setQueueMaxMessageLength(String, long)}.
      *
      * @param ern The endpoint resource name to which the message will be sent.
      * @param body The message content to be transmitted.
@@ -1320,6 +1396,25 @@ public final class EuclidEqs implements TokenRefreshable, SigningSchemeSelectabl
         JsonNode root = OBJECT_MAPPER.readTree(responseBody);
         return SetQueueVisibilityResponse.builder().ern(textOrNull(root, "ern"))
                 .visibility(root.path("visibility").asLong(0)).build();
+    }
+
+    private static SetQueueDelayResponse extractSetQueueDelayResponse(String responseBody) throws IOException {
+        JsonNode root = OBJECT_MAPPER.readTree(responseBody);
+        return SetQueueDelayResponse.builder().ern(textOrNull(root, "ern"))
+                .delay(root.path("delay").asLong(0)).build();
+    }
+
+    private static SetQueueMaxMessageLengthResponse extractSetQueueMaxMessageLengthResponse(String responseBody)
+            throws IOException {
+        JsonNode root = OBJECT_MAPPER.readTree(responseBody);
+        long configured = root.path("maxMessageLength").asLong(0);
+        return SetQueueMaxMessageLengthResponse.builder().ern(textOrNull(root, "ern"))
+                .maxMessageLength(configured)
+                // A server that does not report the effective figure is one from before this
+                // action existed; resolving it the same way the server does beats answering zero.
+                .effectiveMaxMessageLength(root.path("effectiveMaxMessageLength")
+                        .asLong(configured > 0 ? configured : DEFAULT_MAX_MESSAGE_LENGTH))
+                .build();
     }
 
     /**

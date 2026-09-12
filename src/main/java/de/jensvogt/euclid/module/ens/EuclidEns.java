@@ -32,6 +32,8 @@ import de.jensvogt.euclid.dto.ens.PublishMessageResponse;
 import de.jensvogt.euclid.dto.ens.PurgeAllTopicsRequest;
 import de.jensvogt.euclid.dto.ens.PurgeTopicRequest;
 import de.jensvogt.euclid.dto.ens.SetMessageAttributeRequest;
+import de.jensvogt.euclid.dto.ens.SetTopicMaxMessageLengthRequest;
+import de.jensvogt.euclid.dto.ens.SetTopicMaxMessageLengthResponse;
 import de.jensvogt.euclid.dto.ens.SetTopicRetentionRequest;
 import de.jensvogt.euclid.dto.ens.SetTopicRetentionResponse;
 import de.jensvogt.euclid.dto.ens.SetTopicTagRequest;
@@ -401,6 +403,11 @@ public final class EuclidEns implements TokenRefreshable, SigningSchemeSelectabl
      * message that caused them was worth - a delivery that crosses a topic would otherwise arrive
      * on the other side at MIDDLE, whatever it was sent as.
      *
+     * <p>A body larger than the topic accepts is refused with HTTP 400. What is measured is the
+     * body alone - attributes travel alongside it and are not counted - which is the same figure
+     * {@code getTopicMetadata} reports a topic's size in. See
+     * {@link #setTopicMaxMessageLength(String, long)}.
+     *
      * @param ern        the ERN of the topic to publish to
      * @param body       the message body
      * @param attributes typed message attributes
@@ -697,6 +704,39 @@ public final class EuclidEns implements TokenRefreshable, SigningSchemeSelectabl
     }
 
     /**
+     * Changes the largest message this topic accepts.
+     * <p>
+     * Applies to what is published after it: a message already in the topic is not re-checked and
+     * is not removed by lowering this, because it was accepted under the rule that was in force
+     * when it arrived.
+     * <p>
+     * Stricter than the queue equivalent - zero is refused here rather than read as "follow the
+     * default", because a topic that accepts nothing is a mistake rather than a configuration.
+     * {@link #stopTopic(String)} is what says "take nothing for now", reversibly and without losing
+     * what arrives meanwhile.
+     *
+     * @param ern              the ERN of the topic
+     * @param maxMessageLength the limit in bytes, which has to be positive; zero or negative is
+     *                         refused with HTTP 400
+     * @return the limit the topic now has
+     * @throws IOException          if an I/O error occurs during the operation
+     * @throws InterruptedException if the operation is interrupted
+     */
+    public SetTopicMaxMessageLengthResponse setTopicMaxMessageLength(String ern, long maxMessageLength)
+            throws IOException, InterruptedException {
+        String body = OBJECT_MAPPER.writeValueAsString(
+                SetTopicMaxMessageLengthRequest.builder().ern(ern).maxMessageLength(maxMessageLength).build());
+        HttpResponse<String> response = httpClient.post(baseUrl + "/", body, "ens", "set-topic-max-message-length",
+                requestHeaders("set-topic-max-message-length", body));
+
+        if (response.statusCode() / 100 != 2) {
+            throw new EuclidServiceException("ens", "set-topic-max-message-length", response.statusCode(), response.body());
+        }
+
+        return extractSetTopicMaxMessageLengthResponse(response.body());
+    }
+
+    /**
      * Subscribes an EQS queue to a topic using the default "SQS" delivery protocol.
      *
      * @param sourceErn the ERN of the topic messages are published to
@@ -801,6 +841,13 @@ public final class EuclidEns implements TokenRefreshable, SigningSchemeSelectabl
         JsonNode root = OBJECT_MAPPER.readTree(responseBody);
         return SetTopicRetentionResponse.builder().ern(textOrNull(root, "ern"))
                 .retentionPeriod(root.path("retentionPeriod").asLong(0)).build();
+    }
+
+    private static SetTopicMaxMessageLengthResponse extractSetTopicMaxMessageLengthResponse(String responseBody)
+            throws IOException {
+        JsonNode root = OBJECT_MAPPER.readTree(responseBody);
+        return SetTopicMaxMessageLengthResponse.builder().ern(textOrNull(root, "ern"))
+                .maxMessageLength(root.path("maxMessageLength").asLong(0)).build();
     }
 
     private static PublishMessageResponse extractPublishMessageResponse(String responseBody) throws IOException {

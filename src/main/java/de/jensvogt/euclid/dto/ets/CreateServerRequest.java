@@ -8,16 +8,18 @@ import java.util.List;
  * Fields left unset are omitted from the request rather than sent as null, so the server applies
  * its own default for them - which is why the optional ones are boxed types.
  *
- * @param serverId   name identifying the server, unique within its account and namespace
- * @param protocol   transfer protocol, {@code "FTP"} or {@code "SFTP"}
- * @param port       TCP port to listen on; must be 1-65535 and not used by another transfer server
- * @param bucket     name of the ESM bucket this server's clients read and write
- * @param address    address to bind to
- * @param userIds    EAM user IDs allowed to log in
- * @param userGroups EAM user groups whose members may log in
- * @param hostKey    SFTP only: private SSH host key file, generated on first start if absent
- * @param pasvMin    FTP only: lowest passive data port; the server defaults to 6000
- * @param pasvMax    FTP only: highest passive data port; the server defaults to 6100
+ * @param serverId      name identifying the server, unique within its account and namespace
+ * @param protocol      transfer protocol, {@code "FTP"} or {@code "SFTP"}
+ * @param port          TCP port to listen on; must be 1-65535 and not used by another transfer server
+ * @param bucket        name of the ESM bucket this server's clients read and write
+ * @param address       address to bind to
+ * @param homeDirectory users home directory
+ * @param userIds       EAM user IDs allowed to log in
+ * @param userGroups    EAM user groups whose members may log in
+ * @param directories   default directory layout
+ * @param hostKey       SFTP only: private SSH host key file, generated on first start if absent
+ * @param pasvMin       FTP only: lowest passive data port; the server defaults to 6000
+ * @param pasvMax       FTP only: highest passive data port; the server defaults to 6100
  */
 public record CreateServerRequest(String serverId, String protocol, Long port, String bucket, String address,
                                   String homeDirectory, List<String> userIds, List<String> userGroups,
