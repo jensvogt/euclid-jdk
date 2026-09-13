@@ -14,6 +14,7 @@ import de.jensvogt.euclid.dto.esm.DisableEncryptionResponse;
 import de.jensvogt.euclid.dto.esm.EnableEncryptionResponse;
 import de.jensvogt.euclid.dto.esm.GetBucketErnResponse;
 import de.jensvogt.euclid.dto.esm.GetBucketSizeResponse;
+import de.jensvogt.euclid.dto.esm.CountObjectsResponse;
 import de.jensvogt.euclid.dto.esm.GetObjectCountResponse;
 import de.jensvogt.euclid.dto.esm.ListBucketsResponse;
 import de.jensvogt.euclid.dto.esm.ListObjectAttributesResponse;
@@ -708,18 +709,58 @@ class EuclidEsmTest {
     }
 
     @Test
-    void getObjectCountSendsBucketErnAndPrefix() throws Exception {
+    void getObjectCountAsksForTheWholeBucket() throws Exception {
         AtomicReference<SignableRequest> received = new AtomicReference<>();
         server = startServer(exchange -> {
             received.set(captureRequest(exchange));
             sendResponse(exchange, 200, "{\"ern\":\"bucket-ern\",\"count\":42}");
         });
 
-        GetObjectCountResponse response = newClient().getObjectCount("bucket-ern", "photos/");
+        GetObjectCountResponse response = newClient().getObjectCount("bucket-ern");
 
-        assertBodyContains(received.get().body(), "\"ern\":\"bucket-ern\"", "\"prefix\":\"photos/\"");
+        assertEquals("get-object-count", received.get().header("x-euclid-action"));
+        assertBodyContains(received.get().body(), "\"ern\":\"bucket-ern\"");
         assertEquals("bucket-ern", response.ern());
         assertEquals(42, response.count());
+    }
+
+    @Test
+    void countObjectsSendsThePrefixAndTheDirectoryChoice() throws Exception {
+        AtomicReference<SignableRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(captureRequest(exchange));
+            sendResponse(exchange, 200,
+                    "{\"ern\":\"bucket-ern\",\"prefix\":\"photos/\",\"includeDirectories\":true,\"count\":42}");
+        });
+
+        CountObjectsResponse response = newClient().countObjects("bucket-ern", "photos/", true);
+
+        // The action that actually honours a prefix - get-object-count took one until euclid
+        // 1.0.73 and ignored it, answering the whole bucket's stored figure.
+        assertEquals("count-objects", received.get().header("x-euclid-action"));
+        assertBodyContains(received.get().body(), "\"ern\":\"bucket-ern\"", "\"prefix\":\"photos/\"",
+                "\"includeDirectories\":true");
+        assertEquals("photos/", response.prefix());
+        assertTrue(response.includeDirectories());
+        assertEquals(42, response.count());
+    }
+
+    @Test
+    void countObjectsDefaultsToTheWholeBucketWithoutDirectories() throws Exception {
+        AtomicReference<SignableRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(captureRequest(exchange));
+            sendResponse(exchange, 200,
+                    "{\"ern\":\"bucket-ern\",\"prefix\":\"\",\"includeDirectories\":false,\"count\":7}");
+        });
+
+        CountObjectsResponse response = newClient().countObjects("bucket-ern");
+
+        // Both defaults go on the wire rather than being left out: the server reads an absent
+        // field as false and an absent prefix as empty, which is the same thing, but a request
+        // that says what it means is one a packet capture explains.
+        assertBodyContains(received.get().body(), "\"prefix\":\"\"", "\"includeDirectories\":false");
+        assertEquals(7, response.count());
     }
 
     @Test
