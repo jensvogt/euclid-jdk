@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.1.34](https://github.com/jensvogt/euclid-jdk/compare/euclid-jdk-v0.1.33...euclid-jdk-v0.1.34) (2026-09-13)
+
+
+### Bug Fixes
+
+* ETS permissions, and restart servers when config changes ([31614d7](https://github.com/jensvogt/euclid-jdk/commit/31614d7d86c5cc0668f0a27f46148f0eea278aa0))
+* ETS permissions, and restart servers when config changes ([856c436](https://github.com/jensvogt/euclid-jdk/commit/856c43630be1ef6482b5e70fa9b1fc39372b50c3))
+
 ## [0.1.33](https://github.com/jensvogt/euclid-jdk/compare/euclid-jdk-v0.1.32...euclid-jdk-v0.1.33) (2026-09-12)
 
 
