@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.1.35](https://github.com/jensvogt/euclid-jdk/compare/euclid-jdk-v0.1.34...euclid-jdk-v0.1.35) (2026-09-13)
+
+
+### Bug Fixes
+
+* ESM count objects ([a2d2a9b](https://github.com/jensvogt/euclid-jdk/commit/a2d2a9b17570eca14582cf5df01f0e0e0cab7937))
+* ESM count objects ([edf9dd0](https://github.com/jensvogt/euclid-jdk/commit/edf9dd034d5d1c5c5b9a02f1f4b936e33655df45))
+
 ## [0.1.34](https://github.com/jensvogt/euclid-jdk/compare/euclid-jdk-v0.1.33...euclid-jdk-v0.1.34) (2026-09-13)
 
 
