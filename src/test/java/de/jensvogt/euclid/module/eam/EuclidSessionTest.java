@@ -4,6 +4,12 @@ import com.sun.net.httpserver.Headers;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpHandler;
 import com.sun.net.httpserver.HttpServer;
+import de.jensvogt.euclid.dto.eam.GrantRoleRequest;
+import de.jensvogt.euclid.dto.eam.ListGrantsResponse;
+import de.jensvogt.euclid.dto.eam.ListRolesRequest;
+import de.jensvogt.euclid.dto.eam.ListRolesResponse;
+import de.jensvogt.euclid.dto.eam.RoleRequest;
+import de.jensvogt.euclid.dto.eam.PermissionCheckResponse;
 import de.jensvogt.euclid.dto.eam.CreateAccessKeyResponse;
 import de.jensvogt.euclid.dto.eam.ListAccountsResponse;
 import de.jensvogt.euclid.dto.eam.ListNamespacesResponse;
@@ -11,6 +17,8 @@ import de.jensvogt.euclid.dto.eam.ListUserGroupsResponse;
 import de.jensvogt.euclid.dto.eam.ListUserResponse;
 import de.jensvogt.euclid.dto.eam.model.AccessKey;
 import de.jensvogt.euclid.dto.eam.model.Account;
+import de.jensvogt.euclid.dto.eam.model.Grant;
+import de.jensvogt.euclid.dto.eam.model.Role;
 import de.jensvogt.euclid.dto.eam.model.Namespace;
 import de.jensvogt.euclid.dto.eam.model.User;
 import de.jensvogt.euclid.dto.eam.model.UserGroup;
@@ -30,6 +38,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -73,9 +82,7 @@ class EuclidSessionTest {
         User user = users.getFirst();
         assertEquals("bob", user.userId());
         assertEquals("user-ern", user.ern());
-        assertEquals(1, user.accountGrants().size());
-        assertEquals("863459426936", user.accountGrants().get(0).accountId());
-        assertTrue(user.accountGrants().getFirst().isAdmin());
+        assertEquals("863459426936", user.accountId());
     }
 
     @Test
@@ -501,33 +508,95 @@ class EuclidSessionTest {
     }
 
     @Test
-    void grantNamespaceAccessSendsFields() throws Exception {
+    void grantRoleSendsFieldsAndReturnsTheGrant() throws Exception {
         AtomicReference<CapturedRequest> received = new AtomicReference<>();
         server = startServer(exchange -> {
             received.set(capture(exchange));
-            sendResponse(exchange, 200, "{}");
+            sendResponse(exchange, 200, "{\"grant\":" + grantJson("grant-1") + "}");
         });
 
-        newSession().grantNamespaceAccess("user-ern", "863459426936", "prod");
+        Grant grant = newSession().grantRole(GrantRoleRequest.builder()
+                .role("operator")
+                .principal("user-ern")
+                .accountId("863459426936")
+                .namespaces(List.of("prod"))
+                .build());
 
-        assertEquals("grant-namespace-access", received.get().header("x-euclid-action"));
-        assertBodyContains(received.get().body(), "\"user\":\"user-ern\"", "\"accountId\":\"863459426936\"",
-                "\"namespace\":\"prod\"");
+        assertEquals("grant-role", received.get().header("x-euclid-action"));
+        assertBodyContains(received.get().body(), "\"role\":\"operator\"", "\"principal\":\"user-ern\"",
+                "\"accountId\":\"863459426936\"", "\"namespaces\":[\"prod\"]");
+        // The builder's own default, not something the caller said: a grant that named no resources
+        // would match none, so leaving it out has to mean "all of them".
+        assertBodyContains(received.get().body(), "\"resources\":[\"*\"]");
+        assertEquals("grant-1", grant.grantId(), "the id is the only handle revokeRole() takes");
+        assertEquals("operator", grant.role());
     }
 
     @Test
-    void revokeNamespaceAccessSendsFields() throws Exception {
+    void revokeRoleSendsTheGrantId() throws Exception {
         AtomicReference<CapturedRequest> received = new AtomicReference<>();
         server = startServer(exchange -> {
             received.set(capture(exchange));
             sendResponse(exchange, 200, "{}");
         });
 
-        newSession().revokeNamespaceAccess("user-ern", "863459426936", "prod");
+        newSession().revokeRole("grant-1");
 
-        assertEquals("revoke-namespace-access", received.get().header("x-euclid-action"));
-        assertBodyContains(received.get().body(), "\"user\":\"user-ern\"", "\"accountId\":\"863459426936\"",
-                "\"namespace\":\"prod\"");
+        assertEquals("revoke-role", received.get().header("x-euclid-action"));
+        assertBodyContains(received.get().body(), "\"grantId\":\"grant-1\"");
+    }
+
+    @Test
+    void listGrantsAsksForAWholeAccountWhenGivenNoPrincipal() throws Exception {
+        AtomicReference<CapturedRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(capture(exchange));
+            sendResponse(exchange, 200, "{\"metadata\":{\"region\":\"eu-central-1\","
+                    + "\"accountId\":\"863459426936\",\"user\":\"alice\"},"
+                    + "\"grants\":[" + grantJson("grant-1") + "],\"total\":1}");
+        });
+
+        ListGrantsResponse response = newSession().listGrants("", "", "863459426936");
+
+        assertEquals("list-grants", received.get().header("x-euclid-action"));
+        // Empty rather than omitted: naming neither principal nor role is what asks for the whole
+        // account, so the fields have to go on the wire to say so.
+        assertBodyContains(received.get().body(), "\"principal\":\"\"", "\"role\":\"\"",
+                "\"accountId\":\"863459426936\"");
+        assertEquals(1, response.total());
+        assertEquals(List.of("prod"), response.grants().getFirst().namespaces());
+    }
+
+    @Test
+    void checkPermissionParsesTheVerdictAndItsReason() throws Exception {
+        AtomicReference<CapturedRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(capture(exchange));
+            sendResponse(exchange, 200,
+                    "{\"allowed\":true,\"reason\":\"granted by operator\",\"role\":\"operator\"}");
+        });
+
+        PermissionCheckResponse check =
+                newSession().checkPermission("bob", "ens", "publish-message", "prod", "ern:ens:topic/orders");
+
+        assertEquals("check-permission", received.get().header("x-euclid-action"));
+        assertBodyContains(received.get().body(), "\"userId\":\"bob\"", "\"target\":\"ens\"",
+                "\"action\":\"publish-message\"", "\"namespace\":\"prod\"",
+                "\"resourceErn\":\"ern:ens:topic/orders\"");
+        assertTrue(check.allowed());
+        // The reason matters most on a refusal, so it must survive parsing in both directions.
+        assertEquals("granted by operator", check.reason());
+        assertEquals("operator", check.role());
+    }
+
+    @Test
+    void listPermissionsReturnsTheVocabulary() throws Exception {
+        server = startServer(exchange -> sendResponse(exchange, 200,
+                "{\"permissions\":[\"ens:create-topic\",\"ens:publish-message\"],\"unbindable\":[\"emd\",\"emm\"]}"));
+
+        List<String> permissions = newSession().listPermissions();
+
+        assertEquals(List.of("ens:create-topic", "ens:publish-message"), permissions);
     }
 
     @Test
@@ -556,9 +625,168 @@ class EuclidSessionTest {
 
     private static String userJson(String userId) {
         return "{\"userId\":\"" + userId + "\",\"ern\":\"user-ern\",\"password\":\"hash\",\"email\":\"bob@example.com\","
-                + "\"accountId\":\"863459426936\",\"region\":\"eu-central-1\",\"accountGrants\":["
-                + "{\"accountId\":\"863459426936\",\"namespaces\":[\"prod\"],\"isAdmin\":true,\"granted\":\"2026-01-01\"}],"
+                + "\"accountId\":\"863459426936\",\"region\":\"eu-central-1\","
                 + "\"created\":\"2026-01-01\",\"modified\":\"2026-01-02\"}";
+    }
+
+    @Test
+    void createRoleSendsNamePermissionsAndParsesTheRole() throws Exception {
+        AtomicReference<CapturedRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(capture(exchange));
+            sendResponse(exchange, 201, "{\"metadata\":{\"region\":\"eu-central-1\"},\"role\":"
+                    + roleJson("invoice-reader", false) + "}");
+        });
+
+        Role role = newSession().createRole(RoleRequest.builder().name("invoice-reader")
+                .description("reads invoices").permissions(List.of("esm:get-object", "esm:list-objects")).build());
+
+        assertEquals("create-role", received.get().header("x-euclid-action"));
+        assertBodyContains(received.get().body(), "\"name\":\"invoice-reader\"",
+                "\"description\":\"reads invoices\"",
+                "\"permissions\":[\"esm:get-object\",\"esm:list-objects\"]");
+        assertEquals("invoice-reader", role.name());
+        assertEquals(List.of("esm:get-object", "esm:list-objects"), role.permissions());
+        assertFalse(role.builtin());
+    }
+
+    // A role that grants nothing is far more often a caller who meant to send something.
+    @Test
+    void createRoleSurfacesARoleWithNoPermissions() throws Exception {
+        server = startServer(exchange -> {
+            exchange.getRequestBody().readAllBytes();
+            sendResponse(exchange, 400, "{\"error\":\"a role with no permissions grants nothing\"}");
+        });
+
+        EuclidServiceException exception = assertThrows(EuclidServiceException.class,
+                () -> newSession().createRole(RoleRequest.builder().name("empty").build()));
+
+        assertEquals("eam", exception.service());
+        assertEquals("create-role", exception.action());
+        assertEquals(400, exception.statusCode());
+    }
+
+    // A grant resolves the account's own roles first, so a stored role of a built-in's name would
+    // silently replace it for that account alone.
+    @Test
+    void createRoleSurfacesABuiltinName() throws Exception {
+        server = startServer(exchange -> {
+            exchange.getRequestBody().readAllBytes();
+            sendResponse(exchange, 409, "{\"error\":\"'operator' is a built-in role and cannot be redefined\"}");
+        });
+
+        EuclidServiceException exception = assertThrows(EuclidServiceException.class,
+                () -> newSession().createRole(RoleRequest.builder().name("operator")
+                        .permissions(List.of("esm:get-object")).build()));
+
+        assertEquals(409, exception.statusCode());
+    }
+
+    // update-role replaces rather than merges: what is sent is what the role ends up with.
+    @Test
+    void updateRoleSendsTheWholePermissionList() throws Exception {
+        AtomicReference<CapturedRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(capture(exchange));
+            sendResponse(exchange, 200, "{\"role\":" + roleJson("invoice-reader", false) + "}");
+        });
+
+        newSession().updateRole(RoleRequest.builder().name("invoice-reader")
+                .permissions(List.of("esm:get-object")).build());
+
+        assertEquals("update-role", received.get().header("x-euclid-action"));
+        assertBodyContains(received.get().body(), "\"permissions\":[\"esm:get-object\"]");
+    }
+
+    @Test
+    void getRoleSendsTheNameAndReportsWhetherItIsBuiltin() throws Exception {
+        AtomicReference<CapturedRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(capture(exchange));
+            sendResponse(exchange, 200, "{\"role\":" + roleJson("operator", true) + "}");
+        });
+
+        Role role = newSession().getRole("operator");
+
+        assertEquals("get-role", received.get().header("x-euclid-action"));
+        assertBodyContains(received.get().body(), "\"name\":\"operator\"");
+        assertTrue(role.builtin(), "a built-in has to say so - it cannot be changed or deleted");
+    }
+
+    @Test
+    void listRolesIncludesBuiltinsByDefault() throws Exception {
+        AtomicReference<CapturedRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(capture(exchange));
+            sendResponse(exchange, 200, "{\"metadata\":{\"region\":\"eu-central-1\"},\"roles\":["
+                    + roleJson("operator", true) + "," + roleJson("invoice-reader", false) + "],\"total\":1}");
+        });
+
+        ListRolesResponse response = newSession().listRoles();
+
+        assertEquals("list-roles", received.get().header("x-euclid-action"));
+        assertBodyContains(received.get().body(), "\"includeBuiltin\":true", "\"pageSize\":10");
+        // Built-ins are not stored, so they sit outside the paging: more roles than the total.
+        assertEquals(2, response.roles().size());
+        assertEquals(1, response.total());
+        assertTrue(response.roles().getFirst().builtin());
+    }
+
+    @Test
+    void listRolesCanAskForTheAccountsOwnRolesAlone() throws Exception {
+        AtomicReference<CapturedRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(capture(exchange));
+            sendResponse(exchange, 200, "{\"roles\":[],\"total\":0}");
+        });
+
+        newSession().listRoles(ListRolesRequest.builder().includeBuiltin(false).prefix("invoice").build());
+
+        assertBodyContains(received.get().body(), "\"includeBuiltin\":false", "\"prefix\":\"invoice\"");
+    }
+
+    @Test
+    void deleteRoleSendsTheName() throws Exception {
+        AtomicReference<CapturedRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(capture(exchange));
+            sendResponse(exchange, 200, "");
+        });
+
+        newSession().deleteRole("invoice-reader");
+
+        assertEquals("delete-role", received.get().header("x-euclid-action"));
+        assertBodyContains(received.get().body(), "\"name\":\"invoice-reader\"");
+    }
+
+    // Refused rather than cascading: deleting a role out from under its grants would leave grants
+    // that quietly do nothing.
+    @Test
+    void deleteRoleSurfacesARoleThatIsStillGranted() throws Exception {
+        server = startServer(exchange -> {
+            exchange.getRequestBody().readAllBytes();
+            sendResponse(exchange, 409, "{\"error\":\"Role is still granted to 3 principal(s)\"}");
+        });
+
+        EuclidServiceException exception = assertThrows(EuclidServiceException.class,
+                () -> newSession().deleteRole("invoice-reader"));
+
+        assertEquals("delete-role", exception.action());
+        assertEquals(409, exception.statusCode());
+    }
+
+    private static String roleJson(String name, boolean builtin) {
+        return "{\"name\":\"" + name + "\",\"ern\":\"ern:eam:role/" + name + "\","
+                + "\"accountId\":\"863459426936\",\"region\":\"eu-central-1\","
+                + "\"description\":\"reads invoices\","
+                + "\"permissions\":[\"esm:get-object\",\"esm:list-objects\"],"
+                + "\"builtin\":" + builtin + ",\"created\":\"2026-01-01\",\"modified\":\"2026-01-02\"}";
+    }
+
+    private static String grantJson(String grantId) {
+        return "{\"grantId\":\"" + grantId + "\",\"role\":\"operator\",\"principal\":\"user-ern\","
+                + "\"accountId\":\"863459426936\",\"namespaces\":[\"prod\"],\"resources\":[\"*\"],"
+                + "\"granted\":\"2026-01-01\",\"grantedBy\":\"alice\"}";
     }
 
     private static String userGroupJson(String name) {

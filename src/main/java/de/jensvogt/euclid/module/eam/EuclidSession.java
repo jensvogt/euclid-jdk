@@ -13,7 +13,7 @@ import de.jensvogt.euclid.dto.eam.DeleteAccountRequest;
 import de.jensvogt.euclid.dto.eam.DeleteNamespaceRequest;
 import de.jensvogt.euclid.dto.eam.DeleteUserGroupRequest;
 import de.jensvogt.euclid.dto.eam.DeleteUserRequest;
-import de.jensvogt.euclid.dto.eam.GrantNamespaceAccessRequest;
+import de.jensvogt.euclid.dto.eam.GrantRoleRequest;
 import de.jensvogt.euclid.dto.eam.ListAccountsRequest;
 import de.jensvogt.euclid.dto.eam.ListAccountsResponse;
 import de.jensvogt.euclid.dto.eam.ListNamespacesRequest;
@@ -23,15 +23,20 @@ import de.jensvogt.euclid.dto.eam.ListUserGroupsResponse;
 import de.jensvogt.euclid.dto.eam.ListUserRequest;
 import de.jensvogt.euclid.dto.eam.ListUserResponse;
 import de.jensvogt.euclid.dto.eam.RegisterRequest;
-import de.jensvogt.euclid.dto.eam.RevokeNamespaceAccessRequest;
+import de.jensvogt.euclid.dto.eam.ListGrantsResponse;
+import de.jensvogt.euclid.dto.eam.ListRolesRequest;
+import de.jensvogt.euclid.dto.eam.ListRolesResponse;
+import de.jensvogt.euclid.dto.eam.RoleRequest;
+import de.jensvogt.euclid.dto.eam.PermissionCheckResponse;
 import de.jensvogt.euclid.dto.eam.UserGroupAddUserRequest;
 import de.jensvogt.euclid.dto.eam.UserGroupRemoveUserRequest;
 import de.jensvogt.euclid.exception.EuclidServiceException;
 import de.jensvogt.euclid.http.EuclidHttpClient;
 import de.jensvogt.euclid.dto.eam.model.Account;
 import de.jensvogt.euclid.dto.eam.model.AccessKey;
-import de.jensvogt.euclid.dto.eam.model.AccountGrant;
 import de.jensvogt.euclid.dto.eam.model.Namespace;
+import de.jensvogt.euclid.dto.eam.model.Grant;
+import de.jensvogt.euclid.dto.eam.model.Role;
 import de.jensvogt.euclid.dto.eam.model.User;
 import de.jensvogt.euclid.dto.eam.model.UserGroup;
 import de.jensvogt.euclid.module.eag.EuclidEag;
@@ -806,48 +811,6 @@ public record EuclidSession(String token, String userId, String accountId, Strin
     }
 
     /**
-     * Grants a user access to a namespace within an account. Requires administrator privileges
-     * on that account.
-     *
-     * @param user      user ERN to grant access to
-     * @param accountId the account the namespace belongs to
-     * @param namespace namespace within accountId to grant access to
-     * @throws IOException          if an I/O error occurs during the operation
-     * @throws InterruptedException if the operation is interrupted while waiting for a response
-     */
-    public void grantNamespaceAccess(String user, String accountId, String namespace) throws IOException, InterruptedException {
-        String body = OBJECT_MAPPER.writeValueAsString(
-                GrantNamespaceAccessRequest.builder().user(user).accountId(accountId).namespace(namespace).build());
-        HttpResponse<String> response = new EuclidHttpClient(caCertPath).post(baseUrl + "/", body, "eam", "grant-namespace-access",
-                requestHeaders(Map.of("Content-Type", "application/json", "Authorization", "Bearer " + token)));
-
-        if (response.statusCode() / 100 != 2) {
-            throw new EuclidServiceException("eam", "grant-namespace-access", response.statusCode(), response.body());
-        }
-    }
-
-    /**
-     * Revokes a user's access to a namespace within an account. Requires administrator privileges
-     * on that account.
-     *
-     * @param user      user ERN to revoke access from
-     * @param accountId the account the namespace belongs to
-     * @param namespace namespace within accountId to revoke access from
-     * @throws IOException          if an I/O error occurs during the operation
-     * @throws InterruptedException if the operation is interrupted while waiting for a response
-     */
-    public void revokeNamespaceAccess(String user, String accountId, String namespace) throws IOException, InterruptedException {
-        String body = OBJECT_MAPPER.writeValueAsString(
-                RevokeNamespaceAccessRequest.builder().user(user).accountId(accountId).namespace(namespace).build());
-        HttpResponse<String> response = new EuclidHttpClient(caCertPath).post(baseUrl + "/", body, "eam", "revoke-namespace-access",
-                requestHeaders(Map.of("Content-Type", "application/json", "Authorization", "Bearer " + token)));
-
-        if (response.statusCode() / 100 != 2) {
-            throw new EuclidServiceException("eam", "revoke-namespace-access", response.statusCode(), response.body());
-        }
-    }
-
-    /**
      * Merges the provided headers with additional session-specific headers like region, account ID, and user ID,
      * if they are available.
      *
@@ -907,33 +870,8 @@ public record EuclidSession(String token, String userId, String accountId, Strin
                 textOrNull(userNode, "email"),
                 textOrNull(userNode, "accountId"),
                 textOrNull(userNode, "region"),
-                toAccountGrantList(userNode.get("accountGrants")),
                 textOrNull(userNode, "created"),
                 textOrNull(userNode, "modified"));
-    }
-
-    /**
-     * Builds the list of {@code AccountGrant}s from its JSON representation.
-     *
-     * @param accountGrantsNode the account grants' JSON representation, or {@code null} if absent
-     * @return the parsed {@code AccountGrant} list, empty if {@code accountGrantsNode} is absent
-     */
-    private static List<AccountGrant> toAccountGrantList(JsonNode accountGrantsNode) {
-        List<AccountGrant> grants = new ArrayList<>();
-        if (accountGrantsNode != null && accountGrantsNode.isArray()) {
-            for (JsonNode grantNode : accountGrantsNode) {
-                List<String> namespaces = new ArrayList<>();
-                JsonNode namespacesNode = grantNode.get("namespaces");
-                if (namespacesNode != null && namespacesNode.isArray()) {
-                    for (JsonNode nsNode : namespacesNode) {
-                        namespaces.add(nsNode.asText());
-                    }
-                }
-                grants.add(new AccountGrant(textOrNull(grantNode, "accountId"), namespaces,
-                        grantNode.path("isAdmin").asBoolean(false), textOrNull(grantNode, "granted")));
-            }
-        }
-        return grants;
     }
 
     /**
@@ -1012,4 +950,275 @@ public record EuclidSession(String token, String userId, String accountId, Strin
         }
         return new Metadata(textOrNull(node, "region"), textOrNull(node, "accountId"), textOrNull(node, "user"));
     }
+    /**
+     * Gives a role to a user or a user group, scoped.
+     *
+     * <p>Replaced {@code grantNamespaceAccess}: access to a namespace is now a role granted in it,
+     * so the same call says <em>what</em> the principal may do there as well as <em>where</em>.
+     *
+     * @param request the role, the principal, and how it is scoped
+     * @return the grant, whose {@code grantId} is what {@link #revokeRole(String)} takes
+     * @throws IOException          if an I/O error occurs during the operation
+     * @throws InterruptedException if the operation is interrupted while waiting for a response
+     */
+    public Grant grantRole(GrantRoleRequest request) throws IOException, InterruptedException {
+        String body = OBJECT_MAPPER.writeValueAsString(request);
+        HttpResponse<String> response = new EuclidHttpClient(caCertPath).post(baseUrl + "/", body, "eam", "grant-role",
+                requestHeaders(Map.of("Content-Type", "application/json", "Authorization", "Bearer " + token)));
+
+        if (response.statusCode() / 100 != 2) {
+            throw new EuclidServiceException("eam", "grant-role", response.statusCode(), response.body());
+        }
+
+        return OBJECT_MAPPER.readValue(OBJECT_MAPPER.readTree(response.body()).path("grant").toString(), Grant.class);
+    }
+
+    /**
+     * Removes one grant, by its own id.
+     *
+     * <p>Not by role and principal: the same role may be granted to the same principal twice with
+     * different scope, and revoking has to say which. {@link #listGrants(String, String, String)}
+     * shows the ids.
+     *
+     * @param grantId the grant's own id
+     * @throws IOException          if an I/O error occurs during the operation
+     * @throws InterruptedException if the operation is interrupted while waiting for a response
+     */
+    public void revokeRole(String grantId) throws IOException, InterruptedException {
+        String body = OBJECT_MAPPER.writeValueAsString(Map.of("grantId", grantId));
+        HttpResponse<String> response = new EuclidHttpClient(caCertPath).post(baseUrl + "/", body, "eam", "revoke-role",
+                requestHeaders(Map.of("Content-Type", "application/json", "Authorization", "Bearer " + token)));
+
+        if (response.statusCode() / 100 != 2) {
+            throw new EuclidServiceException("eam", "revoke-role", response.statusCode(), response.body());
+        }
+    }
+
+    /**
+     * Lists grants: by principal, by role, or - giving neither - a whole account.
+     *
+     * <p>The two questions this model exists to answer are "what may they do" and "who can do
+     * this"; giving neither answers a third, "what is granted here at all", which is what an
+     * overview wants and what one request per user would otherwise cost.
+     *
+     * <p>Note that {@code principal} shows that principal's <em>own</em> grants and not those of
+     * the groups it belongs to, which is a different question.
+     *
+     * @param principal a user or user-group ERN, or empty
+     * @param role      a role name, or empty
+     * @param accountId the account to look in; the caller's own when empty
+     * @return the matching grants
+     * @throws IOException          if an I/O error occurs during the operation
+     * @throws InterruptedException if the operation is interrupted while waiting for a response
+     */
+    public ListGrantsResponse listGrants(String principal, String role, String accountId)
+            throws IOException, InterruptedException {
+        String body = OBJECT_MAPPER.writeValueAsString(
+                Map.of("principal", principal, "role", role, "accountId", accountId));
+        HttpResponse<String> response = new EuclidHttpClient(caCertPath).post(baseUrl + "/", body, "eam", "list-grants",
+                requestHeaders(Map.of("Content-Type", "application/json", "Authorization", "Bearer " + token)));
+
+        if (response.statusCode() / 100 != 2) {
+            throw new EuclidServiceException("eam", "list-grants", response.statusCode(), response.body());
+        }
+
+        return OBJECT_MAPPER.readValue(response.body(), ListGrantsResponse.class);
+    }
+
+    /**
+     * Asks whether a user would be allowed to do something, and says why.
+     *
+     * <p>Counts the grants of every group the user belongs to, the way a real request would - which
+     * is why this exists next to {@link #listGrants(String, String, String)} rather than being
+     * derivable from it.
+     *
+     * @param userId      the user to ask about
+     * @param target      the module, e.g. {@code "ens"}
+     * @param action      the action, e.g. {@code "publish-message"}
+     * @param namespace   the namespace to ask about; empty is the account root
+     * @param resourceErn the resource, for the actions that name one; may be empty
+     * @return the verdict, the reason, and the deciding role
+     * @throws IOException          if an I/O error occurs during the operation
+     * @throws InterruptedException if the operation is interrupted while waiting for a response
+     */
+    public PermissionCheckResponse checkPermission(String userId, String target, String action, String namespace,
+                                                   String resourceErn) throws IOException, InterruptedException {
+        String body = OBJECT_MAPPER.writeValueAsString(Map.of("userId", userId, "target", target, "action", action,
+                "namespace", namespace, "resourceErn", resourceErn));
+        HttpResponse<String> response = new EuclidHttpClient(caCertPath).post(baseUrl + "/", body, "eam",
+                "check-permission",
+                requestHeaders(Map.of("Content-Type", "application/json", "Authorization", "Bearer " + token)));
+
+        if (response.statusCode() / 100 != 2) {
+            throw new EuclidServiceException("eam", "check-permission", response.statusCode(), response.body());
+        }
+
+        return OBJECT_MAPPER.readValue(response.body(), PermissionCheckResponse.class);
+    }
+
+    /**
+     * Every permission a role can hold, as {@code "<module>:<action>"}.
+     *
+     * <p>Generated from what the modules actually dispatch, so it is exactly what can be granted -
+     * and the two modules that are never grantable, {@code emd} and {@code emm}, are named
+     * separately rather than being silently missing.
+     *
+     * @return the permission names
+     * @throws IOException          if an I/O error occurs during the operation
+     * @throws InterruptedException if the operation is interrupted while waiting for a response
+     */
+    public List<String> listPermissions() throws IOException, InterruptedException {
+        HttpResponse<String> response = new EuclidHttpClient(caCertPath).post(baseUrl + "/", "{}", "eam",
+                "list-permissions",
+                requestHeaders(Map.of("Content-Type", "application/json", "Authorization", "Bearer " + token)));
+
+        if (response.statusCode() / 100 != 2) {
+            throw new EuclidServiceException("eam", "list-permissions", response.statusCode(), response.body());
+        }
+
+        List<String> permissions = new ArrayList<>();
+        for (JsonNode permission : OBJECT_MAPPER.readTree(response.body()).path("permissions")) {
+            permissions.add(permission.asText());
+        }
+        return permissions;
+    }
+
+    /**
+     * Defines a role: a named set of permissions a {@link #grantRole(GrantRoleRequest)} can bind to
+     * a principal.
+     *
+     * <p>The role says what may be done and carries no scope - where, and to which resources, is
+     * the grant's business. Requires administrator privileges.
+     *
+     * <p>Refused with HTTP 409 if the account already has a role of that name, or if the name is
+     * one euclid ships: a grant resolves the account's own roles first, so a stored role shadowing
+     * a built-in would silently replace it for that account alone. A permission no module answers
+     * is HTTP 400 - see {@link #listPermissions()} for the list.
+     *
+     * @param request the role's name, description and permissions
+     * @return the role as it was stored
+     * @throws IOException          if an I/O error occurs during the operation
+     * @throws InterruptedException if the operation is interrupted while waiting for a response
+     */
+    public Role createRole(RoleRequest request) throws IOException, InterruptedException {
+        return postRole("create-role", OBJECT_MAPPER.writeValueAsString(request));
+    }
+
+    /**
+     * Redefines a role that exists. Requires administrator privileges.
+     *
+     * <p>This <em>replaces</em> rather than merges: a permission left out of
+     * {@link RoleRequest#permissions()} is taken away, which is the only way to narrow a role at
+     * all. Everything a grant of this role allows changes with it, everywhere it is granted.
+     *
+     * <p>A built-in role cannot be changed and is refused with HTTP 403; a name the account has not
+     * defined is HTTP 404.
+     *
+     * @param request the role's name, and the description and permissions it should have from now on
+     * @return the role as it now stands
+     * @throws IOException          if an I/O error occurs during the operation
+     * @throws InterruptedException if the operation is interrupted while waiting for a response
+     */
+    public Role updateRole(RoleRequest request) throws IOException, InterruptedException {
+        return postRole("update-role", OBJECT_MAPPER.writeValueAsString(request));
+    }
+
+    /**
+     * Reads one role by name. Requires administrator privileges.
+     *
+     * <p>The account's own roles are looked at first and the built-ins second - the same order a
+     * grant resolves in, so what comes back is the role a grant of that name would actually use.
+     * {@link Role#builtin()} says which it was.
+     *
+     * @param name the role's name
+     * @return the role
+     * @throws IOException          if an I/O error occurs during the operation
+     * @throws InterruptedException if the operation is interrupted while waiting for a response
+     */
+    public Role getRole(String name) throws IOException, InterruptedException {
+        return postRole("get-role", OBJECT_MAPPER.writeValueAsString(Map.of("name", name)));
+    }
+
+    /**
+     * Lists the roles this account can bind, built-ins included, with default paging. Requires
+     * administrator privileges.
+     *
+     * @return the roles
+     * @throws IOException          if an I/O error occurs during the operation
+     * @throws InterruptedException if the operation is interrupted while waiting for a response
+     */
+    public ListRolesResponse listRoles() throws IOException, InterruptedException {
+        return listRoles(ListRolesRequest.builder().build());
+    }
+
+    /**
+     * Lists roles, with the prefix, the paging and whether built-ins are included spelled out.
+     * Requires administrator privileges.
+     *
+     * <p>Built-in roles are not stored, so they sit outside the paging and arrive first. That does
+     * mean {@link ListRolesResponse#roles()} can hold more entries than
+     * {@link ListRolesResponse#total()} counts - the total is how many roles the account has
+     * defined.
+     *
+     * @param request what to list
+     * @return the matching roles
+     * @throws IOException          if an I/O error occurs during the operation
+     * @throws InterruptedException if the operation is interrupted while waiting for a response
+     */
+    public ListRolesResponse listRoles(ListRolesRequest request) throws IOException, InterruptedException {
+        String body = OBJECT_MAPPER.writeValueAsString(request);
+        HttpResponse<String> response = new EuclidHttpClient(caCertPath).post(baseUrl + "/", body, "eam", "list-roles",
+                requestHeaders(Map.of("Content-Type", "application/json", "Authorization", "Bearer " + token)));
+
+        if (response.statusCode() / 100 != 2) {
+            throw new EuclidServiceException("eam", "list-roles", response.statusCode(), response.body());
+        }
+
+        return OBJECT_MAPPER.readValue(response.body(), ListRolesResponse.class);
+    }
+
+    /**
+     * Deletes a role. Requires administrator privileges.
+     *
+     * <p>Refused with HTTP 409 while anything still holds it, rather than cascading: deleting a
+     * role out from under its grants would leave grants that quietly do nothing, and taking away
+     * somebody's access is a decision to make on purpose.
+     * {@link #listGrants(String, String, String)} with the role name shows who holds it. A built-in
+     * cannot be deleted and is refused with HTTP 403.
+     *
+     * @param name the role's name
+     * @throws IOException          if an I/O error occurs during the operation
+     * @throws InterruptedException if the operation is interrupted while waiting for a response
+     */
+    public void deleteRole(String name) throws IOException, InterruptedException {
+        String body = OBJECT_MAPPER.writeValueAsString(Map.of("name", name));
+        HttpResponse<String> response = new EuclidHttpClient(caCertPath).post(baseUrl + "/", body, "eam", "delete-role",
+                requestHeaders(Map.of("Content-Type", "application/json", "Authorization", "Bearer " + token)));
+
+        if (response.statusCode() / 100 != 2) {
+            throw new EuclidServiceException("eam", "delete-role", response.statusCode(), response.body());
+        }
+    }
+
+    /**
+     * Posts one of the three role actions that answer with a single role, and reads it out of the
+     * {@code "role"} the response wraps it in.
+     *
+     * @param action the EAM action to post
+     * @param body   the JSON request body
+     * @return the role the server answered with
+     * @throws IOException          if an I/O error occurs during the operation
+     * @throws InterruptedException if the operation is interrupted while waiting for a response
+     */
+    private Role postRole(String action, String body) throws IOException, InterruptedException {
+        HttpResponse<String> response = new EuclidHttpClient(caCertPath).post(baseUrl + "/", body, "eam", action,
+                requestHeaders(Map.of("Content-Type", "application/json", "Authorization", "Bearer " + token)));
+
+        if (response.statusCode() / 100 != 2) {
+            throw new EuclidServiceException("eam", action, response.statusCode(), response.body());
+        }
+
+        return OBJECT_MAPPER.readValue(OBJECT_MAPPER.readTree(response.body()).path("role").toString(), Role.class);
+    }
+
 }
