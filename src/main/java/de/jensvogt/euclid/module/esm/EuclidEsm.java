@@ -33,6 +33,7 @@ import de.jensvogt.euclid.dto.esm.GetBucketErnRequest;
 import de.jensvogt.euclid.dto.esm.GetBucketErnResponse;
 import de.jensvogt.euclid.dto.esm.GetBucketSizeRequest;
 import de.jensvogt.euclid.dto.esm.GetBucketSizeResponse;
+import de.jensvogt.euclid.dto.esm.CountObjectsResponse;
 import de.jensvogt.euclid.dto.esm.GetObjectCountRequest;
 import de.jensvogt.euclid.dto.esm.GetObjectCountResponse;
 import de.jensvogt.euclid.dto.esm.ListBucketsRequest;
@@ -887,30 +888,25 @@ public final class EuclidEsm implements TokenRefreshable, SigningSchemeSelectabl
     }
 
     /**
-     * Counts the objects in a bucket. Cheaper than listing them when only the number is wanted -
-     * the server counts server-side rather than paging every object back to the caller.
+     * Returns the bucket's stored object count, without counting.
      *
-     * @param bucketErn the Euclid Resource Name (ERN) of the bucket whose objects are counted
-     * @return a {@code GetObjectCountResponse} carrying the bucket ERN and the number of objects
+     * <p>That figure is a running total, moved as objects are written and removed rather than
+     * counted on demand, so this costs one document read whatever the bucket holds. It is always
+     * the whole bucket, and only as current as the last time euclid's monitoring module recomputed
+     * it. Use {@link #countObjects(String, String, boolean)} when the answer has to be exact, or
+     * has to be about part of a bucket.
+     *
+     * <p>This took a {@code prefix} overload until euclid 1.0.73 and the server ignored it,
+     * answering the whole bucket's figure regardless. The overload is gone rather than fixed,
+     * because the stored total is a property of the bucket and there is no per-prefix one to read.
+     *
+     * @param bucketErn the Euclid Resource Name (ERN) of the bucket
+     * @return a {@code GetObjectCountResponse} carrying the bucket ERN and the stored count
      * @throws IOException if an I/O error occurs during the HTTP request
      * @throws InterruptedException if the operation is interrupted while waiting for a response
      */
     public GetObjectCountResponse getObjectCount(String bucketErn) throws IOException, InterruptedException {
-        return getObjectCount(bucketErn, "");
-    }
-
-    /**
-     * Counts the objects in a bucket whose key starts with the given prefix.
-     *
-     * @param bucketErn the Euclid Resource Name (ERN) of the bucket whose objects are counted
-     * @param prefix only objects whose key starts with this prefix are counted; empty counts them all
-     * @return a {@code GetObjectCountResponse} carrying the bucket ERN and the number of objects
-     * @throws IOException if an I/O error occurs during the HTTP request
-     * @throws InterruptedException if the operation is interrupted while waiting for a response
-     */
-    public GetObjectCountResponse getObjectCount(String bucketErn, String prefix) throws IOException, InterruptedException {
-        String body = OBJECT_MAPPER.writeValueAsString(
-                GetObjectCountRequest.builder().ern(bucketErn).prefix(prefix).build());
+        String body = OBJECT_MAPPER.writeValueAsString(GetObjectCountRequest.builder().ern(bucketErn).build());
         HttpResponse<String> response = httpClient.post(baseUrl + "/", body, "esm", "get-object-count",
                 requestHeaders("get-object-count", body));
 
@@ -920,6 +916,52 @@ public final class EuclidEsm implements TokenRefreshable, SigningSchemeSelectabl
 
         JsonNode root = OBJECT_MAPPER.readTree(response.body());
         return GetObjectCountResponse.builder().ern(textOrNull(root, "ern")).count(root.path("count").asLong(0)).build();
+    }
+
+    /**
+     * Counts the objects in a bucket, exactly.
+     *
+     * @param bucketErn the Euclid Resource Name (ERN) of the bucket whose objects are counted
+     * @return the count, for the whole bucket, without the markers that stand for directories
+     * @throws IOException if an I/O error occurs during the HTTP request
+     * @throws InterruptedException if the operation is interrupted while waiting for a response
+     */
+    public CountObjectsResponse countObjects(String bucketErn) throws IOException, InterruptedException {
+        return countObjects(bucketErn, "", false);
+    }
+
+    /**
+     * Counts the objects in a bucket whose key starts with the given prefix.
+     *
+     * <p>This runs a query, so the figure is exact at the moment of asking and costs what counting
+     * a bucket's objects costs - on a bucket of a million, not nothing. {@link
+     * #getObjectCount(String)} reads the bucket's stored running total instead: one document read
+     * whatever the bucket holds, always the whole bucket, and only as current as the last recount.
+     * Ask this one when the answer has to be right or has to be about part of a bucket, and that
+     * one when it has to be cheap or is being polled.
+     *
+     * @param bucketErn          the Euclid Resource Name (ERN) of the bucket whose objects are counted
+     * @param prefix             only objects whose key starts with this are counted; empty counts
+     *                           the whole bucket. Matched literally, not as a glob
+     * @param includeDirectories whether to count the zero-byte markers that stand for directories.
+     *                           False matches what a listing shows and what the bucket's own stored
+     *                           figure counts, since a directory is not something a client stored
+     * @return the count, the prefix it was taken under, and whether directories were included
+     * @throws IOException if an I/O error occurs during the HTTP request
+     * @throws InterruptedException if the operation is interrupted while waiting for a response
+     */
+    public CountObjectsResponse countObjects(String bucketErn, String prefix, boolean includeDirectories)
+            throws IOException, InterruptedException {
+        String body = OBJECT_MAPPER.writeValueAsString(Map.of("ern", bucketErn, "prefix", prefix,
+                "includeDirectories", includeDirectories));
+        HttpResponse<String> response = httpClient.post(baseUrl + "/", body, "esm", "count-objects",
+                requestHeaders("count-objects", body));
+
+        if (response.statusCode() / 100 != 2) {
+            throw new EuclidServiceException("esm", "count-objects", response.statusCode(), response.body());
+        }
+
+        return OBJECT_MAPPER.readValue(response.body(), CountObjectsResponse.class);
     }
 
     /**
