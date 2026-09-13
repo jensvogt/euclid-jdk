@@ -34,6 +34,48 @@ automatically while still valid, so subsequent calls can skip straight to:
 EuclidSqs sqs = Euclid.forServer("https://euclid.example.com").sqs();
 ```
 
+### Roles and grants
+
+What a user may do is the union of the roles granted to them and to the groups they belong to.
+A grant says which role, to whom, and where it applies - the namespaces of an account and, for the
+actions that name a resource, which resources:
+
+```java
+Grant grant = session.grantRole(GrantRoleRequest.builder()
+        .role("operator")
+        .principal("ern:euclid:eam:eu-central-1:863459426936:user/bob")
+        .namespaces(List.of("prod"))
+        .resources(List.of("ern:euclid:ens:eu-central-1:863459426936:topic/orders*"))
+        .build());
+```
+
+Namespaces and resources both default to `*`, so a grant that names neither applies account-wide
+rather than nowhere. A grant's scope is fixed once written: widening it means revoking and granting
+again, which is why `revokeRole` takes the `grantId` the grant came back with rather than a role and
+a principal - the same role may be granted to the same principal twice with different scope.
+
+```java
+session.listGrants("", "", "863459426936");   // everything granted in the account
+session.listGrants(userErn, "", "");          // one principal's own grants, not their groups'
+session.revokeRole(grant.grantId());
+```
+
+`checkPermission` answers the question a refusal raises, counting group membership the way a real
+request does, and says which role decided it:
+
+```java
+PermissionCheckResponse check = session.checkPermission("bob", "ens", "publish-message", "prod",
+        "ern:euclid:ens:eu-central-1:863459426936:topic/orders");
+if (!check.allowed()) {
+    System.out.println(check.reason());
+}
+```
+
+`listPermissions()` returns everything that can be granted, as `<module>:<action>`. It is generated
+from what the modules actually dispatch, so it is the vocabulary itself rather than a copy of it -
+and the two modules that are never grantable, `emd` and `emm`, are named separately rather than
+being silently missing.
+
 ### SQS operations
 
 ```java
