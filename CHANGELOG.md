@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.1.37](https://github.com/jensvogt/euclid-jdk/compare/euclid-jdk-v0.1.36...euclid-jdk-v0.1.37) (2026-09-14)
+
+
+### Bug Fixes
+
+* shorten EAP ramp up time ([692d3de](https://github.com/jensvogt/euclid-jdk/commit/692d3dec7a3ac872bb2ffb45479d145cc52aa911))
+* shorten EAP ramp up time ([efd8df4](https://github.com/jensvogt/euclid-jdk/commit/efd8df4a4787f3ca0c54bec314514d8527087c21))
+
 ## [0.1.36](https://github.com/jensvogt/euclid-jdk/compare/euclid-jdk-v0.1.35...euclid-jdk-v0.1.36) (2026-09-14)
 
 
