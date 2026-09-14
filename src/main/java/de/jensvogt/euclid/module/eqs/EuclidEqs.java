@@ -489,7 +489,7 @@ public final class EuclidEqs implements TokenRefreshable, SigningSchemeSelectabl
      */
     public CreateQueueResponse createQueue(String name, long visibility, long maxRetries, long maxMessageLength,
                                             String dlqName, long delay) throws IOException, InterruptedException {
-        return createQueue(name, visibility, maxRetries, maxMessageLength, dlqName, delay, "MIDDLE");
+        return createQueue(name, visibility, maxRetries, maxMessageLength, dlqName, delay, "MEDIUM");
     }
 
     /**
@@ -885,7 +885,7 @@ public final class EuclidEqs implements TokenRefreshable, SigningSchemeSelectabl
      */
     public SendMessageResponse sendMessage(String ern, String body, Map<String, Variant> attributes)
             throws IOException, InterruptedException {
-        return sendMessage(ern, body, attributes, "MIDDLE");
+        return sendMessage(ern, body, attributes, "MEDIUM");
     }
 
     /**

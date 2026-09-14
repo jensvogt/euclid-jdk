@@ -69,7 +69,7 @@ public record CreateQueueRequest(String name, long visibility, long maxRetries, 
         /**
          * Default priority for the queue's messages, overridable per send-message.
          */
-        private String priority = "MIDDLE";
+        private String priority = "MEDIUM";
 
         /**
          * Whether this queue is euclid's own plumbing rather than a user's queue.

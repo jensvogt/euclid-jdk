@@ -14,7 +14,7 @@ import java.util.Map;
  * @param priority   priority of the queue messages this publish fans out to. A topic is not
  *                   consumed from, so this says nothing about the topic itself - it is what the
  *                   messages its SQS-type subscriptions turn this one into are given, so that a
- *                   hop through a topic does not silently reset a delivery to MIDDLE
+ *                   hop through a topic does not silently reset a delivery to MEDIUM
  */
 public record PublishMessageRequest(String ern, String body, Map<String, Variant> attributes, String priority) {
 
@@ -56,7 +56,7 @@ public record PublishMessageRequest(String ern, String body, Map<String, Variant
         /**
          * The priority of the queue messages this publish fans out to.
          */
-        private String priority = "MIDDLE";
+        private String priority = "MEDIUM";
 
         /**
          * Sets the topic ERN.

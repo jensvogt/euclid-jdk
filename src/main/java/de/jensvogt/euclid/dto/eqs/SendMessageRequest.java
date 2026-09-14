@@ -52,7 +52,7 @@ public record SendMessageRequest(String ern, String body, Map<String, Variant> a
         /**
          * The priority of the message.
          */
-        private String priority = "MIDDLE";
+        private String priority = "MEDIUM";
 
         /**
          * Sets the ERN of the queue to send the message to.

@@ -39,6 +39,7 @@ import de.jensvogt.euclid.dto.ens.SetTopicRetentionResponse;
 import de.jensvogt.euclid.dto.ens.SetTopicTagRequest;
 import de.jensvogt.euclid.dto.ens.SubscribeRequest;
 import de.jensvogt.euclid.dto.ens.SubscribeResponse;
+import de.jensvogt.euclid.dto.ens.ResendMessagesResponse;
 import de.jensvogt.euclid.dto.ens.TopicStatusRequest;
 import de.jensvogt.euclid.dto.ens.TopicStatusResponse;
 import de.jensvogt.euclid.dto.ens.UnsubscribeRequest;
@@ -391,7 +392,7 @@ public final class EuclidEns implements TokenRefreshable, SigningSchemeSelectabl
      */
     public PublishMessageResponse publishMessage(String ern, String body, Map<String, Variant> attributes)
             throws IOException, InterruptedException {
-        return publishMessage(ern, body, attributes, "MIDDLE");
+        return publishMessage(ern, body, attributes, "MEDIUM");
     }
 
     /**
@@ -401,7 +402,7 @@ public final class EuclidEns implements TokenRefreshable, SigningSchemeSelectabl
      * message: a topic is not consumed from, so a priority means nothing on it. It is carried so
      * that the messages the topic's SQS-type subscriptions turn this one into are worth what the
      * message that caused them was worth - a delivery that crosses a topic would otherwise arrive
-     * on the other side at MIDDLE, whatever it was sent as.
+     * on the other side at MEDIUM, whatever it was sent as.
      *
      * <p>A body larger than the topic accepts is refused with HTTP 400. What is measured is the
      * body alone - attributes travel alongside it and are not counted - which is the same figure
@@ -411,8 +412,8 @@ public final class EuclidEns implements TokenRefreshable, SigningSchemeSelectabl
      * @param ern        the ERN of the topic to publish to
      * @param body       the message body
      * @param attributes typed message attributes
-     * @param priority   the priority of the fanned-out queue messages, "LOW", "MIDDLE" or "HIGH";
-     *                   anything else is read by the server as the default of "MIDDLE"
+     * @param priority   the priority of the fanned-out queue messages, "LOW", "MEDIUM" or "HIGH";
+     *                   anything else is read by the server as the default of "MEDIUM"
      * @return a {@code PublishMessageResponse} containing the published message's details
      * @throws IOException if an I/O error occurs during the operation
      * @throws InterruptedException if the operation is interrupted
@@ -647,6 +648,59 @@ public final class EuclidEns implements TokenRefreshable, SigningSchemeSelectabl
      */
     public TopicStatusResponse startTopic(String ern) throws IOException, InterruptedException {
         return setTopicStatus("start-topic", ern);
+    }
+
+    /**
+     * Hands what a topic still holds to its subscribers again, for the whole topic.
+     *
+     * @param ern the ERN of the topic
+     * @return how many were resent, and how many were passed over as held
+     * @throws IOException          if an I/O error occurs during the operation
+     * @throws InterruptedException if the operation is interrupted
+     */
+    public ResendMessagesResponse resendMessages(String ern) throws IOException, InterruptedException {
+        return resendMessages(ern, "");
+    }
+
+    /**
+     * Hands what a topic still holds to its subscribers again, oldest first, each message with the
+     * payload, attributes and priority it was published with.
+     * <p>
+     * A topic is not consumed the way a queue is: publishing fans a message out there and then, and
+     * what stays behind is the record of what was published - kept for the topic's retention period,
+     * and once a subscriber has consumed the queue message it received, that record is the only copy
+     * left. This is the way back to it for a subscriber that was down, one subscribed after the
+     * fact, or one that acknowledged a message and then failed to process it.
+     * <p>
+     * <strong>It goes to every subscriber</strong>, not only the one that missed something. A
+     * consumer that is idempotent does not care; one that is not will double-process. On a busy
+     * topic, name a single {@code messageId} rather than replaying a fortnight of traffic to
+     * everybody.
+     * <p>
+     * Messages held because the topic was stopped are not resent - they have never been delivered at
+     * all, and {@link #startTopic(String)} is what releases them and marks them delivered. Handing
+     * one over from here would deliver it without the mark, so the next start would deliver it
+     * twice. They are counted instead, in {@link ResendMessagesResponse#held()}. A stopped topic is
+     * refused outright for the same reason.
+     *
+     * @param ern       the ERN of the topic
+     * @param messageId resend only this message, as {@code listMessages} reports its id; empty
+     *                  resends everything the topic holds. A message belonging to another topic is
+     *                  refused rather than fanned out to subscriptions it was never published to
+     * @return how many were resent, and how many were passed over as held
+     * @throws IOException          if an I/O error occurs during the operation
+     * @throws InterruptedException if the operation is interrupted
+     */
+    public ResendMessagesResponse resendMessages(String ern, String messageId) throws IOException, InterruptedException {
+        String body = OBJECT_MAPPER.writeValueAsString(Map.of("ern", ern, "messageId", messageId));
+        HttpResponse<String> response = httpClient.post(baseUrl + "/", body, "ens", "resend-messages",
+                requestHeaders("resend-messages", body));
+
+        if (response.statusCode() / 100 != 2) {
+            throw new EuclidServiceException("ens", "resend-messages", response.statusCode(), response.body());
+        }
+
+        return OBJECT_MAPPER.readValue(response.body(), ResendMessagesResponse.class);
     }
 
     /**

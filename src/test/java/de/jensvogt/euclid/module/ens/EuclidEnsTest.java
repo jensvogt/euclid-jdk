@@ -19,6 +19,7 @@ import de.jensvogt.euclid.dto.ens.PublishMessageResponse;
 import de.jensvogt.euclid.dto.ens.SetTopicMaxMessageLengthResponse;
 import de.jensvogt.euclid.dto.ens.SetTopicRetentionResponse;
 import de.jensvogt.euclid.dto.ens.SubscribeResponse;
+import de.jensvogt.euclid.dto.ens.ResendMessagesResponse;
 import de.jensvogt.euclid.dto.ens.TopicStatusResponse;
 import de.jensvogt.euclid.dto.ens.model.Topic;
 import de.jensvogt.euclid.exception.EuclidServiceException;
@@ -315,7 +316,7 @@ class EuclidEnsTest {
 
         newClient().publishMessage("topic-ern", "hello");
 
-        assertBodyContains(received.get().body(), "\"priority\":\"MIDDLE\"");
+        assertBodyContains(received.get().body(), "\"priority\":\"MEDIUM\"");
     }
 
     @Test
@@ -630,6 +631,56 @@ class EuclidEnsTest {
         assertBodyContains(received.get().body(), "\"ern\":\"topic-ern\"");
         assertEquals("RUNNING", response.status());
         assertEquals(1200, response.released());
+    }
+
+    @Test
+    void resendMessagesReportsWhatWentAndWhatWasHeld() throws Exception {
+        AtomicReference<SignableRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(captureRequest(exchange));
+            sendResponse(exchange, 200, "{\"ern\":\"topic-ern\",\"resent\":42,\"held\":3}");
+        });
+
+        ResendMessagesResponse response = newClient().resendMessages("topic-ern");
+
+        assertEquals("resend-messages", received.get().header("x-euclid-action"));
+        assertBodyContains(received.get().body(), "\"ern\":\"topic-ern\"");
+        assertEquals(42, response.resent());
+
+        // The number that tells an operator a resend was not the right command: those messages have
+        // never been delivered at all, and startTopic is what releases them.
+        assertEquals(3, response.held());
+    }
+
+    @Test
+    void resendMessagesCanNameASingleMessage() throws Exception {
+        AtomicReference<SignableRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(captureRequest(exchange));
+            sendResponse(exchange, 200, "{\"ern\":\"topic-ern\",\"resent\":1,\"held\":0}");
+        });
+
+        // What a busy topic wants: a resend goes to every subscriber, so replaying one message is
+        // usually the right size of blast radius.
+        ResendMessagesResponse response = newClient().resendMessages("topic-ern", "message-7");
+
+        assertBodyContains(received.get().body(), "\"ern\":\"topic-ern\"", "\"messageId\":\"message-7\"");
+        assertEquals(1, response.resent());
+    }
+
+    @Test
+    void resendMessagesSurfacesAStoppedTopic() throws Exception {
+        server = startServer(exchange -> {
+            exchange.getRequestBody().readAllBytes();
+            sendResponse(exchange, 409, "{\"error\":\"Topic is stopped and delivers nothing\"}");
+        });
+
+        EuclidServiceException exception = assertThrows(EuclidServiceException.class,
+                () -> newClient().resendMessages("topic-ern"));
+
+        assertEquals("ens", exception.service());
+        assertEquals("resend-messages", exception.action());
+        assertEquals(409, exception.statusCode());
     }
 
     @Test
