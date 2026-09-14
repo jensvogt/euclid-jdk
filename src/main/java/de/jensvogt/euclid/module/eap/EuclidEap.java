@@ -358,6 +358,56 @@ public final class EuclidEap implements TokenRefreshable, SigningSchemeSelectabl
     }
 
     /**
+     * Tells euclid how loaded this instance is, which is what the autoscaler grows and shrinks the
+     * pool on.
+     *
+     * <p>Called by an application about itself, on its own timer. The instance id is the one euclid
+     * handed the process in {@code EUCLID_INSTANCE_ID}; a report that cannot say which pool slot it
+     * came from is refused rather than attributed to the wrong one.
+     *
+     * <p>An application deployed without a user of its own runs as {@code app-<runtimeName>}, which
+     * already says which pool it is, so nothing else is needed. One deployed with a named user has
+     * to pass the {@code applicationId} overload, and must be the identity that application runs
+     * as - an application that could report another's load could make somebody else's pool grow to
+     * its ceiling or shrink to its floor.
+     *
+     * <p><strong>This is not a metric.</strong> Push the same numbers to
+     * {@code EuclidEmo.pushMetrics} as well if you want the history: that path aggregates into
+     * five-minute buckets, which is right for a graph and five minutes too slow for a control loop.
+     *
+     * @param instanceId  this instance, from {@code EUCLID_INSTANCE_ID}
+     * @param utilisation how busy, 0-100; clamped to that range by the server
+     * @param backlog     how much work is waiting that this instance has not started
+     * @throws IOException if an I/O error occurs during the operation
+     * @throws InterruptedException if the operation is interrupted
+     */
+    public void reportLoad(String instanceId, double utilisation, long backlog)
+            throws IOException, InterruptedException {
+        reportLoad(instanceId, utilisation, backlog, "");
+    }
+
+    /**
+     * Reports load for an application the caller runs as but is not named after.
+     *
+     * @param instanceId    this instance, from {@code EUCLID_INSTANCE_ID}
+     * @param utilisation   how busy, 0-100
+     * @param backlog       how much work is waiting
+     * @param applicationId the application being reported for; the caller must be the identity it
+     *                      runs as. Empty when the caller is the application's own principal
+     * @throws IOException if an I/O error occurs during the operation
+     * @throws InterruptedException if the operation is interrupted
+     */
+    public void reportLoad(String instanceId, double utilisation, long backlog, String applicationId)
+            throws IOException, InterruptedException {
+        String body = OBJECT_MAPPER.writeValueAsString(Map.of(
+                "instanceId", instanceId,
+                "utilisation", utilisation,
+                "backlog", backlog,
+                "applicationId", applicationId));
+        post("report-load", body);
+    }
+
+    /**
      * Takes back a level set with {@link #setLogLevel(String, String)}, putting the application back
      * under whatever its channel is configured with.
      * <p>
