@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.36](https://github.com/jensvogt/euclid-jdk/compare/euclid-jdk-v0.1.35...euclid-jdk-v0.1.36) (2026-09-14)
+
+
+### Bug Fixes
+
+* ESM resend messages ([d2b2274](https://github.com/jensvogt/euclid-jdk/commit/d2b227456e1b87e2a7ee7564f0c32eada9d69858))
+
 ## [0.1.35](https://github.com/jensvogt/euclid-jdk/compare/euclid-jdk-v0.1.34...euclid-jdk-v0.1.35) (2026-09-13)
 
 
