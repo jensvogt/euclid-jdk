@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.1.38](https://github.com/jensvogt/euclid-jdk/compare/euclid-jdk-v0.1.37...euclid-jdk-v0.1.38) (2026-09-14)
+
+
+### Bug Fixes
+
+* EAP autoscaler ([4a03d0b](https://github.com/jensvogt/euclid-jdk/commit/4a03d0b453303f3020c3b4f921fb1c99f7775e60))
+* EAP autoscaler ([025c617](https://github.com/jensvogt/euclid-jdk/commit/025c61760ed71e59842673e0a0aac14ab3c05760))
+
 ## [0.1.37](https://github.com/jensvogt/euclid-jdk/compare/euclid-jdk-v0.1.36...euclid-jdk-v0.1.37) (2026-09-14)
 
 
