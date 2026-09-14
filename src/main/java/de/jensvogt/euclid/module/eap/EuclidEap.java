@@ -399,10 +399,34 @@ public final class EuclidEap implements TokenRefreshable, SigningSchemeSelectabl
      */
     public void reportLoad(String instanceId, double utilisation, long backlog, String applicationId)
             throws IOException, InterruptedException {
+        reportLoad(instanceId, utilisation, backlog, 0, applicationId);
+    }
+
+    /**
+     * The same, saying as well how much work this instance has started and not finished.
+     *
+     * <p>That last number is not a load signal - it says "do not stop me", not "start another one".
+     * Scale-down passes over an instance reporting any, because work in flight is work a second
+     * instance cannot take over: stopping the instance abandons it and it has to be done again.
+     * A listener part-way through a message is the case this exists for.
+     *
+     * @param instanceId    this instance, from {@code EUCLID_INSTANCE_ID}
+     * @param utilisation   how busy, 0-100
+     * @param backlog       how much work is waiting
+     * @param active        how much work has been started and not finished, now. A gauge rather
+     *                      than a counter - the newest figure is the whole answer
+     * @param applicationId the application being reported for; the caller must be the identity it
+     *                      runs as. Empty when the caller is the application's own principal
+     * @throws IOException if an I/O error occurs during the operation
+     * @throws InterruptedException if the operation is interrupted
+     */
+    public void reportLoad(String instanceId, double utilisation, long backlog, long active, String applicationId)
+            throws IOException, InterruptedException {
         String body = OBJECT_MAPPER.writeValueAsString(Map.of(
                 "instanceId", instanceId,
                 "utilisation", utilisation,
                 "backlog", backlog,
+                "active", active,
                 "applicationId", applicationId));
         post("report-load", body);
     }
