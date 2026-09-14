@@ -112,7 +112,7 @@ class EuclidEqsTest {
                     + "\"owner\":\"alice\",\"ern\":\"ern:sqs:eu-central-1:863459426936:queue/orders\","
                     + "\"tags\":{\"env\":\"prod\"},\"size\":100,\"delay\":5,\"available\":3,\"delayed\":1,"
                     + "\"invisible\":0,\"visibility\":30,\"maxMessageLength\":1048576,\"maxReceiveCount\":3,"
-                    + "\"deadLetterQueueArn\":null,\"priority\":\"MIDDLE\",\"created\":\"2026-01-01\","
+                    + "\"deadLetterQueueArn\":null,\"priority\":\"MEDIUM\",\"created\":\"2026-01-01\","
                     + "\"modified\":\"2026-01-02\"}],\"total\":1}");
         });
 
@@ -131,7 +131,7 @@ class EuclidEqsTest {
         assertEquals("prod", queue.tags().get("env"));
         assertEquals(3, queue.available());
         assertEquals(1, queue.delayed());
-        assertEquals("MIDDLE", queue.priority());
+        assertEquals("MEDIUM", queue.priority());
         assertNullSafe(queue.deadLetterQueueArn());
     }
 
@@ -331,7 +331,7 @@ class EuclidEqsTest {
 
         assertEquals("send-message", received.get().header("x-euclid-action"));
         assertBodyContains(received.get().body(), "\"ern\":\"queue-ern\"", "\"body\":\"hello\"",
-                "\"attributes\":{}", "\"priority\":\"MIDDLE\"");
+                "\"attributes\":{}", "\"priority\":\"MEDIUM\"");
         assertEquals("msg-1", response.messageId());
     }
 
@@ -531,7 +531,7 @@ class EuclidEqsTest {
             sendResponse(exchange, 200, "{\"name\":\"orders\",\"ern\":\"queue-ern\"}");
         });
 
-        newClient().createQueue("orders", 30, 3, 1024, "", 0, "MIDDLE", true);
+        newClient().createQueue("orders", 30, 3, 1024, "", 0, "MEDIUM", true);
 
         assertBodyContains(received.get().body(), "\"name\":\"orders\"", "\"internal\":true");
     }
@@ -563,7 +563,7 @@ class EuclidEqsTest {
 
         newClient().createQueue("orders");
 
-        assertBodyContains(received.get().body(), "\"priority\":\"MIDDLE\"");
+        assertBodyContains(received.get().body(), "\"priority\":\"MEDIUM\"");
     }
 
     @Test
@@ -671,7 +671,7 @@ class EuclidEqsTest {
         server = startServer(exchange -> {
             received.set(captureRequest(exchange));
             sendResponse(exchange, 200, "{\"messageId\":\"msg-1\",\"queueErn\":\"queue-ern\","
-                    + "\"receiptHandle\":\"rh-1\",\"status\":\"VISIBLE\",\"priority\":\"MIDDLE\",\"size\":11,"
+                    + "\"receiptHandle\":\"rh-1\",\"status\":\"VISIBLE\",\"priority\":\"MEDIUM\",\"size\":11,"
                     + "\"receivedCount\":2,\"visibilityTimeout\":30,\"contentType\":\"text/plain\","
                     + "\"created\":\"2026-01-01\",\"modified\":\"2026-01-02\"}");
         });
@@ -1004,7 +1004,7 @@ class EuclidEqsTest {
 
     private static String messageJson(String messageId, String receiptHandle) {
         return "{\"ern\":\"msg-ern\",\"queueErn\":\"queue-ern\",\"messageId\":\"" + messageId + "\","
-                + "\"status\":\"VISIBLE\",\"priority\":\"MIDDLE\",\"body\":\"hello\","
+                + "\"status\":\"VISIBLE\",\"priority\":\"MEDIUM\",\"body\":\"hello\","
                 + "\"receiptHandle\":\"" + receiptHandle + "\",\"receivedCount\":2,\"attributes\":{},"
                 + "\"systemAttributes\":{\"correlationId\":{\"type\":\"string\",\"value\":\"corr-1\"}},"
                 + "\"lastReceived\":null,\"created\":\"2026-01-01\",\"modified\":\"2026-01-02\"}";

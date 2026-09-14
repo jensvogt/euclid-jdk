@@ -132,7 +132,7 @@ ens.publishMessage(ern, "{\"orderId\":\"4711\"}",
 The priority belongs to those queue messages rather than to the topic message - a
 topic is not consumed from, so a priority means nothing on it. It is carried so that
 a delivery crossing a topic is still worth what it was sent as, instead of arriving
-on the other side at `MIDDLE`.
+on the other side at `MEDIUM`.
 
 `listMessages(topicErn)` reads what a topic has stored without consuming anything,
 `getMessageCount(ern)` counts it, and a stored message's attributes can be read and
