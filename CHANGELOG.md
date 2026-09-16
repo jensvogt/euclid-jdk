@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.1.39](https://github.com/jensvogt/euclid-jdk/compare/euclid-jdk-v0.1.38...euclid-jdk-v0.1.39) (2026-09-16)
+
+
+### Bug Fixes
+
+* EMO metric registry ([999de49](https://github.com/jensvogt/euclid-jdk/commit/999de497d124ce452d1a01c23e0068ecb82c0372))
+* EMO metric registry ([b71a6e0](https://github.com/jensvogt/euclid-jdk/commit/b71a6e082df3f75f9f8f1aa82a0bc0c40f33a582))
+
 ## [0.1.38](https://github.com/jensvogt/euclid-jdk/compare/euclid-jdk-v0.1.37...euclid-jdk-v0.1.38) (2026-09-14)
 
 
