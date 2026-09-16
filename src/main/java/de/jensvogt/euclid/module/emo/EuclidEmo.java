@@ -158,7 +158,7 @@ public final class EuclidEmo implements TokenRefreshable, SigningSchemeSelectabl
      *
      * @param module the process reporting - recorded alongside the samples so EMO can tell which
      *               pusher a batch came from; an application's own id is the useful value here
-     * @param metrics the samples, each a name, an optional label, a value and a type
+     * @param metrics the samples, each a name, its dimensions, a value and a type
      * @throws IOException if the request could not be sent
      * @throws InterruptedException if the calling thread was interrupted while waiting
      */
@@ -174,8 +174,10 @@ public final class EuclidEmo implements TokenRefreshable, SigningSchemeSelectabl
         for (Metric metric : metrics) {
             Map<String, Object> item = new LinkedHashMap<>();
             item.put("name", metric.name());
-            item.put("labelName", metric.labelName());
-            item.put("labelValue", metric.labelValue());
+            // The dimensions as a map, which is what EMO stores. The older labelName/labelValue
+            // pair is still accepted on the wire and still means the same thing, but sending both
+            // would only repeat the first dimension.
+            item.put("labels", metric.labels());
             item.put("value", metric.value());
             item.put("type", metric.type().wireName());
             items.add(item);

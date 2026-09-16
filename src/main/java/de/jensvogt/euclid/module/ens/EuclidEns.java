@@ -692,7 +692,38 @@ public final class EuclidEns implements TokenRefreshable, SigningSchemeSelectabl
      * @throws InterruptedException if the operation is interrupted
      */
     public ResendMessagesResponse resendMessages(String ern, String messageId) throws IOException, InterruptedException {
-        String body = OBJECT_MAPPER.writeValueAsString(Map.of("ern", ern, "messageId", messageId));
+        return resendMessages(ern, messageId, false);
+    }
+
+    /**
+     * Hands what a topic still holds to its subscribers again, optionally leaving the server to it.
+     * <p>
+     * Asked to run in the background, the server answers HTTP 202 as soon as it has counted what it
+     * is about to hand over rather than when it has finished, and
+     * {@link ResendMessagesResponse#messages()} is that count while {@code resent} and {@code held}
+     * are both zero. Which is what a topic with a long retention wants: resending a fortnight of
+     * traffic outlasts the request, and inline the caller waits for all of it, gets a timeout
+     * anyway, and the resending carries on invisibly behind the abandoned request.
+     * <p>
+     * Nothing is resumed if the server is stopped partway, and nothing needs to be: a resend removes
+     * nothing, so a run cut short has simply handed over fewer messages, and asking again hands over
+     * all of them - the ones already sent for a second time. That is the same replay this call
+     * always is, and why its subscribers have to be idempotent whether it finishes or not.
+     * <p>
+     * {@code async} cannot be combined with a {@code messageId}: one delivery is not worth a status
+     * the caller then has to chase, and the server refuses the pair rather than quietly ignoring
+     * one of them.
+     *
+     * @param ern       the ERN of the topic
+     * @param messageId resend only this message; must be empty when {@code async} is true
+     * @param async     whether the server answers before it has finished resending
+     * @return how many were resent and held, or how many were taken on when {@code async} is true
+     * @throws IOException          if an I/O error occurs during the operation
+     * @throws InterruptedException if the operation is interrupted
+     */
+    public ResendMessagesResponse resendMessages(String ern, String messageId, boolean async)
+            throws IOException, InterruptedException {
+        String body = OBJECT_MAPPER.writeValueAsString(Map.of("ern", ern, "messageId", messageId, "async", async));
         HttpResponse<String> response = httpClient.post(baseUrl + "/", body, "ens", "resend-messages",
                 requestHeaders("resend-messages", body));
 

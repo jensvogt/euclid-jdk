@@ -38,6 +38,7 @@
         <maven.compiler.target>25</maven.compiler.target>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <jackson.version>2.17.2</jackson.version>
+        <micrometer.version>1.17.0</micrometer.version>
         <junit.version>5.10.2</junit.version>
     </properties>
 
@@ -46,6 +47,18 @@
             <groupId>com.fasterxml.jackson.core</groupId>
             <artifactId>jackson-databind</artifactId>
             <version>${jackson.version}</version>
+        </dependency>
+        <!--
+            Optional on purpose: only EuclidMeterRegistry needs it, and an application that pushes
+            its own numbers through EuclidEmo.pushMetrics should not have to carry Micrometer to do
+            it. An application that does use the registry already has Micrometer of its own - every
+            Spring Boot actuator does - and picks the version.
+        -->
+        <dependency>
+            <groupId>io.micrometer</groupId>
+            <artifactId>micrometer-core</artifactId>
+            <version>${micrometer.version}</version>
+            <optional>true</optional>
         </dependency>
         <dependency>
             <groupId>org.junit.jupiter</groupId>
