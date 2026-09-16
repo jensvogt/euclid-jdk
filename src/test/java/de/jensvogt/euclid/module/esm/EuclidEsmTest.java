@@ -21,6 +21,7 @@ import de.jensvogt.euclid.dto.esm.ListObjectAttributesResponse;
 import de.jensvogt.euclid.dto.esm.ListObjectsResponse;
 import de.jensvogt.euclid.dto.esm.ListSubscriptionsResponse;
 import de.jensvogt.euclid.dto.esm.ObjectAttributeResponse;
+import de.jensvogt.euclid.dto.esm.DeleteBucketResponse;
 import de.jensvogt.euclid.dto.esm.PurgeBucketResponse;
 import de.jensvogt.euclid.dto.esm.RenameBucketResponse;
 import de.jensvogt.euclid.dto.esm.SetBucketInternalResponse;
@@ -261,6 +262,52 @@ class EuclidEsmTest {
 
         assertEquals("delete-object", received.get().header("x-euclid-action"));
         assertBodyContains(received.get().body(), "\"ern\":\"obj-ern\"");
+    }
+
+    @Test
+    void deleteBucketInTheBackgroundReportsTheJobItStarted() throws Exception {
+        // A bucket goes with its objects, and a large one is emptied in the background first. The
+        // job is what outlives the instance that took it on.
+        AtomicReference<SignableRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(captureRequest(exchange));
+            sendResponse(exchange, 202, "{\"ern\":\"bucket-ern\",\"async\":true,"
+                    + "\"jobId\":\"job-7\",\"objects\":40000}");
+        });
+
+        DeleteBucketResponse response = newClient().deleteBucket("bucket-ern", true);
+
+        assertEquals("delete-bucket", received.get().header("x-euclid-action"));
+        assertBodyContains(received.get().body(), "\"async\":true");
+        assertEquals(40000, response.count());
+        assertEquals("job-7", response.jobId());
+        assertTrue(response.async());
+    }
+
+    @Test
+    void deleteBucketInlineAnswersWithAnEmptyBody() throws Exception {
+        // 200 and nothing to read: the bucket is gone by then, so there is nothing to say and
+        // nothing wrong with saying nothing. The extractor must not treat that as malformed.
+        server = startServer(exchange -> sendResponse(exchange, 200, ""));
+
+        DeleteBucketResponse response = newClient().deleteBucket("bucket-ern", false);
+
+        assertFalse(response.async());
+        assertEquals(0, response.count());
+    }
+
+    @Test
+    void purgeBucketInTheBackgroundReadsObjectsAsTheCount() throws Exception {
+        // "objects" when it is taken on, "count" when it runs inline: the same figure at two points
+        // in the same work, and count() reads it either way.
+        server = startServer(exchange -> sendResponse(exchange, 202,
+                "{\"ern\":\"bucket-ern\",\"async\":true,\"jobId\":\"job-42\",\"objects\":120000}"));
+
+        PurgeBucketResponse response = newClient().purgeBucket("bucket-ern", "", true);
+
+        assertEquals(120000, response.count());
+        assertEquals("job-42", response.jobId());
+        assertTrue(response.async());
     }
 
     @Test

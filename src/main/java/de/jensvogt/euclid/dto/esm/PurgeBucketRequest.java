@@ -6,8 +6,10 @@ package de.jensvogt.euclid.dto.esm;
  *
  * @param ern    the ERN of the bucket to purge
  * @param prefix only objects whose key starts with this prefix are deleted
+ * @param async  whether the server answers as soon as it has taken the work on rather than when it
+ *               has finished, which is what a bucket too large to empty within one request wants
  */
-public record PurgeBucketRequest(String ern, String prefix) {
+public record PurgeBucketRequest(String ern, String prefix, boolean async) {
 
     /**
      * Creates a new instance of the Builder for constructing a PurgeBucketRequest object.
@@ -40,6 +42,11 @@ public record PurgeBucketRequest(String ern, String prefix) {
         private String prefix = "";
 
         /**
+         * Whether the server answers as soon as it has taken the work on.
+         */
+        private boolean async;
+
+        /**
          * Sets the ERN of the bucket to purge.
          *
          * @param ern the ERN of the bucket to purge
@@ -62,12 +69,23 @@ public record PurgeBucketRequest(String ern, String prefix) {
         }
 
         /**
+         * Sets whether the server answers before it has finished removing the objects.
+         *
+         * @param async whether to purge in the background
+         * @return the builder instance
+         */
+        public Builder async(boolean async) {
+            this.async = async;
+            return this;
+        }
+
+        /**
          * Builds and returns a new instance of PurgeBucketRequest using the properties set on the Builder.
          *
          * @return a new PurgeBucketRequest instance.
          */
         public PurgeBucketRequest build() {
-            return new PurgeBucketRequest(ern, prefix);
+            return new PurgeBucketRequest(ern, prefix, async);
         }
     }
 }

@@ -20,6 +20,7 @@ import de.jensvogt.euclid.dto.esm.CreateDownloadResponse;
 import de.jensvogt.euclid.dto.esm.CreateUploadRequest;
 import de.jensvogt.euclid.dto.esm.CreateUploadResponse;
 import de.jensvogt.euclid.dto.esm.DeleteBucketRequest;
+import de.jensvogt.euclid.dto.esm.DeleteBucketResponse;
 import de.jensvogt.euclid.dto.esm.DeleteBucketTagRequest;
 import de.jensvogt.euclid.dto.esm.DeleteObjectAttributeRequest;
 import de.jensvogt.euclid.dto.esm.DeleteObjectRequest;
@@ -312,19 +313,53 @@ public final class EuclidEsm implements TokenRefreshable, SigningSchemeSelectabl
 
     /**
      * Deletes a bucket identified by the given ERN (Extended Resource Name).
+     * <p>
+     * Its objects go with it. Nothing else ever would: an object is only ever reached through its
+     * bucket, so a row left behind would be unreachable for good and the file it names would be
+     * disk nothing accounts for. {@link #purgeBucket(String)} is the one that empties a bucket and
+     * keeps it.
      *
      * @param ern The Extended Resource Name (ERN) of the bucket to be deleted.
      * @throws IOException If an I/O error occurs while making the HTTP request.
      * @throws InterruptedException If the operation is interrupted during the process.
      */
     public void deleteBucket(String ern) throws IOException, InterruptedException {
-        String body = OBJECT_MAPPER.writeValueAsString(DeleteBucketRequest.builder().ern(ern).build());
+        deleteBucket(ern, false);
+    }
+
+    /**
+     * Deletes a bucket and its objects, optionally leaving the server to it.
+     * <p>
+     * Asked to run in the background, the server answers HTTP 202 as soon as it has written down
+     * what it is about to do rather than when the bucket is gone, and the response's {@code count}
+     * is how many objects it held. Which is what a bucket of any size wants: emptying one can take
+     * minutes, and holding a request open for all of it is a request that times out while the
+     * removal carries on invisibly behind it.
+     * <p>
+     * The bucket goes when the emptying finishes, so until then it stays listed - and still
+     * deletable. A caller watching for it to disappear is watching the right thing;
+     * {@link DeleteBucketResponse#jobId()} names the job, which outlives the instance that took it
+     * on.
+     * <p>
+     * Deleting inline answers with nothing, since the bucket is simply gone by then. The returned
+     * response is only worth reading when {@code async} is true.
+     *
+     * @param ern   The Extended Resource Name (ERN) of the bucket to be deleted.
+     * @param async whether the server answers before the bucket and its objects are gone
+     * @return the objects taken on and the job doing it, empty when {@code async} is false
+     * @throws IOException If an I/O error occurs while making the HTTP request.
+     * @throws InterruptedException If the operation is interrupted during the process.
+     */
+    public DeleteBucketResponse deleteBucket(String ern, boolean async) throws IOException, InterruptedException {
+        String body = OBJECT_MAPPER.writeValueAsString(DeleteBucketRequest.builder().ern(ern).async(async).build());
         HttpResponse<String> response = httpClient.post(baseUrl + "/", body, "esm", "delete-bucket",
                 requestHeaders("delete-bucket", body));
 
         if (response.statusCode() / 100 != 2) {
             throw new EuclidServiceException("esm", "delete-bucket", response.statusCode(), response.body());
         }
+
+        return extractDeleteBucketResponse(response.body());
     }
 
     /**
@@ -671,7 +706,33 @@ public final class EuclidEsm implements TokenRefreshable, SigningSchemeSelectabl
      * @throws InterruptedException if the operation is interrupted while waiting for the response
      */
     public PurgeBucketResponse purgeBucket(String ern, String prefix) throws IOException, InterruptedException {
-        String body = OBJECT_MAPPER.writeValueAsString(PurgeBucketRequest.builder().ern(ern).prefix(prefix).build());
+        return purgeBucket(ern, prefix, false);
+    }
+
+    /**
+     * Purges the objects of a bucket, optionally leaving the server to it.
+     * <p>
+     * Asked to run in the background, the server answers HTTP 202 as soon as it has written down
+     * what it is about to do rather than when it has finished, and the response's {@code count} is
+     * how many objects the bucket held rather than how many have gone. Which is what a bucket of
+     * any size wants: emptying one can take minutes, and holding a request open for all of it is a
+     * request that times out while the removal carries on invisibly behind it.
+     * <p>
+     * The work is written down as a job before it starts, so it is not lost with the instance that
+     * took it on - the autoscaler stopping that instance, or a crash, leaves a job another instance
+     * picks up and carries on. {@link PurgeBucketResponse#jobId()} names it.
+     *
+     * @param ern    the Euclid Resource Name (ERN) of the bucket to be purged
+     * @param prefix only objects whose key starts with this prefix are deleted; empty purges them all
+     * @param async  whether the server answers before it has finished removing the objects
+     * @return the bucket's ERN, the objects removed or taken on, and the job doing the work
+     * @throws IOException if a network or serialization error occurs during the operation
+     * @throws InterruptedException if the operation is interrupted while waiting for the response
+     */
+    public PurgeBucketResponse purgeBucket(String ern, String prefix, boolean async)
+            throws IOException, InterruptedException {
+        String body = OBJECT_MAPPER.writeValueAsString(
+                PurgeBucketRequest.builder().ern(ern).prefix(prefix).async(async).build());
         HttpResponse<String> response = httpClient.post(baseUrl + "/", body, "esm", "purge-bucket",
                 requestHeaders("purge-bucket", body));
 
@@ -2029,9 +2090,32 @@ public final class EuclidEsm implements TokenRefreshable, SigningSchemeSelectabl
      * @return a PurgeBucketResponse object containing the extracted data
      * @throws IOException if an error occurs during parsing of the JSON response body
      */
+    /**
+     * Extracts a {@code DeleteBucketResponse} from the given JSON response body.
+     *
+     * @param responseBody the JSON body, which is empty for a deletion that ran inline
+     * @return the response, all-defaults when the body carried nothing
+     * @throws IOException if the body is not the JSON it should be
+     */
+    private static DeleteBucketResponse extractDeleteBucketResponse(String responseBody) throws IOException {
+        // An inline delete answers 200 with no body at all, so there is nothing to read and
+        // nothing wrong with that - only the background form has anything to say.
+        if (responseBody == null || responseBody.isBlank()) return DeleteBucketResponse.builder().build();
+
+        JsonNode root = OBJECT_MAPPER.readTree(responseBody);
+        return DeleteBucketResponse.builder().ern(textOrNull(root, "ern"))
+                .count(root.path("objects").asLong(0)).jobId(root.path("jobId").asText(""))
+                .async(root.path("async").asBoolean(false)).build();
+    }
+
     private static PurgeBucketResponse extractPurgeBucketResponse(String responseBody) throws IOException {
         JsonNode root = OBJECT_MAPPER.readTree(responseBody);
-        return PurgeBucketResponse.builder().ern(textOrNull(root, "ern")).count(root.path("count").asLong(0)).build();
+        // "count" when the purge ran inline, "objects" when it was taken on: the two answers come
+        // from different points in the same work, and a caller reading count() should get the
+        // figure either way rather than a zero that means "wrong field name".
+        long count = root.path("count").asLong(root.path("objects").asLong(0));
+        return PurgeBucketResponse.builder().ern(textOrNull(root, "ern")).count(count)
+                .jobId(root.path("jobId").asText("")).async(root.path("async").asBoolean(false)).build();
     }
 
     /**
