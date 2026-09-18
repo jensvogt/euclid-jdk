@@ -41,7 +41,9 @@ import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -375,7 +377,10 @@ class EuclidEsmTest {
             }
         });
 
-        newClient().uploadFile("bucket-ern", "data.bin", file,
+        // Part size 4 against a 10-byte file: three parts, so this stays a multipart upload.
+        // Below the part size uploadFile sends one put-object instead and never calls
+        // complete-upload, which is what this asserts on.
+        newClient().uploadFile("bucket-ern", "data.bin", file, 4, 1,
                 Map.of("file_origin", new Variant("string", "FTP_UPLOAD")));
 
         assertEquals("{\"file_origin\":{\"type\":\"string\",\"value\":\"FTP_UPLOAD\"}}", attributesHeader.get());
@@ -442,7 +447,9 @@ class EuclidEsmTest {
             }
         });
 
-        newClient().uploadFile("bucket-ern", "data.bin", file, 8 * 1024 * 1024, 1, null,
+        // Part size 4, not 8 MB: a 10-byte file under the part size goes up whole, by a route
+        // that has no complete-upload for this to read the header from.
+        newClient().uploadFile("bucket-ern", "data.bin", file, 4, 1, null,
                 Map.of("priority", new Variant("string", "LOW")));
 
         assertEquals("{\"priority\":{\"type\":\"string\",\"value\":\"LOW\"}}", systemAttributesHeader.get());
@@ -477,7 +484,7 @@ class EuclidEsmTest {
             }
         });
 
-        newClient().uploadFile("bucket-ern", "data.bin", file);
+        newClient().uploadFile("bucket-ern", "data.bin", file, 4, 1);
 
         assertNull(attributesHeader.get());
     }
@@ -597,38 +604,134 @@ class EuclidEsmTest {
         assertTrue(exception.responseBody().contains("Bucket not found"));
     }
 
+    /**
+     * An empty file is below any part size, so it goes the same way every other small file does:
+     * one put-object, with an empty body. It used to create an upload, send a single empty part
+     * and complete it - three calls to store nothing - which the loop below could not produce on
+     * its own, so there was a branch in uploadFile purely to manufacture that empty part. The
+     * object that results is identical either way: zero bytes at the key.
+     */
     @Test
-    void uploadFileWithEmptyFileUploadsSingleEmptyPart(@TempDir Path tempDir) throws Exception {
+    void uploadFileWithAnEmptyFileSendsOnePutObject(@TempDir Path tempDir) throws Exception {
         Path file = tempDir.resolve("empty.bin");
         Files.createFile(file);
 
-        ConcurrentHashMap<Long, byte[]> partsByNumber = new ConcurrentHashMap<>();
+        List<String> actions = Collections.synchronizedList(new ArrayList<>());
+        AtomicReference<byte[]> body = new AtomicReference<>();
         server = startServer(exchange -> {
             String action = exchange.getRequestHeaders().getFirst("x-euclid-action");
-            switch (action) {
-                case "create-upload" -> {
-                    exchange.getRequestBody().readAllBytes();
-                    sendResponse(exchange, 200, "{\"uploadId\":\"upload-1\",\"bucketErn\":\"bucket-ern\",\"key\":\"empty.bin\"}");
-                }
-                case "upload-part" -> {
-                    long partNumber = Long.parseLong(exchange.getRequestHeaders().getFirst("x-euclid-part-number"));
-                    partsByNumber.put(partNumber, exchange.getRequestBody().readAllBytes());
-                    sendResponse(exchange, 200, "{}");
-                }
-                case "complete-upload" -> {
-                    exchange.getRequestBody().readAllBytes();
-                    sendResponse(exchange, 200, "{\"ern\":\"obj-ern\",\"bucketErn\":\"bucket-ern\",\"key\":\"empty.bin\","
-                            + "\"size\":0,\"status\":\"AVAILABLE\",\"contentType\":\"application/octet-stream\",\"md5Sum\":\"abc\"}");
-                }
-                default -> sendResponse(exchange, 500, "{\"error\":\"unexpected action " + action + "\"}");
+            actions.add(action);
+            if ("put-object".equals(action)) {
+                body.set(exchange.getRequestBody().readAllBytes());
+                sendResponse(exchange, 200, "{\"ern\":\"obj-ern\",\"bucketErn\":\"bucket-ern\",\"key\":\"empty.bin\","
+                        + "\"size\":0,\"status\":\"AVAILABLE\",\"contentType\":\"application/octet-stream\",\"md5Sum\":\"abc\"}");
+                return;
             }
+            sendResponse(exchange, 500, "{\"error\":\"unexpected action " + action + "\"}");
         });
 
         CompleteUploadResponse response = newClient().uploadFile("bucket-ern", "empty.bin", file);
 
-        assertEquals(1, partsByNumber.size());
-        assertArrayEquals(new byte[0], partsByNumber.get(1L));
+        assertEquals(List.of("put-object"), actions);
+        assertArrayEquals(new byte[0], body.get());
         assertEquals(0, response.size());
+    }
+
+    /**
+     * One part is not a multipart upload.
+     *
+     * <p>Below the part size the file goes up whole. create-upload, upload-part and complete-upload
+     * are three round trips, plus an upload directory, a part file, an assembly pass and a separate
+     * MD5 on the server - none of which buys anything when there is only ever going to be one part.
+     *
+     * <p>Measured on a development installation before this existed: 43,616 create-upload against
+     * 41,104 upload-part over twenty minutes, so 0.94 parts per upload - essentially every one was
+     * single-part - and 793,614 objects written in an hour, every one of them under a kilobyte.
+     */
+    @Test
+    void uploadFileBelowThePartSizeSendsOnePutObject(@TempDir Path tempDir) throws Exception {
+        Path file = tempDir.resolve("small.bin");
+        Files.writeString(file, "ABCDEFGHIJ", StandardCharsets.US_ASCII);
+
+        List<String> actions = Collections.synchronizedList(new ArrayList<>());
+        AtomicReference<byte[]> body = new AtomicReference<>();
+        server = startServer(exchange -> {
+            String action = exchange.getRequestHeaders().getFirst("x-euclid-action");
+            actions.add(action);
+            if ("put-object".equals(action)) {
+                body.set(exchange.getRequestBody().readAllBytes());
+                sendResponse(exchange, 200, "{\"ern\":\"obj-ern\",\"bucketErn\":\"bucket-ern\",\"key\":\"small.bin\","
+                        + "\"size\":10,\"status\":\"AVAILABLE\",\"contentType\":\"application/octet-stream\",\"md5Sum\":\"abc\"}");
+                return;
+            }
+            sendResponse(exchange, 500, "{\"error\":\"unexpected action " + action + "\"}");
+        });
+
+        CompleteUploadResponse response = newClient().uploadFile("bucket-ern", "small.bin", file, 1024, 4);
+
+        // One call, and the whole file in it. Not "no create-upload" - the list, so that a stray
+        // extra request would fail here rather than pass unnoticed.
+        assertEquals(List.of("put-object"), actions);
+        assertArrayEquals("ABCDEFGHIJ".getBytes(StandardCharsets.US_ASCII), body.get());
+        assertEquals("obj-ern", response.ern());
+    }
+
+    @Test
+    void uploadFileAtExactlyThePartSizeStillUsesMultipart(@TempDir Path tempDir) throws Exception {
+
+        // The boundary, stated rather than left to the reader: strictly below goes whole, equal
+        // does not. A file exactly one part long has nothing to gain either way, so what matters
+        // is that the rule is definite and the same at both ends of it.
+        Path file = tempDir.resolve("exact.bin");
+        Files.writeString(file, "ABCDEFGHIJ", StandardCharsets.US_ASCII);
+
+        List<String> actions = Collections.synchronizedList(new ArrayList<>());
+        server = startServer(exchange -> {
+            String action = exchange.getRequestHeaders().getFirst("x-euclid-action");
+            actions.add(action);
+            exchange.getRequestBody().readAllBytes();
+            switch (action) {
+                case "create-upload" -> sendResponse(exchange, 200, "{\"uploadId\":\"upload-1\",\"bucketErn\":\"bucket-ern\",\"key\":\"exact.bin\"}");
+                case "upload-part" -> sendResponse(exchange, 200, "{}");
+                case "complete-upload" -> sendResponse(exchange, 200,
+                        "{\"ern\":\"obj-ern\",\"bucketErn\":\"bucket-ern\",\"key\":\"exact.bin\","
+                                + "\"size\":10,\"status\":\"AVAILABLE\",\"contentType\":\"application/octet-stream\",\"md5Sum\":\"abc\"}");
+                default -> sendResponse(exchange, 500, "{\"error\":\"unexpected action " + action + "\"}");
+            }
+        });
+
+        newClient().uploadFile("bucket-ern", "exact.bin", file, 10, 1);
+
+        assertTrue(actions.contains("create-upload"), "a file exactly one part long is still a multipart upload");
+        assertFalse(actions.contains("put-object"));
+    }
+
+    @Test
+    void aSmallUploadStillCarriesItsAttributes(@TempDir Path tempDir) throws Exception {
+
+        // The risk in the shortcut: put-object takes attributes on a different header pair from
+        // complete-upload, so a file that changed route could quietly lose the metadata whatever
+        // put it there knows about it - which for the parser is which datenlieferant it came from
+        // and how urgent it is.
+        Path file = tempDir.resolve("small.bin");
+        Files.writeString(file, "ABCDEFGHIJ", StandardCharsets.US_ASCII);
+
+        AtomicReference<String> attributes = new AtomicReference<>();
+        AtomicReference<String> systemAttributes = new AtomicReference<>();
+        server = startServer(exchange -> {
+            exchange.getRequestBody().readAllBytes();
+            attributes.set(exchange.getRequestHeaders().getFirst("x-euclid-attributes"));
+            systemAttributes.set(exchange.getRequestHeaders().getFirst("x-euclid-system-attributes"));
+            sendResponse(exchange, 200, "{\"ern\":\"obj-ern\",\"bucketErn\":\"bucket-ern\",\"key\":\"small.bin\","
+                    + "\"size\":10,\"status\":\"AVAILABLE\",\"contentType\":\"application/octet-stream\",\"md5Sum\":\"abc\"}");
+        });
+
+        newClient().uploadFile("bucket-ern", "small.bin", file, 1024, 1,
+                Map.of("file_origin", new Variant("string", "FTP_UPLOAD")),
+                Map.of("priority", new Variant("string", "HIGH")));
+
+        assertEquals("{\"file_origin\":{\"type\":\"string\",\"value\":\"FTP_UPLOAD\"}}", attributes.get());
+        assertEquals("{\"priority\":{\"type\":\"string\",\"value\":\"HIGH\"}}", systemAttributes.get());
     }
 
     @Test
@@ -661,7 +764,10 @@ class EuclidEsmTest {
             }
         });
 
-        CompleteUploadResponse response = newClient().uploadFile("bucket-ern", "data.bin", file, 1024, 1);
+        // Part size exactly the file's size: one part, and still a multipart upload, because the
+        // put-object branch is strictly below the part size. That keeps the count here about the
+        // retry rather than about how many pieces the file was cut into.
+        CompleteUploadResponse response = newClient().uploadFile("bucket-ern", "data.bin", file, 11, 1);
 
         assertEquals(2, uploadPartAttempts.get(), "should retry once after the transient 503 and then succeed");
         assertEquals("obj-ern", response.ern());
@@ -687,7 +793,7 @@ class EuclidEsmTest {
 
         EuclidEsm esm = newClient();
         IOException exception = assertThrows(IOException.class,
-                () -> esm.uploadFile("bucket-ern", "data.bin", file, 1024, 1));
+                () -> esm.uploadFile("bucket-ern", "data.bin", file, 4, 1));
         assertTrue(exception.getMessage().contains("upload-file failed"));
     }
 
@@ -722,7 +828,7 @@ class EuclidEsmTest {
 
         EuclidEsm esm = new EuclidEsm(baseUrl(), "my-jwt-token", "eu-central-1", "863459426936", "alice",
                 "AKIDEXAMPLE", "wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY", null, null);
-        esm.uploadFile("bucket-ern", "data.bin", file, 1024, 1);
+        esm.uploadFile("bucket-ern", "data.bin", file, 4, 1);
 
         assertTrue(createUploadAuth.get().startsWith("AWS4-HMAC-SHA256 "), "create-upload should be SigV4-signed");
         assertEquals("Bearer my-jwt-token", uploadPartAuth.get());

@@ -1485,6 +1485,27 @@ public final class EuclidEsm implements TokenRefreshable, SigningSchemeSelectabl
                                              Map<String, Variant> systemAttributes)
             throws IOException, InterruptedException {
         int boundedConcurrency = Math.max(1, concurrency);
+
+        // One part is not a multipart upload.
+        //
+        // Below the part size the file goes up whole, in a single put-object, because the three
+        // calls and the thread pool below buy nothing when there is only ever going to be one
+        // part. The threshold is the part size rather than a figure of its own: a part size is
+        // already the caller saying how much they are willing to send in one request.
+        //
+        // Measured on a development installation before this existed: 43,616 create-upload against
+        // 41,104 upload-part over twenty minutes - 0.94 parts per upload, so essentially every one
+        // was single-part - and 793,614 objects written in an hour, every one of them under a
+        // kilobyte. Each cost three round trips instead of one, and server-side an upload
+        // directory, a part file, an assembly pass and a separate MD5. It was also a third of what
+        // overflowed the audit writer's queue.
+        //
+        // Files.size() rather than reading first: a file too large for this branch must not be
+        // pulled into memory to find that out.
+        if (Files.size(file) < partSize) {
+            return putObject(bucketErn, key, Files.readAllBytes(file), attributes, systemAttributes);
+        }
+
         String uploadId = createUpload(bucketErn, key, boundedConcurrency).uploadId();
 
         ExecutorService executor = Executors.newFixedThreadPool(boundedConcurrency);
