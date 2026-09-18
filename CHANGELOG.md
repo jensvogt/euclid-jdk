@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.1.40](https://github.com/jensvogt/euclid-jdk/compare/euclid-jdk-v0.1.39...euclid-jdk-v0.1.40) (2026-09-18)
+
+
+### Bug Fixes
+
+* file size restriction for put-object ([2ac3855](https://github.com/jensvogt/euclid-jdk/commit/2ac3855156d2ab388050bbce27b82fd9baaf1b3a))
+* file size restriction for put-object ([1fd4268](https://github.com/jensvogt/euclid-jdk/commit/1fd4268559d29bf467f9abac4ce2585f3c44292d))
+
 ## [0.1.39](https://github.com/jensvogt/euclid-jdk/compare/euclid-jdk-v0.1.38...euclid-jdk-v0.1.39) (2026-09-16)
 
 
