@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.1.41](https://github.com/jensvogt/euclid-jdk/compare/euclid-jdk-v0.1.40...euclid-jdk-v0.1.41) (2026-09-19)
+
+
+### Bug Fixes
+
+* application restart command ([b02dfc2](https://github.com/jensvogt/euclid-jdk/commit/b02dfc268cb60468007c00bb467490dd8d2fb305))
+* application restart command ([2cb428a](https://github.com/jensvogt/euclid-jdk/commit/2cb428a325d7638349a278009f86ad0819397bd9))
+
 ## [0.1.40](https://github.com/jensvogt/euclid-jdk/compare/euclid-jdk-v0.1.39...euclid-jdk-v0.1.40) (2026-09-18)
 
 
