@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.1.43](https://github.com/jensvogt/euclid-jdk/compare/euclid-jdk-v0.1.42...euclid-jdk-v0.1.43) (2026-09-19)
+
+
+### Bug Fixes
+
+* add EAM grants paging ([6326157](https://github.com/jensvogt/euclid-jdk/commit/63261577fa49657e4d723f21a6f36011d5c7317c))
+* add EAM grants paging ([9a01ddf](https://github.com/jensvogt/euclid-jdk/commit/9a01ddfe7c5badc610ead5ef80af47c058330800))
+
 ## [0.1.42](https://github.com/jensvogt/euclid-jdk/compare/euclid-jdk-v0.1.41...euclid-jdk-v0.1.42) (2026-09-19)
 
 
