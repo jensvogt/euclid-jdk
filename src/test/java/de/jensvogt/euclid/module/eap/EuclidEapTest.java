@@ -8,6 +8,7 @@ import de.jensvogt.euclid.auth.SigV4;
 import de.jensvogt.euclid.auth.SignableRequest;
 import de.jensvogt.euclid.dto.eap.CreateApplicationRequest;
 import de.jensvogt.euclid.dto.eap.RedeployApplicationRequest;
+import de.jensvogt.euclid.dto.eap.RestartApplicationResponse;
 import de.jensvogt.euclid.dto.eap.SetLogLevelResponse;
 import de.jensvogt.euclid.dto.eap.UpdateApplicationRequest;
 import de.jensvogt.euclid.dto.eap.model.Application;
@@ -323,6 +324,38 @@ class EuclidEapTest {
         assertEquals("STOPPED", started.state(), "the reconciler has not caught up yet");
         assertEquals(0, started.instances());
         assertEquals("STOPPED", stopped.desiredState());
+    }
+
+    @Test
+    void restartApplicationAsksForTheInstancesWithoutChangingTheDesiredState() throws Exception {
+        Map<String, String> bodyByAction = new ConcurrentHashMap<>();
+        server = startServer(exchange -> {
+            String action = exchange.getRequestHeaders().getFirst("x-euclid-action");
+            bodyByAction.put(action, new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8));
+            sendResponse(exchange, 200, "{\"applicationId\":\"billing\",\"restarting\":true,\"instances\":3}");
+        });
+
+        RestartApplicationResponse restarted = newClient().restartApplication("billing");
+
+        assertBodyContains(bodyByAction.get("restart-application"), "\"applicationId\":\"billing\"");
+        assertTrue(restarted.restarting());
+        assertEquals("billing", restarted.applicationId());
+
+        // What is running when the request is answered, not what came back from the restart: the
+        // manager has not stopped anything yet at this point.
+        assertEquals(3, restarted.instances());
+    }
+
+    @Test
+    void restartingAStoppedApplicationIsRefusedRatherThanStartingIt() throws Exception {
+        server = startServer(exchange -> sendResponse(exchange, 400,
+                "{\"message\":\"Refusing to restart 'billing': billing is stopped - use \\\"eap start-application\\\" to bring it back\"}"));
+
+        EuclidEap eap = newClient();
+        EuclidServiceException thrown =
+                assertThrows(EuclidServiceException.class, () -> eap.restartApplication("billing"));
+
+        assertEquals(400, thrown.statusCode());
     }
 
     @Test

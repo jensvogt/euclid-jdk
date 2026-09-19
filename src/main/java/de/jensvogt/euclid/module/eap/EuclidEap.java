@@ -12,6 +12,7 @@ import de.jensvogt.euclid.dto.eap.ApplicationRequest;
 import de.jensvogt.euclid.dto.eap.CreateApplicationRequest;
 import de.jensvogt.euclid.dto.eap.ListApplicationsRequest;
 import de.jensvogt.euclid.dto.eap.RedeployApplicationRequest;
+import de.jensvogt.euclid.dto.eap.RestartApplicationResponse;
 import de.jensvogt.euclid.dto.eap.SetLogLevelRequest;
 import de.jensvogt.euclid.dto.eap.SetLogLevelResponse;
 import de.jensvogt.euclid.dto.eap.UpdateApplicationRequest;
@@ -49,6 +50,7 @@ import java.util.function.Supplier;
  * Starting and stopping only record intent. {@link #startApplication} and {@link #stopApplication}
  * set {@code desiredState}; euclid-mgr's reconciler is what launches or tears down the processes,
  * so {@link Application#state()} can lag {@link Application#desiredState()} briefly after either.
+ * {@link #restartApplication} records intent too, without touching {@code desiredState} at all.
  */
 public final class EuclidEap implements TokenRefreshable, SigningSchemeSelectable {
 
@@ -337,6 +339,30 @@ public final class EuclidEap implements TokenRefreshable, SigningSchemeSelectabl
     }
 
     /**
+     * Records that a running application's instances should be started again, without changing
+     * anything about it.
+     * <p>
+     * euclid-mgr stops the whole pool on its next reconcile and starts it straight back up from
+     * the current definition - the same thing it does after a redeploy, with nothing new to pick
+     * up. The artifact, the environment and the credentials all come back as they were, so this is
+     * for an instance that has to do its startup again rather than a way to deploy anything; see
+     * {@link #redeployApplication} for that.
+     * <p>
+     * Deliberately not {@link #stopApplication} followed by {@link #startApplication}: between
+     * those two the application's desired state is {@code "STOPPED"}, so a caller that fails in
+     * between leaves it down. Here the desired state stays {@code "RUNNING"} throughout, and an
+     * application that is already stopped is refused with HTTP 400 rather than started.
+     *
+     * @param applicationId the ID of the application to restart
+     * @return what was recorded, and how many instances the manager is about to cycle
+     * @throws IOException if an I/O error occurs during the operation
+     * @throws InterruptedException if the operation is interrupted
+     */
+    public RestartApplicationResponse restartApplication(String applicationId) throws IOException, InterruptedException {
+        return toRestartApplicationResponse(post("restart-application", applicationBody(applicationId)));
+    }
+
+    /**
      * Overrides the level an application logs at, without redeploying or restarting it.
      * <p>
      * An unrecognised level is refused with HTTP 400 rather than defaulted: "warnign" quietly
@@ -456,6 +482,18 @@ public final class EuclidEap implements TokenRefreshable, SigningSchemeSelectabl
     private static SetLogLevelResponse toSetLogLevelResponse(JsonNode node) {
         return SetLogLevelResponse.builder().applicationId(textOrNull(node, "applicationId"))
                 .logLevel(textOrNull(node, "logLevel")).channel(textOrNull(node, "channel")).build();
+    }
+
+    /**
+     * Builds a {@link RestartApplicationResponse} from the restart-application answer.
+     *
+     * @param node the response JSON
+     * @return the parsed response
+     */
+    private static RestartApplicationResponse toRestartApplicationResponse(JsonNode node) {
+        return RestartApplicationResponse.builder().applicationId(textOrNull(node, "applicationId"))
+                .restarting(node.path("restarting").asBoolean(false))
+                .instances(node.path("instances").asLong(0)).build();
     }
 
     /**
