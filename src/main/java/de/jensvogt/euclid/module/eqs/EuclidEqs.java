@@ -17,6 +17,10 @@ import de.jensvogt.euclid.dto.eqs.GetMessageCountRequest;
 import de.jensvogt.euclid.dto.eqs.GetMessageCountResponse;
 import de.jensvogt.euclid.dto.eqs.GetMessageMetadataRequest;
 import de.jensvogt.euclid.dto.eqs.GetMessageMetadataResponse;
+import de.jensvogt.euclid.dto.eqs.GetQueueRequest;
+import de.jensvogt.euclid.dto.eqs.GetQueueResponse;
+import de.jensvogt.euclid.dto.eqs.GetMessageRequest;
+import de.jensvogt.euclid.dto.eqs.GetMessageResponse;
 import de.jensvogt.euclid.dto.eqs.GetQueueErnRequest;
 import de.jensvogt.euclid.dto.eqs.GetQueueErnResponse;
 import de.jensvogt.euclid.dto.eqs.GetQueueMetadataRequest;
@@ -562,6 +566,65 @@ public final class EuclidEqs implements TokenRefreshable, SigningSchemeSelectabl
         if (response.statusCode() / 100 != 2) {
             throw new EuclidServiceException("eqs", "delete-queue", response.statusCode(), response.body());
         }
+    }
+
+    /**
+     * Retrieves one queue, by name or by ERN.
+     * <p>
+     * The queue comes back exactly as a listing describes each of its own - ERN, owner, visibility,
+     * delay, retention, dead letter queue, tags and the available/delayed/in-flight counts - so
+     * this is the single-queue form of {@link #listQueues} rather than a different view of one.
+     * <p>
+     * A value starting with {@code "ern:"} is taken as an ERN and names one queue in the
+     * installation; anything else is a name and is resolved in this client's own account and
+     * namespace, the way {@link #getQueueErn} resolves one.
+     *
+     * @param nameOrErn the queue's name, or its ERN
+     * @return the queue
+     * @throws IOException If an I/O error occurs during the HTTP request.
+     * @throws InterruptedException If the operation is interrupted while waiting for a response.
+     */
+    public GetQueueResponse getQueue(String nameOrErn) throws IOException, InterruptedException {
+        GetQueueRequest.Builder request = GetQueueRequest.builder();
+        if (nameOrErn != null && nameOrErn.startsWith("ern:")) {
+            request.ern(nameOrErn);
+        } else {
+            request.name(nameOrErn);
+        }
+
+        String body = OBJECT_MAPPER.writeValueAsString(request.build());
+        HttpResponse<String> response = httpClient.post(baseUrl + "/", body, TARGET, "get-queue",
+                requestHeaders("get-queue", body));
+
+        if (response.statusCode() / 100 != 2) {
+            throw new EuclidServiceException(TARGET, "get-queue", response.statusCode(), response.body());
+        }
+
+        return GetQueueResponse.builder().queue(toQueue(OBJECT_MAPPER.readTree(response.body()).path("queue"))).build();
+    }
+
+    /**
+     * Retrieves one message by its id.
+     * <p>
+     * By message id, not by receipt handle: a receipt handle belongs to one delivery and is void
+     * once that delivery's claim has expired, while the id names the message for as long as it
+     * exists - and asking about a message is something one does after the fact.
+     *
+     * @param messageId the message's id
+     * @return the message
+     * @throws IOException If an I/O error occurs during the HTTP request.
+     * @throws InterruptedException If the operation is interrupted while waiting for a response.
+     */
+    public GetMessageResponse getMessage(String messageId) throws IOException, InterruptedException {
+        String body = OBJECT_MAPPER.writeValueAsString(GetMessageRequest.builder().messageId(messageId).build());
+        HttpResponse<String> response = httpClient.post(baseUrl + "/", body, TARGET, "get-message",
+                requestHeaders("get-message", body));
+
+        if (response.statusCode() / 100 != 2) {
+            throw new EuclidServiceException(TARGET, "get-message", response.statusCode(), response.body());
+        }
+
+        return GetMessageResponse.builder().message(toMessage(OBJECT_MAPPER.readTree(response.body()).path("message"))).build();
     }
 
     /**
@@ -1547,26 +1610,66 @@ public final class EuclidEqs implements TokenRefreshable, SigningSchemeSelectabl
      * @return a list of {@link Message} objects constructed from the input JSON node. If the input
      *         node is null or not an array, an empty list is returned.
      */
+    /**
+     * Builds a {@link Queue} from the JSON the server describes one with.
+     * <p>
+     * One reader for the one representation: a listing and {@link #getQueue} are answered with the
+     * same queue, so a field added to it is picked up by both or by neither.
+     *
+     * @param queueNode the queue's JSON
+     * @return the queue
+     */
+    private static Queue toQueue(JsonNode queueNode) {
+        return new Queue(
+                textOrNull(queueNode, "name"),
+                textOrNull(queueNode, "owner"),
+                textOrNull(queueNode, "ern"),
+                toStringMap(queueNode.get("tags")),
+                queueNode.path("size").asLong(0),
+                queueNode.path("delay").asLong(0),
+                queueNode.path("available").asLong(0),
+                queueNode.path("delayed").asLong(0),
+                queueNode.path("invisible").asLong(0),
+                queueNode.path("visibility").asLong(30),
+                queueNode.path("maxMessageLength").asLong(1024 * 1024),
+                queueNode.path("maxReceiveCount").asLong(3),
+                textOrNull(queueNode, "deadLetterQueueArn"),
+                textOrNull(queueNode, "priority"),
+                textOrNull(queueNode, "created"),
+                textOrNull(queueNode, "modified"));
+    }
+
+    /**
+     * Builds a {@link Message} from the JSON the server describes one with, the same way a listing
+     * reads each of its own.
+     *
+     * @param messageNode the message's JSON
+     * @return the message
+     */
+    private static Message toMessage(JsonNode messageNode) {
+        return new Message(
+                textOrNull(messageNode, "ern"),
+                textOrNull(messageNode, "queueErn"),
+                textOrNull(messageNode, "messageId"),
+                textOrNull(messageNode, "status"),
+                textOrNull(messageNode, "priority"),
+                textOrNull(messageNode, "body"),
+                textOrNull(messageNode, "receiptHandle"),
+                messageNode.path("size").asLong(0),
+                messageNode.path("receivedCount").asLong(0),
+                textOrNull(messageNode, "contentType"),
+                toVariantMap(messageNode.get("attributes")),
+                toVariantMap(messageNode.get("systemAttributes")),
+                textOrNull(messageNode, "lastReceived"),
+                textOrNull(messageNode, "created"),
+                textOrNull(messageNode, "modified"));
+    }
+
     private static List<Message> toMessageList(JsonNode messagesNode) {
         List<Message> messages = new ArrayList<>();
         if (messagesNode != null && messagesNode.isArray()) {
             for (JsonNode messageNode : messagesNode) {
-                messages.add(new Message(
-                        textOrNull(messageNode, "ern"),
-                        textOrNull(messageNode, "queueErn"),
-                        textOrNull(messageNode, "messageId"),
-                        textOrNull(messageNode, "status"),
-                        textOrNull(messageNode, "priority"),
-                        textOrNull(messageNode, "body"),
-                        textOrNull(messageNode, "receiptHandle"),
-                        messageNode.path("size").asLong(0),
-                        messageNode.path("receivedCount").asLong(0),
-                        textOrNull(messageNode, "contentType"),
-                        toVariantMap(messageNode.get("attributes")),
-                        toVariantMap(messageNode.get("systemAttributes")),
-                        textOrNull(messageNode, "lastReceived"),
-                        textOrNull(messageNode, "created"),
-                        textOrNull(messageNode, "modified")));
+                messages.add(toMessage(messageNode));
             }
         }
         return messages;
@@ -1603,23 +1706,7 @@ public final class EuclidEqs implements TokenRefreshable, SigningSchemeSelectabl
         List<Queue> queues = new ArrayList<>();
         if (queuesNode != null && queuesNode.isArray()) {
             for (JsonNode queueNode : queuesNode) {
-                queues.add(new Queue(
-                        textOrNull(queueNode, "name"),
-                        textOrNull(queueNode, "owner"),
-                        textOrNull(queueNode, "ern"),
-                        toStringMap(queueNode.get("tags")),
-                        queueNode.path("size").asLong(0),
-                        queueNode.path("delay").asLong(0),
-                        queueNode.path("available").asLong(0),
-                        queueNode.path("delayed").asLong(0),
-                        queueNode.path("invisible").asLong(0),
-                        queueNode.path("visibility").asLong(30),
-                        queueNode.path("maxMessageLength").asLong(1024 * 1024),
-                        queueNode.path("maxReceiveCount").asLong(3),
-                        textOrNull(queueNode, "deadLetterQueueArn"),
-                        textOrNull(queueNode, "priority"),
-                        textOrNull(queueNode, "created"),
-                        textOrNull(queueNode, "modified")));
+                queues.add(toQueue(queueNode));
             }
         }
         return ListQueueResponse.builder().queues(queues).total(root.path("total").asLong(0)).build();

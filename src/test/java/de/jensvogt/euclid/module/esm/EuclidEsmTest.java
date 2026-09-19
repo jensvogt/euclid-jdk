@@ -205,6 +205,42 @@ class EuclidEsmTest {
     }
 
     @Test
+    void getBucketAsksByNameAndParsesTheBucket() throws Exception {
+        AtomicReference<SignableRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(captureRequest(exchange));
+            sendResponse(exchange, 200, "{\"bucket\":{\"owner\":\"jens\",\"name\":\"photos\","
+                                                + "\"ern\":\"bucket-ern\",\"size\":2048,\"objects\":7,"
+                                                + "\"tags\":{\"team\":\"media\"},\"created\":\"2026-09-19T10:00:00Z\","
+                                                + "\"modified\":\"2026-09-19T11:00:00Z\"}}");
+        });
+
+        Bucket bucket = newClient().getBucket("photos").bucket();
+
+        assertEquals("get-bucket", received.get().header("x-euclid-action"));
+        assertBodyContains(received.get().body(), "\"name\":\"photos\"");
+        assertEquals("bucket-ern", bucket.ern());
+        assertEquals(2048, bucket.size());
+        assertEquals(7, bucket.objects());
+        assertEquals("media", bucket.tags().get("team"));
+    }
+
+    @Test
+    void getBucketAsksByErnWhenGivenOne() throws Exception {
+        AtomicReference<SignableRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(captureRequest(exchange));
+            sendResponse(exchange, 200, "{\"bucket\":{\"name\":\"photos\",\"ern\":\"ern:esm:eu-central-1:1:dev:bucket:photos\"}}");
+        });
+
+        // A name and an ERN are told apart here rather than by the caller, so one method serves
+        // both - and a name is resolved in this client's own namespace, which an ERN is not.
+        newClient().getBucket("ern:esm:eu-central-1:1:dev:bucket:photos");
+
+        assertBodyContains(received.get().body(), "\"ern\":\"ern:esm:eu-central-1:1:dev:bucket:photos\"");
+    }
+
+    @Test
     void getBucketSizeParsesResponse() throws Exception {
         AtomicReference<SignableRequest> received = new AtomicReference<>();
         server = startServer(exchange -> {

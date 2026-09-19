@@ -22,6 +22,7 @@ import de.jensvogt.euclid.dto.ens.SubscribeResponse;
 import de.jensvogt.euclid.dto.ens.ResendMessagesResponse;
 import de.jensvogt.euclid.dto.ens.TopicStatusResponse;
 import de.jensvogt.euclid.dto.ens.model.Topic;
+import de.jensvogt.euclid.dto.ens.model.Message;
 import de.jensvogt.euclid.exception.EuclidServiceException;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
@@ -59,6 +60,54 @@ class EuclidEnsTest {
         if (server != null) {
             server.stop(0);
         }
+    }
+
+    @Test
+    void getTopicDescribesOneTopicTheWayAListingDescribesEach() throws Exception {
+        AtomicReference<SignableRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(captureRequest(exchange));
+            sendResponse(exchange, 200, "{\"topic\":{\"name\":\"orders\",\"ern\":\"topic-ern\",\"owner\":\"jens\","
+                                                + "\"messages\":12,\"retentionPeriod\":86400,\"tags\":{\"team\":\"fulfilment\"}}}");
+        });
+
+        Topic topic = newClient().getTopic("orders").topic();
+
+        assertEquals("get-topic", received.get().header("x-euclid-action"));
+        assertBodyContains(received.get().body(), "\"name\":\"orders\"");
+        assertEquals("topic-ern", topic.ern());
+        assertEquals(12, topic.messages());
+        assertEquals(86400, topic.retentionPeriod());
+    }
+
+    @Test
+    void getTopicAsksByErnWhenGivenOne() throws Exception {
+        AtomicReference<SignableRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(captureRequest(exchange));
+            sendResponse(exchange, 200, "{\"topic\":{\"name\":\"orders\",\"ern\":\"ern:ens:x:1:dev:topic:orders\"}}");
+        });
+
+        newClient().getTopic("ern:ens:x:1:dev:topic:orders");
+
+        assertBodyContains(received.get().body(), "\"ern\":\"ern:ens:x:1:dev:topic:orders\"");
+    }
+
+    @Test
+    void getMessageParsesThePublishedMessage() throws Exception {
+        AtomicReference<SignableRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(captureRequest(exchange));
+            sendResponse(exchange, 200, "{\"message\":{\"messageId\":\"m-1\",\"topicErn\":\"topic-ern\","
+                                                + "\"body\":\"hello\",\"status\":\"PUBLISHED\"}}");
+        });
+
+        Message message = newClient().getMessage("m-1").message();
+
+        assertEquals("get-message", received.get().header("x-euclid-action"));
+        assertBodyContains(received.get().body(), "\"messageId\":\"m-1\"");
+        assertEquals("hello", message.body());
+        assertEquals("topic-ern", message.topicErn());
     }
 
     @Test

@@ -65,6 +65,60 @@ class EuclidEqsTest {
     }
 
     @Test
+    void getQueueDescribesOneQueueTheWayAListingDescribesEach() throws Exception {
+        AtomicReference<SignableRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(captureRequest(exchange));
+            sendResponse(exchange, 200, "{\"queue\":{\"name\":\"orders\",\"ern\":\"queue-ern\",\"owner\":\"jens\","
+                                                + "\"available\":7,\"delayed\":1,\"invisible\":2,\"visibility\":45,"
+                                                + "\"tags\":{\"team\":\"fulfilment\"}}}");
+        });
+
+        Queue queue = newClient().getQueue("orders").queue();
+
+        assertEquals("get-queue", received.get().header("x-euclid-action"));
+        assertBodyContains(received.get().body(), "\"name\":\"orders\"");
+        assertEquals("queue-ern", queue.ern());
+        assertEquals(7, queue.available());
+        assertEquals(2, queue.invisible());
+        assertEquals(45, queue.visibility());
+        assertEquals("fulfilment", queue.tags().get("team"));
+    }
+
+    @Test
+    void getQueueAsksByErnWhenGivenOne() throws Exception {
+        AtomicReference<SignableRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(captureRequest(exchange));
+            sendResponse(exchange, 200, "{\"queue\":{\"name\":\"orders\",\"ern\":\"ern:eqs:x:1:dev:queue:orders\"}}");
+        });
+
+        newClient().getQueue("ern:eqs:x:1:dev:queue:orders");
+
+        assertBodyContains(received.get().body(), "\"ern\":\"ern:eqs:x:1:dev:queue:orders\"");
+    }
+
+    @Test
+    void getMessageAsksByIdRatherThanByReceiptHandle() throws Exception {
+        AtomicReference<SignableRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(captureRequest(exchange));
+            sendResponse(exchange, 200, "{\"message\":{\"messageId\":\"m-1\",\"queueErn\":\"queue-ern\","
+                                                + "\"body\":\"hello\",\"status\":\"AVAILABLE\",\"receivedCount\":2}}");
+        });
+
+        // A receipt handle is void once its delivery's claim expires; the id names the message for
+        // as long as it exists, which is what asking about one after the fact needs.
+        Message message = newClient().getMessage("m-1").message();
+
+        assertEquals("get-message", received.get().header("x-euclid-action"));
+        assertBodyContains(received.get().body(), "\"messageId\":\"m-1\"");
+        assertEquals("hello", message.body());
+        assertEquals("queue-ern", message.queueErn());
+        assertEquals(2, message.receivedCount());
+    }
+
+    @Test
     void sendMessageSignsWithSigV4WhenAccessKeyConfigured() throws Exception {
         String accessKeyId = "AKIDEXAMPLE";
         String secretAccessKey = "wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY";

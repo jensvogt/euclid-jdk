@@ -30,6 +30,8 @@ import de.jensvogt.euclid.dto.esm.DisableEncryptionRequest;
 import de.jensvogt.euclid.dto.esm.DisableEncryptionResponse;
 import de.jensvogt.euclid.dto.esm.EnableEncryptionRequest;
 import de.jensvogt.euclid.dto.esm.EnableEncryptionResponse;
+import de.jensvogt.euclid.dto.esm.GetBucketRequest;
+import de.jensvogt.euclid.dto.esm.GetBucketResponse;
 import de.jensvogt.euclid.dto.esm.GetBucketErnRequest;
 import de.jensvogt.euclid.dto.esm.GetBucketErnResponse;
 import de.jensvogt.euclid.dto.esm.GetBucketSizeRequest;
@@ -446,6 +448,42 @@ public final class EuclidEsm implements TokenRefreshable, SigningSchemeSelectabl
         }
 
         return extractGetBucketErnResponse(response.body());
+    }
+
+    /**
+     * Retrieves one bucket, by name or by ERN.
+     * <p>
+     * The bucket comes back exactly as a listing describes each of its own - ERN, account,
+     * namespace, size, object count, encryption, tags and timestamps - so this is the single-bucket
+     * form of {@link #listBuckets} rather than a different view of one.
+     * <p>
+     * A value starting with {@code "ern:"} is taken as an ERN and names one bucket in the
+     * installation; anything else is a name and is resolved in this client's own account and
+     * namespace, the same way {@link #getBucketErn} resolves one. A bucket that exists only in
+     * another namespace is HTTP 404 when asked for by name.
+     *
+     * @param nameOrErn the bucket's name, or its ERN
+     * @return the bucket
+     * @throws IOException If an I/O error occurs during the HTTP request.
+     * @throws InterruptedException If the operation is interrupted while waiting for a response.
+     */
+    public GetBucketResponse getBucket(String nameOrErn) throws IOException, InterruptedException {
+        GetBucketRequest.Builder request = GetBucketRequest.builder();
+        if (nameOrErn != null && nameOrErn.startsWith("ern:")) {
+            request.ern(nameOrErn);
+        } else {
+            request.name(nameOrErn);
+        }
+
+        String body = OBJECT_MAPPER.writeValueAsString(request.build());
+        HttpResponse<String> response = httpClient.post(baseUrl + "/", body, "esm", "get-bucket",
+                requestHeaders("get-bucket", body));
+
+        if (response.statusCode() / 100 != 2) {
+            throw new EuclidServiceException("esm", "get-bucket", response.statusCode(), response.body());
+        }
+
+        return extractGetBucketResponse(response.body());
     }
 
     /**
@@ -2311,18 +2349,36 @@ public final class EuclidEsm implements TokenRefreshable, SigningSchemeSelectabl
         List<Bucket> buckets = new ArrayList<>();
         if (bucketsNode != null && bucketsNode.isArray()) {
             for (JsonNode bucketNode : bucketsNode) {
-                buckets.add(new Bucket(
-                        textOrNull(bucketNode, "owner"),
-                        textOrNull(bucketNode, "name"),
-                        textOrNull(bucketNode, "ern"),
-                        bucketNode.path("size").asLong(0),
-                        bucketNode.path("objects").asLong(0),
-                        toStringMap(bucketNode.get("tags")),
-                        textOrNull(bucketNode, "created"),
-                        textOrNull(bucketNode, "modified")));
+                buckets.add(toBucket(bucketNode));
             }
         }
         return ListBucketsResponse.builder().buckets(buckets).total(root.path("total").asLong(0)).build();
+    }
+
+    /**
+     * Builds a {@link Bucket} from the JSON the server describes one with.
+     * <p>
+     * One reader for the one representation: a listing and {@link #getBucket} are answered with the
+     * same bucket, so a field added to it is picked up by both or by neither.
+     *
+     * @param bucketNode the bucket's JSON
+     * @return the bucket
+     */
+    private static Bucket toBucket(JsonNode bucketNode) {
+        return new Bucket(
+                textOrNull(bucketNode, "owner"),
+                textOrNull(bucketNode, "name"),
+                textOrNull(bucketNode, "ern"),
+                bucketNode.path("size").asLong(0),
+                bucketNode.path("objects").asLong(0),
+                toStringMap(bucketNode.get("tags")),
+                textOrNull(bucketNode, "created"),
+                textOrNull(bucketNode, "modified"));
+    }
+
+    private static GetBucketResponse extractGetBucketResponse(String responseBody) throws IOException {
+        JsonNode root = OBJECT_MAPPER.readTree(responseBody);
+        return GetBucketResponse.builder().bucket(toBucket(root.path("bucket"))).build();
     }
 
     /**
