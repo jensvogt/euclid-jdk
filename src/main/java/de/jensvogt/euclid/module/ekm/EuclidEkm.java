@@ -20,6 +20,8 @@ import de.jensvogt.euclid.dto.ekm.ImportCertificateRequest;
 import de.jensvogt.euclid.dto.ekm.ListCertificatesRequest;
 import de.jensvogt.euclid.dto.ekm.ListCertificatesResponse;
 import de.jensvogt.euclid.dto.ekm.ListKeysRequest;
+import de.jensvogt.euclid.dto.ekm.GetKeyRequest;
+import de.jensvogt.euclid.dto.ekm.GetKeyResponse;
 import de.jensvogt.euclid.dto.ekm.ListKeysResponse;
 import de.jensvogt.euclid.dto.ekm.RevokeKeyRequest;
 import de.jensvogt.euclid.dto.ekm.SetKeyDescriptionRequest;
@@ -270,6 +272,36 @@ public final class EuclidEkm implements TokenRefreshable, SigningSchemeSelectabl
         JsonNode root = post("list-keys", body);
         return ListKeysResponse.builder().keys(toKeyList(root.get("keys")))
                 .total(root.path("total").asLong(0)).build();
+    }
+
+    /**
+     * Retrieves one key, by name or by ERN.
+     * <p>
+     * The key comes back exactly as a listing describes each of its own - name, ERN, description,
+     * algorithm, length, status, tags and timestamps - so this is the single-key form of
+     * {@link #listKeys} rather than a different view of one. It is the key's description and never
+     * its material: that never leaves the module.
+     * <p>
+     * A value starting with {@code "ern:"} is taken as an ERN and names one key in the
+     * installation; anything else is a name and is resolved in this client's own account and
+     * namespace, the pair {@link #createKey} built the ERN from. A key that exists only in another
+     * namespace is HTTP 404 when asked for by name.
+     *
+     * @param nameOrErn the key's name, or its ERN
+     * @return the key
+     * @throws IOException if an I/O error occurs during the operation
+     * @throws InterruptedException if the operation is interrupted
+     */
+    public GetKeyResponse getKey(String nameOrErn) throws IOException, InterruptedException {
+        GetKeyRequest.Builder request = GetKeyRequest.builder();
+        if (nameOrErn != null && nameOrErn.startsWith("ern:")) {
+            request.ern(nameOrErn);
+        } else {
+            request.name(nameOrErn);
+        }
+
+        JsonNode root = post("get-key", OBJECT_MAPPER.writeValueAsString(request.build()));
+        return GetKeyResponse.builder().key(toKey(root.path("key"))).build();
     }
 
     /**
@@ -661,24 +693,37 @@ public final class EuclidEkm implements TokenRefreshable, SigningSchemeSelectabl
         List<Key> keys = new ArrayList<>();
         if (keysNode != null && keysNode.isArray()) {
             for (JsonNode keyNode : keysNode) {
-                keys.add(new Key(
-                        textOrNull(keyNode, "name"),
-                        textOrNull(keyNode, "ern"),
-                        // Absent from a key a server too old to know about descriptions returns,
-                        // and empty for one whose creator gave none.
-                        textOrNull(keyNode, "description"),
-                        textOrNull(keyNode, "algorithm"),
-                        keyNode.path("length").asLong(0),
-                        textOrNull(keyNode, "status"),
-                        toStringMap(keyNode.get("tags")),
-                        // Only present on a key scheduled for deletion - the server leaves the
-                        // field out entirely otherwise rather than sending an empty value.
-                        textOrNull(keyNode, "deletionDate"),
-                        textOrNull(keyNode, "created"),
-                        textOrNull(keyNode, "modified")));
+                keys.add(toKey(keyNode));
             }
         }
         return keys;
+    }
+
+    /**
+     * Builds a {@link Key} from the JSON the server describes one with.
+     * <p>
+     * One reader for the one representation: a listing and {@link #getKey} are answered with the
+     * same key, so a field added to it is picked up by both or by neither.
+     *
+     * @param keyNode the key's JSON
+     * @return the key
+     */
+    private static Key toKey(JsonNode keyNode) {
+        return new Key(
+                textOrNull(keyNode, "name"),
+                textOrNull(keyNode, "ern"),
+                // Absent from a key a server too old to know about descriptions returns,
+                // and empty for one whose creator gave none.
+                textOrNull(keyNode, "description"),
+                textOrNull(keyNode, "algorithm"),
+                keyNode.path("length").asLong(0),
+                textOrNull(keyNode, "status"),
+                toStringMap(keyNode.get("tags")),
+                // Only present on a key scheduled for deletion - the server leaves the
+                // field out entirely otherwise rather than sending an empty value.
+                textOrNull(keyNode, "deletionDate"),
+                textOrNull(keyNode, "created"),
+                textOrNull(keyNode, "modified"));
     }
 
     /**

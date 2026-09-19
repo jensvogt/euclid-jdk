@@ -287,7 +287,7 @@ Four things are worth knowing before you model against it:
   such item" and "here is an item with nothing in it" are different, and a caller should not have to
   tell them apart.
 
-`listTables`, `describeTable`, `deleteTable`, `deleteItem` and `scan` round it out. Paging is by
+`listTables`, `getTable`, `deleteTable`, `deleteItem` and `scan` round it out. Paging is by
 page size and index, as everywhere else in euclid, rather than by cursor.
 
 ### The API gateway

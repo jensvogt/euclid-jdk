@@ -1,7 +1,7 @@
 package de.jensvogt.euclid.dto.ekv;
 
 /**
- * Request body for the two table actions that name nothing but a table: describe-table and
+ * Request body for the two table actions that name nothing but a table: get-table and
  * delete-table.
  *
  * @param name the table the action applies to

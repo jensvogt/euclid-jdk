@@ -193,6 +193,47 @@ class EuclidEkmTest {
     }
 
     @Test
+    void getKeySendsTheNameAndParsesTheKey() throws Exception {
+        AtomicReference<SignableRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(captureRequest(exchange));
+            sendResponse(exchange, 200, "{\"key\":{\"ern\":\"key-ern\",\"name\":\"key-1\","
+                    + "\"description\":\"payroll exports\",\"algorithm\":\"AES\",\"length\":256,"
+                    + "\"status\":\"AVAILABLE\",\"tags\":{\"env\":\"prod\"},"
+                    + "\"created\":\"2026-01-01\",\"modified\":\"2026-01-02\"}}");
+        });
+
+        Key key = newClient().getKey("key-1").key();
+
+        assertEquals("get-key", received.get().header("x-euclid-action"));
+        assertBodyContains(received.get().body(), "\"name\":\"key-1\"");
+        assertEquals("key-1", key.name());
+        assertEquals("key-ern", key.ern());
+        assertEquals("payroll exports", key.description());
+        assertEquals(256, key.length());
+        assertEquals("prod", key.tags().get("env"));
+        // What this returns is the key's description; the material never leaves the module, so
+        // there is no field here that could carry it.
+        assertNull(key.deletionDate());
+    }
+
+    @Test
+    void getKeyAsksByErnWhenGivenOne() throws Exception {
+        AtomicReference<SignableRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(captureRequest(exchange));
+            sendResponse(exchange, 200,
+                    "{\"key\":{\"name\":\"key-1\",\"ern\":\"ern:ekm:eu-central-1:1:dev:key:key-1\"}}");
+        });
+
+        // A name and an ERN are told apart here rather than by the caller, so one method serves
+        // both - and a name is resolved in this client's own namespace, which an ERN is not.
+        newClient().getKey("ern:ekm:eu-central-1:1:dev:key:key-1");
+
+        assertBodyContains(received.get().body(), "\"ern\":\"ern:ekm:eu-central-1:1:dev:key:key-1\"");
+    }
+
+    @Test
     void listKeysWithExplicitParameters() throws Exception {
         AtomicReference<SignableRequest> received = new AtomicReference<>();
         server = startServer(exchange -> {

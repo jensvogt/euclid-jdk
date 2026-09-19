@@ -100,6 +100,60 @@ class EuclidSessionTest {
     }
 
     @Test
+    void getUserSendsTheIdAndParsesTheUser() throws Exception {
+        AtomicReference<CapturedRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(capture(exchange));
+            sendResponse(exchange, 200, "{\"user\":" + userJson("bob") + "}");
+        });
+
+        User user = newSession().getUser("bob").user();
+
+        assertEquals("get-user", received.get().header("x-euclid-action"));
+        assertBodyContains(received.get().body(), "\"userId\":\"bob\"");
+        assertEquals("bob", user.userId());
+        assertEquals("user-ern", user.ern());
+        assertEquals("bob@example.com", user.email());
+        assertEquals("863459426936", user.accountId());
+    }
+
+    @Test
+    void getUserReadsTheSameShapeAListingDoes() throws Exception {
+        // One parser behind both, so a field added to the user is picked up by both calls or by
+        // neither - which is the whole reason get-user returns the listing's User rather than a
+        // shape of its own.
+        server = startServer(exchange -> {
+            exchange.getRequestBody().readAllBytes();
+            sendResponse(exchange, 200, "{\"user\":" + userJson("bob") + "}");
+        });
+
+        User fetched = newSession().getUser("bob").user();
+
+        server.stop(0);
+        server = startServer(exchange -> {
+            exchange.getRequestBody().readAllBytes();
+            sendResponse(exchange, 200, "{\"users\":[" + userJson("bob") + "],\"total\":1}");
+        });
+
+        assertEquals(newSession().listUsers().users().getFirst(), fetched);
+    }
+
+    @Test
+    void getUserSurfacesAUserThatDoesNotExist() throws Exception {
+        server = startServer(exchange -> {
+            exchange.getRequestBody().readAllBytes();
+            sendResponse(exchange, 404, "{\"error\":\"User not found: nope\"}");
+        });
+
+        EuclidServiceException exception = assertThrows(EuclidServiceException.class,
+                () -> newSession().getUser("nope"));
+
+        assertEquals("eam", exception.service());
+        assertEquals("get-user", exception.action());
+        assertEquals(404, exception.statusCode());
+    }
+
+    @Test
     void registerSendsUserDetails() throws Exception {
         AtomicReference<CapturedRequest> received = new AtomicReference<>();
         server = startServer(exchange -> {
@@ -328,6 +382,37 @@ class EuclidSessionTest {
     }
 
     @Test
+    void getUserGroupSendsTheNameAndParsesTheMembers() throws Exception {
+        AtomicReference<CapturedRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(capture(exchange));
+            sendResponse(exchange, 200, "{\"userGroup\":" + userGroupJson("admins") + "}");
+        });
+
+        UserGroup group = newSession().getUserGroup("admins").userGroup();
+
+        assertEquals("get-user-group", received.get().header("x-euclid-action"));
+        assertBodyContains(received.get().body(), "\"name\":\"admins\"");
+        assertEquals("admins", group.name());
+        assertEquals(List.of("bob"), group.userIds());
+    }
+
+    @Test
+    void getUserGroupAsksByErnWhenGivenOne() throws Exception {
+        AtomicReference<CapturedRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(capture(exchange));
+            sendResponse(exchange, 200, "{\"userGroup\":" + userGroupJson("admins") + "}");
+        });
+
+        // A name and an ERN are told apart here rather than by the caller, so one method serves
+        // both - the ERN being what a grant's principal carries.
+        newSession().getUserGroup("ern:eam:eu-central-1:1:dev:user-group:admins");
+
+        assertBodyContains(received.get().body(), "\"ern\":\"ern:eam:eu-central-1:1:dev:user-group:admins\"");
+    }
+
+    @Test
     void listUserGroupsWithExplicitParameters() throws Exception {
         AtomicReference<CapturedRequest> received = new AtomicReference<>();
         server = startServer(exchange -> {
@@ -397,6 +482,55 @@ class EuclidSessionTest {
         assertBodyContains(received.get().body(), "\"accountId\":\"863459426936\"", "\"name\":\"Acme\"",
                 "\"description\":\"Acme's account\"");
         assertEquals("863459426936", account.accountId());
+    }
+
+    @Test
+    void getAccountSendsTheIdAndParsesTheAccount() throws Exception {
+        AtomicReference<CapturedRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(capture(exchange));
+            sendResponse(exchange, 200, "{\"account\":" + accountJson("863459426936") + "}");
+        });
+
+        Account account = newSession().getAccount("863459426936").account();
+
+        assertEquals("get-account", received.get().header("x-euclid-action"));
+        assertBodyContains(received.get().body(), "\"accountId\":\"863459426936\"");
+        assertEquals("863459426936", account.accountId());
+    }
+
+    @Test
+    void getAccountReadsTheSameShapeAListingDoes() throws Exception {
+        // One parser behind both, so a field added to the account is picked up by both calls or by
+        // neither - which is why get-account returns the listing's Account.
+        server = startServer(exchange -> {
+            exchange.getRequestBody().readAllBytes();
+            sendResponse(exchange, 200, "{\"account\":" + accountJson("863459426936") + "}");
+        });
+
+        Account fetched = newSession().getAccount("863459426936").account();
+
+        server.stop(0);
+        server = startServer(exchange -> {
+            exchange.getRequestBody().readAllBytes();
+            sendResponse(exchange, 200, "{\"accounts\":[" + accountJson("863459426936") + "],\"total\":1}");
+        });
+
+        assertEquals(newSession().listAccounts().accounts().getFirst(), fetched);
+    }
+
+    @Test
+    void getAccountAsksByErnWhenGivenOne() throws Exception {
+        AtomicReference<CapturedRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(capture(exchange));
+            sendResponse(exchange, 200, "{\"account\":" + accountJson("863459426936") + "}");
+        });
+
+        newSession().getAccount("ern:eam:eu-central-1:863459426936::account:863459426936");
+
+        assertBodyContains(received.get().body(),
+                "\"ern\":\"ern:eam:eu-central-1:863459426936::account:863459426936\"");
     }
 
     @Test
@@ -565,6 +699,41 @@ class EuclidSessionTest {
                 "\"accountId\":\"863459426936\"");
         assertEquals(1, response.total());
         assertEquals(List.of("prod"), response.grants().getFirst().namespaces());
+    }
+
+    @Test
+    void listGrantsAsksForEverythingUnlessPagedExplicitly() throws Exception {
+        AtomicReference<CapturedRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(capture(exchange));
+            sendResponse(exchange, 200, "{\"grants\":[" + grantJson("grant-1") + "],\"total\":1}");
+        });
+
+        newSession().listGrants("", "", "863459426936");
+
+        // A page size of zero is every grant, which is what this call has always returned - so the
+        // three-argument form keeps meaning what it meant before paging existed.
+        assertBodyContains(received.get().body(), "\"pageSize\":0", "\"pageIndex\":0",
+                "\"sortColumn\":\"principal\"", "\"sortDirection\":\"asc\"");
+    }
+
+    @Test
+    void listGrantsSendsThePageAndReadsTheUnpagedTotal() throws Exception {
+        AtomicReference<CapturedRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(capture(exchange));
+            sendResponse(exchange, 200, "{\"grants\":[" + grantJson("grant-1") + "],\"total\":57}");
+        });
+
+        ListGrantsResponse response =
+                newSession().listGrants("", "", "863459426936", 25, 2, "created", "desc");
+
+        assertBodyContains(received.get().body(), "\"pageSize\":25", "\"pageIndex\":2",
+                "\"sortColumn\":\"created\"", "\"sortDirection\":\"desc\"");
+        // The total counts every grant matching the filter, not the page - which is what says
+        // there is another page to ask for.
+        assertEquals(57, response.total());
+        assertEquals(1, response.grants().size());
     }
 
     @Test
