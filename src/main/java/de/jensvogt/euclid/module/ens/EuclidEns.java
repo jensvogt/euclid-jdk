@@ -17,6 +17,10 @@ import de.jensvogt.euclid.dto.ens.GetMessageAttributeRequest;
 import de.jensvogt.euclid.dto.ens.GetMessageAttributeResponse;
 import de.jensvogt.euclid.dto.ens.GetMessageCountRequest;
 import de.jensvogt.euclid.dto.ens.GetMessageCountResponse;
+import de.jensvogt.euclid.dto.ens.GetTopicRequest;
+import de.jensvogt.euclid.dto.ens.GetTopicResponse;
+import de.jensvogt.euclid.dto.ens.GetMessageRequest;
+import de.jensvogt.euclid.dto.ens.GetMessageResponse;
 import de.jensvogt.euclid.dto.ens.GetTopicErnRequest;
 import de.jensvogt.euclid.dto.ens.GetTopicErnResponse;
 import de.jensvogt.euclid.dto.ens.GetTopicMetadataRequest;
@@ -242,6 +246,61 @@ public final class EuclidEns implements TokenRefreshable, SigningSchemeSelectabl
         }
 
         return extractListTopicsResponse(response.body());
+    }
+
+    /**
+     * Retrieves one topic, by name or by ERN.
+     * <p>
+     * The topic comes back exactly as a listing describes each of its own - ERN, owner, retention,
+     * tags, how much it holds and what has been published through it - so this is the single-topic
+     * form of {@code listTopics} rather than a different view of one.
+     * <p>
+     * A value starting with {@code "ern:"} is taken as an ERN and names one topic in the
+     * installation; anything else is a name and is resolved in this client's own account and
+     * namespace, the way {@link #getTopicErn} resolves one.
+     *
+     * @param nameOrErn the topic's name, or its ERN
+     * @return the topic
+     * @throws IOException If an I/O error occurs during the HTTP request.
+     * @throws InterruptedException If the operation is interrupted while waiting for a response.
+     */
+    public GetTopicResponse getTopic(String nameOrErn) throws IOException, InterruptedException {
+        GetTopicRequest.Builder request = GetTopicRequest.builder();
+        if (nameOrErn != null && nameOrErn.startsWith("ern:")) {
+            request.ern(nameOrErn);
+        } else {
+            request.name(nameOrErn);
+        }
+
+        String body = OBJECT_MAPPER.writeValueAsString(request.build());
+        HttpResponse<String> response = httpClient.post(baseUrl + "/", body, TARGET, "get-topic",
+                requestHeaders("get-topic", body));
+
+        if (response.statusCode() / 100 != 2) {
+            throw new EuclidServiceException(TARGET, "get-topic", response.statusCode(), response.body());
+        }
+
+        return GetTopicResponse.builder().topic(toTopic(OBJECT_MAPPER.readTree(response.body()).path("topic"))).build();
+    }
+
+    /**
+     * Retrieves one published message by its id.
+     *
+     * @param messageId the message's id
+     * @return the message
+     * @throws IOException If an I/O error occurs during the HTTP request.
+     * @throws InterruptedException If the operation is interrupted while waiting for a response.
+     */
+    public GetMessageResponse getMessage(String messageId) throws IOException, InterruptedException {
+        String body = OBJECT_MAPPER.writeValueAsString(GetMessageRequest.builder().messageId(messageId).build());
+        HttpResponse<String> response = httpClient.post(baseUrl + "/", body, TARGET, "get-message",
+                requestHeaders("get-message", body));
+
+        if (response.statusCode() / 100 != 2) {
+            throw new EuclidServiceException(TARGET, "get-message", response.statusCode(), response.body());
+        }
+
+        return GetMessageResponse.builder().message(toMessage(OBJECT_MAPPER.readTree(response.body()).path("message"))).build();
     }
 
     /**
@@ -1062,17 +1121,7 @@ public final class EuclidEns implements TokenRefreshable, SigningSchemeSelectabl
         List<Message> messages = new ArrayList<>();
         if (messagesNode != null && messagesNode.isArray()) {
             for (JsonNode messageNode : messagesNode) {
-                messages.add(new Message(
-                        textOrNull(messageNode, "ern"),
-                        textOrNull(messageNode, "topicErn"),
-                        textOrNull(messageNode, "messageId"),
-                        textOrNull(messageNode, "status"),
-                        textOrNull(messageNode, "body"),
-                        toVariantMap(messageNode.get("attributes")),
-                        textOrNull(messageNode, "contentType"),
-                        textOrNull(messageNode, "lastReceived"),
-                        textOrNull(messageNode, "created"),
-                        textOrNull(messageNode, "modified")));
+                messages.add(toMessage(messageNode));
             }
         }
         return messages;
@@ -1095,21 +1144,55 @@ public final class EuclidEns implements TokenRefreshable, SigningSchemeSelectabl
         List<Topic> topics = new ArrayList<>();
         if (topicsNode != null && topicsNode.isArray()) {
             for (JsonNode topicNode : topicsNode) {
-                topics.add(new Topic(
-                        textOrNull(topicNode, "name"),
-                        textOrNull(topicNode, "owner"),
-                        textOrNull(topicNode, "ern"),
-                        toStringMap(topicNode.get("tags")),
-                        topicNode.path("size").asLong(0),
-                        topicNode.path("messages").asLong(0),
-                        topicNode.path("maxMessageLength").asLong(1024 * 1024),
-                        textOrNull(topicNode, "status"),
-                        topicNode.path("retentionPeriod").asLong(0),
-                        textOrNull(topicNode, "created"),
-                        textOrNull(topicNode, "modified")));
+                topics.add(toTopic(topicNode));
             }
         }
         return ListTopicsResponse.builder().topics(topics).total(root.path("total").asLong(0)).build();
+    }
+
+    /**
+     * Builds a {@link Topic} from the JSON the server describes one with.
+     * <p>
+     * One reader for the one representation: a listing and {@link #getTopic} are answered with the
+     * same topic, so a field added to it is picked up by both or by neither.
+     *
+     * @param topicNode the topic's JSON
+     * @return the topic
+     */
+    private static Topic toTopic(JsonNode topicNode) {
+        return new Topic(
+                textOrNull(topicNode, "name"),
+                textOrNull(topicNode, "owner"),
+                textOrNull(topicNode, "ern"),
+                toStringMap(topicNode.get("tags")),
+                topicNode.path("size").asLong(0),
+                topicNode.path("messages").asLong(0),
+                topicNode.path("maxMessageLength").asLong(1024 * 1024),
+                textOrNull(topicNode, "status"),
+                topicNode.path("retentionPeriod").asLong(0),
+                textOrNull(topicNode, "created"),
+                textOrNull(topicNode, "modified"));
+    }
+
+    /**
+     * Builds a {@link Message} from the JSON the server describes one with, the same way a listing
+     * reads each of its own.
+     *
+     * @param messageNode the message's JSON
+     * @return the message
+     */
+    private static Message toMessage(JsonNode messageNode) {
+        return new Message(
+                textOrNull(messageNode, "ern"),
+                textOrNull(messageNode, "topicErn"),
+                textOrNull(messageNode, "messageId"),
+                textOrNull(messageNode, "status"),
+                textOrNull(messageNode, "body"),
+                toVariantMap(messageNode.get("attributes")),
+                textOrNull(messageNode, "contentType"),
+                textOrNull(messageNode, "lastReceived"),
+                textOrNull(messageNode, "created"),
+                textOrNull(messageNode, "modified"));
     }
 
     private static Map<String, String> toStringMap(JsonNode node) {
