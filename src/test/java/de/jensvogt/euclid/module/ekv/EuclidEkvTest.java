@@ -168,31 +168,47 @@ class EuclidEkvTest {
     }
 
     @Test
-    void describeTableSendsTheNameAndParsesTheItemCount() throws Exception {
+    void getTableSendsTheNameAndParsesTheItemCount() throws Exception {
         AtomicReference<SignableRequest> received = new AtomicReference<>();
         server = startServer(exchange -> {
             received.set(captureRequest(exchange));
             sendResponse(exchange, 200, tableJson(42));
         });
 
-        TableDescription table = newClient().describeTable("suppliers");
+        TableDescription table = newClient().getTable("suppliers");
 
-        assertEquals("describe-table", received.get().header("x-euclid-action"));
+        assertEquals("get-table", received.get().header("x-euclid-action"));
         assertBodyContains(received.get().body(), "\"name\":\"suppliers\"");
         assertEquals(42, table.itemCount());
     }
 
     @Test
-    void describeTableSurfacesATableThatDoesNotExist() throws Exception {
+    @SuppressWarnings("deprecation")
+    void theDeprecatedDescribeTableSendsTheNewAction() throws Exception {
+        AtomicReference<SignableRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(captureRequest(exchange));
+            sendResponse(exchange, 200, tableJson(42));
+        });
+
+        // Kept for callers that still name it the old way, but describe-table no longer exists
+        // server-side - so the delegate has to send get-table rather than what it is named after.
+        assertEquals(42, newClient().describeTable("suppliers").itemCount());
+
+        assertEquals("get-table", received.get().header("x-euclid-action"));
+    }
+
+    @Test
+    void getTableSurfacesATableThatDoesNotExist() throws Exception {
         server = startServer(exchange -> {
             exchange.getRequestBody().readAllBytes();
             sendResponse(exchange, 404, "{\"error\":\"Table does not exist: nope\"}");
         });
 
         EuclidServiceException exception = assertThrows(EuclidServiceException.class,
-                () -> newClient().describeTable("nope"));
+                () -> newClient().getTable("nope"));
 
-        assertEquals("describe-table", exception.action());
+        assertEquals("get-table", exception.action());
         assertEquals(404, exception.statusCode());
     }
 

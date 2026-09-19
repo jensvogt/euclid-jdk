@@ -263,17 +263,34 @@ public final class EuclidEkv implements TokenRefreshable, SigningSchemeSelectabl
     }
 
     /**
-     * Describes a table: its key, and how many items it holds.
+     * Retrieves one table: its key, and how many items it holds.
      * <p>
      * The item count is counted rather than looked up, so this is not free on a large table.
      *
-     * @param name the table to describe
+     * @param name the table to retrieve
      * @return the table's description
      * @throws IOException          if an I/O error occurs during the operation
      * @throws InterruptedException if the operation is interrupted
      */
+    public TableDescription getTable(String name) throws IOException, InterruptedException {
+        return toTableDescription(post("get-table", tableNameBody(name)));
+    }
+
+    /**
+     * Retrieves one table.
+     *
+     * @param name the table to retrieve
+     * @return the table's description
+     * @throws IOException          if an I/O error occurs during the operation
+     * @throws InterruptedException if the operation is interrupted
+     * @deprecated renamed to {@link #getTable}, for consistency with every other module's way of
+     *             naming the call that reads one thing. This delegate sends {@code get-table} like
+     *             its replacement does - the old {@code describe-table} action no longer exists
+     *             server-side, so keeping it here would only produce a 4xx.
+     */
+    @Deprecated(since = "0.1.43", forRemoval = true)
     public TableDescription describeTable(String name) throws IOException, InterruptedException {
-        return toTableDescription(post("describe-table", tableNameBody(name)));
+        return getTable(name);
     }
 
     /**
@@ -289,7 +306,7 @@ public final class EuclidEkv implements TokenRefreshable, SigningSchemeSelectabl
 
     /**
      * Lists tables, optionally filtered by name prefix and paginated. Each one is described as
-     * {@link #describeTable} would describe it, item count included - which is counted per table,
+     * {@link #getTable} would describe it, item count included - which is counted per table,
      * so a large page of large tables costs what those counts cost.
      *
      * @param prefix        only tables whose name starts with this prefix are returned

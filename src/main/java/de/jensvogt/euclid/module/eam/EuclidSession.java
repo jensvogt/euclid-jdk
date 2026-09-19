@@ -13,6 +13,12 @@ import de.jensvogt.euclid.dto.eam.DeleteAccountRequest;
 import de.jensvogt.euclid.dto.eam.DeleteNamespaceRequest;
 import de.jensvogt.euclid.dto.eam.DeleteUserGroupRequest;
 import de.jensvogt.euclid.dto.eam.DeleteUserRequest;
+import de.jensvogt.euclid.dto.eam.GetAccountRequest;
+import de.jensvogt.euclid.dto.eam.GetAccountResponse;
+import de.jensvogt.euclid.dto.eam.GetUserGroupRequest;
+import de.jensvogt.euclid.dto.eam.GetUserGroupResponse;
+import de.jensvogt.euclid.dto.eam.GetUserRequest;
+import de.jensvogt.euclid.dto.eam.GetUserResponse;
 import de.jensvogt.euclid.dto.eam.GrantRoleRequest;
 import de.jensvogt.euclid.dto.eam.ListAccountsRequest;
 import de.jensvogt.euclid.dto.eam.ListAccountsResponse;
@@ -324,6 +330,33 @@ public record EuclidSession(String token, String userId, String accountId, Strin
     }
 
     /**
+     * Retrieves one user, by the id they are known by.
+     * <p>
+     * The user comes back exactly as a listing describes each of its own, so this is the
+     * single-user form of {@link #listUsers} rather than a different view of one.
+     * <p>
+     * The id rather than the ERN, because that is what everything else names a user with: a grant's
+     * principal, an application's technical identity, the audit trail's {@code userId} column. A
+     * user of another account is HTTP 404, the same way a listing would not have shown them.
+     *
+     * @param userId the user's id
+     * @return the user
+     * @throws IOException          if an I/O error occurs when sending or receiving the HTTP request
+     * @throws InterruptedException if the operation is interrupted while waiting for the HTTP response
+     */
+    public GetUserResponse getUser(String userId) throws IOException, InterruptedException {
+        String body = OBJECT_MAPPER.writeValueAsString(GetUserRequest.builder().userId(userId).build());
+        HttpResponse<String> response = new EuclidHttpClient(caCertPath).post(baseUrl + "/", body, "eam", "get-user",
+                requestHeaders(Map.of("Content-Type", "application/json", "Authorization", "Bearer " + token)));
+
+        if (response.statusCode() / 100 != 2) {
+            throw new EuclidServiceException("eam", "get-user", response.statusCode(), response.body());
+        }
+
+        return GetUserResponse.builder().user(toUser(OBJECT_MAPPER.readTree(response.body()).path("user"))).build();
+    }
+
+    /**
      * Registers a new user in the system by sending an HTTP POST request with the user details.
      *
      * @param region    the region where the user is being registered
@@ -542,6 +575,43 @@ public record EuclidSession(String token, String userId, String accountId, Strin
     }
 
     /**
+     * Retrieves one user group, by name or by ERN, with its members.
+     * <p>
+     * The group comes back exactly as a listing describes each of its own - member ids included -
+     * so this is the single-group form of {@link #listUserGroups} rather than a different view of
+     * one.
+     * <p>
+     * A value starting with {@code "ern:"} is taken as an ERN; anything else is a name. Groups are
+     * installation-wide rather than scoped to an account, so a name identifies one without further
+     * qualification, and the ERN is accepted only because that is what a grant's principal carries.
+     *
+     * @param nameOrErn the group's name, or its ERN
+     * @return the group
+     * @throws IOException          if an I/O error occurs during the operation
+     * @throws InterruptedException if the operation is interrupted while waiting for a response
+     */
+    public GetUserGroupResponse getUserGroup(String nameOrErn) throws IOException, InterruptedException {
+        GetUserGroupRequest.Builder request = GetUserGroupRequest.builder();
+        if (nameOrErn != null && nameOrErn.startsWith("ern:")) {
+            request.ern(nameOrErn);
+        } else {
+            request.name(nameOrErn);
+        }
+
+        String body = OBJECT_MAPPER.writeValueAsString(request.build());
+        HttpResponse<String> response = new EuclidHttpClient(caCertPath).post(baseUrl + "/", body, "eam",
+                "get-user-group",
+                requestHeaders(Map.of("Content-Type", "application/json", "Authorization", "Bearer " + token)));
+
+        if (response.statusCode() / 100 != 2) {
+            throw new EuclidServiceException("eam", "get-user-group", response.statusCode(), response.body());
+        }
+
+        return GetUserGroupResponse.builder()
+                .userGroup(toUserGroup(OBJECT_MAPPER.readTree(response.body()).get("userGroup"))).build();
+    }
+
+    /**
      * Adds a user to a user group.
      *
      * @param userGroup user group ERN
@@ -617,6 +687,42 @@ public record EuclidSession(String token, String userId, String accountId, Strin
         }
 
         return toAccount(OBJECT_MAPPER.readTree(response.body()).get("account"));
+    }
+
+    /**
+     * Retrieves one account, by account ID or by ERN.
+     * <p>
+     * The account comes back exactly as a listing describes each of its own, so this is the
+     * single-account form of {@link #listAccounts} rather than a different view of one.
+     * <p>
+     * An account is named by its ID rather than by its name: the ID is what an ERN's fourth field
+     * carries and what every resource in the installation is scoped by, while the name is
+     * descriptive and addresses nothing. A value starting with {@code "ern:"} is taken as an ERN
+     * and names the same account. Requires administrator privileges.
+     *
+     * @param accountIdOrErn the account's ID, or its ERN
+     * @return the account
+     * @throws IOException          if an I/O error occurs during the operation
+     * @throws InterruptedException if the operation is interrupted while waiting for a response
+     */
+    public GetAccountResponse getAccount(String accountIdOrErn) throws IOException, InterruptedException {
+        GetAccountRequest.Builder request = GetAccountRequest.builder();
+        if (accountIdOrErn != null && accountIdOrErn.startsWith("ern:")) {
+            request.ern(accountIdOrErn);
+        } else {
+            request.accountId(accountIdOrErn);
+        }
+
+        String body = OBJECT_MAPPER.writeValueAsString(request.build());
+        HttpResponse<String> response = new EuclidHttpClient(caCertPath).post(baseUrl + "/", body, "eam", "get-account",
+                requestHeaders(Map.of("Content-Type", "application/json", "Authorization", "Bearer " + token)));
+
+        if (response.statusCode() / 100 != 2) {
+            throw new EuclidServiceException("eam", "get-account", response.statusCode(), response.body());
+        }
+
+        return GetAccountResponse.builder()
+                .account(toAccount(OBJECT_MAPPER.readTree(response.body()).get("account"))).build();
     }
 
     /**
@@ -1013,8 +1119,43 @@ public record EuclidSession(String token, String userId, String accountId, Strin
      */
     public ListGrantsResponse listGrants(String principal, String role, String accountId)
             throws IOException, InterruptedException {
+        return listGrants(principal, role, accountId, 0, 0, "principal", "asc");
+    }
+
+    /**
+     * Lists grants as {@link #listGrants(String, String, String)} does, one page at a time.
+     *
+     * <p>The whole-account listing is the one that grows: it is one row per principal per role, so
+     * an account with many users and several roles each has more grants than is useful to read at
+     * once. A {@code pageSize} of {@code 0} returns all of them, which is what the three-argument
+     * form asks for.
+     *
+     * <p>{@link ListGrantsResponse#total} is how many grants match the filter, not how many this
+     * page holds - so it is what says whether there is another page, and it does not change as you
+     * page through them.
+     *
+     * <p>Results are ordered by {@code sortColumn} whether or not they are paged: paging an
+     * unordered collection can show the same grant on two pages and never show another.
+     *
+     * @param principal     a user or user-group ERN, or empty
+     * @param role          a role name, or empty
+     * @param accountId     the account to look in; the caller's own when empty
+     * @param pageSize      how many grants to return; {@code 0} or less is all of them
+     * @param pageIndex     the zero-based page, applied when {@code pageSize} is set
+     * @param sortColumn    the field to order by: {@code principal}, {@code role},
+     *                      {@code accountId} or {@code created}
+     * @param sortDirection the direction to sort in, {@code "asc"} or {@code "desc"}
+     * @return the matching grants, and how many match in total
+     * @throws IOException          if an I/O error occurs during the operation
+     * @throws InterruptedException if the operation is interrupted while waiting for a response
+     */
+    public ListGrantsResponse listGrants(String principal, String role, String accountId, long pageSize,
+                                         long pageIndex, String sortColumn, String sortDirection)
+            throws IOException, InterruptedException {
         String body = OBJECT_MAPPER.writeValueAsString(
-                Map.of("principal", principal, "role", role, "accountId", accountId));
+                Map.of("principal", principal, "role", role, "accountId", accountId,
+                        "pageSize", pageSize, "pageIndex", pageIndex,
+                        "sortColumn", sortColumn, "sortDirection", sortDirection));
         HttpResponse<String> response = new EuclidHttpClient(caCertPath).post(baseUrl + "/", body, "eam", "list-grants",
                 requestHeaders(Map.of("Content-Type", "application/json", "Authorization", "Bearer " + token)));
 
