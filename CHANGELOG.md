@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.1.42](https://github.com/jensvogt/euclid-jdk/compare/euclid-jdk-v0.1.41...euclid-jdk-v0.1.42) (2026-09-19)
+
+
+### Bug Fixes
+
+* add get-details for ESM EQS and ENS ([ac22092](https://github.com/jensvogt/euclid-jdk/commit/ac220927b98d9f62f174864a58f931dc8c3ce104))
+* add get-details for ESM EQS and ENS ([0082abc](https://github.com/jensvogt/euclid-jdk/commit/0082abcc368bc5105410de2b98721bc63efb81d4))
+
 ## [0.1.41](https://github.com/jensvogt/euclid-jdk/compare/euclid-jdk-v0.1.40...euclid-jdk-v0.1.41) (2026-09-19)
 
 
