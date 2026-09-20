@@ -10,6 +10,8 @@ import de.jensvogt.euclid.auth.TokenRefreshable;
 import de.jensvogt.euclid.dto.com.Variant;
 import de.jensvogt.euclid.dto.esm.AddBucketTagRequest;
 import de.jensvogt.euclid.dto.esm.CompleteDownloadRequest;
+import de.jensvogt.euclid.dto.esm.AbortUploadRequest;
+import de.jensvogt.euclid.dto.esm.AbortUploadResponse;
 import de.jensvogt.euclid.dto.esm.CompleteUploadRequest;
 import de.jensvogt.euclid.dto.esm.CopyObjectRequest;
 import de.jensvogt.euclid.dto.esm.CompleteUploadResponse;
@@ -701,6 +703,40 @@ public final class EuclidEsm implements TokenRefreshable, SigningSchemeSelectabl
         }
 
         return extractListObjectsResponse(response.body());
+    }
+
+    /**
+     * Throws away a multipart upload that will not be finished.
+     *
+     * <p>Discards the parts staged under {@code uploadId} and - for a first upload - the object row
+     * that was seeded for bytes which never arrived. A <em>re-upload</em>'s object row is left
+     * exactly as it is: that row is the previous version of the object, still published and still
+     * readable, and not this upload's to delete. {@link AbortUploadResponse#objectRemoved} says
+     * which happened.
+     *
+     * <p>{@link #uploadFile} does not need this - it completes or it fails within one call. What
+     * needs it is an upload nothing is driving any more: one whose client was killed, or one the
+     * API gateway abandoned. The id comes from a log or from whatever started the upload, which is
+     * why this takes one rather than being folded into the multipart helpers.
+     *
+     * <p>An upload that has already completed answers HTTP 404, because there is no longer any such
+     * upload.
+     *
+     * @param uploadId the upload to discard, as create-upload returned it
+     * @return what was discarded, and whether the object row went with it
+     * @throws IOException If an I/O error occurs during the operation.
+     * @throws InterruptedException If the operation is interrupted.
+     */
+    public AbortUploadResponse abortUpload(String uploadId) throws IOException, InterruptedException {
+        String body = OBJECT_MAPPER.writeValueAsString(AbortUploadRequest.builder().uploadId(uploadId).build());
+        HttpResponse<String> response = httpClient.post(baseUrl + "/", body, "esm", "abort-upload",
+                requestHeaders("abort-upload", body));
+
+        if (response.statusCode() / 100 != 2) {
+            throw new EuclidServiceException("esm", "abort-upload", response.statusCode(), response.body());
+        }
+
+        return OBJECT_MAPPER.readValue(response.body(), AbortUploadResponse.class);
     }
 
     /**

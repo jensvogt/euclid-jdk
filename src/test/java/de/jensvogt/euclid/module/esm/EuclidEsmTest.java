@@ -7,6 +7,7 @@ import com.sun.net.httpserver.HttpServer;
 import de.jensvogt.euclid.auth.SigV4;
 import de.jensvogt.euclid.auth.SignableRequest;
 import de.jensvogt.euclid.dto.com.Variant;
+import de.jensvogt.euclid.dto.esm.AbortUploadResponse;
 import de.jensvogt.euclid.dto.esm.CompleteUploadResponse;
 import de.jensvogt.euclid.dto.esm.CreateBucketResponse;
 import de.jensvogt.euclid.dto.esm.DeleteObjectsResponse;
@@ -300,6 +301,52 @@ class EuclidEsmTest {
 
         assertEquals("delete-object", received.get().header("x-euclid-action"));
         assertBodyContains(received.get().body(), "\"ern\":\"obj-ern\"");
+    }
+
+    @Test
+    void abortUploadSendsTheIdAndReadsWhatWasDiscarded() throws Exception {
+        AtomicReference<SignableRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(captureRequest(exchange));
+            sendResponse(exchange, 200, "{\"uploadId\":\"upload-1\",\"bucketErn\":\"bucket-ern\","
+                    + "\"key\":\"onix/big.xml\",\"parts\":12,\"objectRemoved\":true}");
+        });
+
+        AbortUploadResponse response = newClient().abortUpload("upload-1");
+
+        assertEquals("abort-upload", received.get().header("x-euclid-action"));
+        assertBodyContains(received.get().body(), "\"uploadId\":\"upload-1\"");
+        assertEquals("onix/big.xml", response.key());
+        assertEquals(12, response.parts());
+        assertTrue(response.objectRemoved());
+    }
+
+    @Test
+    void abortUploadReportsAnObjectThatSurvivedTheAbandonedReUpload() throws Exception {
+        // A re-upload's row is the previous version - still published, still readable - so it is
+        // not removed, and the difference is what a caller cleaning up has to be able to see.
+        server = startServer(exchange -> {
+            exchange.getRequestBody().readAllBytes();
+            sendResponse(exchange, 200, "{\"uploadId\":\"upload-1\",\"parts\":3,\"objectRemoved\":false}");
+        });
+
+        assertFalse(newClient().abortUpload("upload-1").objectRemoved());
+    }
+
+    @Test
+    void abortUploadSurfacesAnUploadThatIsNotThere() throws Exception {
+        // Also what a completed upload answers, since completing it takes the staging with it.
+        server = startServer(exchange -> {
+            exchange.getRequestBody().readAllBytes();
+            sendResponse(exchange, 404, "{\"error\":\"Upload not found, id: gone\"}");
+        });
+
+        EuclidServiceException exception = assertThrows(EuclidServiceException.class,
+                () -> newClient().abortUpload("gone"));
+
+        assertEquals("esm", exception.service());
+        assertEquals("abort-upload", exception.action());
+        assertEquals(404, exception.statusCode());
     }
 
     @Test
