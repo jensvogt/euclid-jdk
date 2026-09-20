@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.1.44](https://github.com/jensvogt/euclid-jdk/compare/euclid-jdk-v0.1.43...euclid-jdk-v0.1.44) (2026-09-20)
+
+
+### Bug Fixes
+
+* add ESM abort upload ([de017ee](https://github.com/jensvogt/euclid-jdk/commit/de017ee92beddd380645899635e176c0bf678895))
+* add ESM abort upload ([6669fbe](https://github.com/jensvogt/euclid-jdk/commit/6669fbead1941e3d7f9dc8ff2ad7f58aead90246))
+
 ## [0.1.43](https://github.com/jensvogt/euclid-jdk/compare/euclid-jdk-v0.1.42...euclid-jdk-v0.1.43) (2026-09-19)
 
 
