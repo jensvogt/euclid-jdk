@@ -183,6 +183,51 @@ class EuclidSessionTest {
     }
 
     @Test
+    void changePasswordSendsBothPasswordsAndNamesNobody() throws Exception {
+        AtomicReference<CapturedRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(capture(exchange));
+            sendResponse(exchange, 200, "{}");
+        });
+
+        newSession().changePassword("old-one", "new-one");
+
+        assertEquals("change-password", received.get().header("x-euclid-action"));
+        // An empty userId is what tells the server this is the change rather than the reset.
+        assertBodyContains(received.get().body(), "\"userId\":\"\"", "\"oldPassword\":\"old-one\"", "\"newPassword\":\"new-one\"");
+    }
+
+    @Test
+    void resetPasswordNamesTheUserAndSendsNoOldPassword() throws Exception {
+        AtomicReference<CapturedRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(capture(exchange));
+            sendResponse(exchange, 200, "{}");
+        });
+
+        newSession().resetPassword("bob", "new-one");
+
+        assertEquals("change-password", received.get().header("x-euclid-action"));
+        assertBodyContains(received.get().body(), "\"userId\":\"bob\"", "\"oldPassword\":\"\"", "\"newPassword\":\"new-one\"");
+    }
+
+    // The server reads a request naming yourself as the change, and would refuse this one for the
+    // old password it did not get - so it is refused here instead, before anything is sent.
+    @Test
+    void resettingYourOwnPasswordIsRefusedBeforeItIsSent() throws Exception {
+        AtomicReference<CapturedRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(capture(exchange));
+            sendResponse(exchange, 200, "{}");
+        });
+
+        EuclidSession session = newSession();
+
+        assertThrows(IllegalArgumentException.class, () -> session.resetPassword(session.userId(), "new-one"));
+        assertNull(received.get(), "nothing may have reached the server");
+    }
+
+    @Test
     void changeNamespaceUpdatesSessionAndSendsBody() throws Exception {
         AtomicReference<CapturedRequest> received = new AtomicReference<>();
         server = startServer(exchange -> {

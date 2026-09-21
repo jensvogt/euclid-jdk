@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import de.jensvogt.euclid.dto.Metadata;
 import de.jensvogt.euclid.dto.eam.ChangeNamespaceRequest;
+import de.jensvogt.euclid.dto.eam.ChangePasswordRequest;
 import de.jensvogt.euclid.dto.eam.CreateAccessKeyResponse;
 import de.jensvogt.euclid.dto.eam.CreateAccountRequest;
 import de.jensvogt.euclid.dto.eam.CreateNamespaceRequest;
@@ -395,6 +396,70 @@ public record EuclidSession(String token, String userId, String accountId, Strin
 
         if (response.statusCode() / 100 != 2) {
             throw new EuclidServiceException("eam", "delete-user", response.statusCode(), response.body());
+        }
+    }
+
+    /**
+     * Changes this session's own password.
+     *
+     * <p>The old password is what proves the change may be made - a token alone is not enough, so
+     * that one left behind cannot be turned into the account itself.
+     *
+     * <p>This session keeps working. Its bearer token is verified against the server's signing
+     * secret rather than against the password, so it stays valid until it expires; the new password
+     * is what the next login wants. Access keys are untouched.
+     *
+     * @param oldPassword the current password
+     * @param newPassword the password to replace it with
+     * @throws EuclidServiceException if the old password is wrong (403), or if this user does not
+     *                                log in with a password at all (409) - a federated identity or
+     *                                an application's technical principal
+     * @throws IOException            if an I/O error occurs during the operation
+     * @throws InterruptedException   if the operation is interrupted while waiting for a response
+     */
+    public void changePassword(String oldPassword, String newPassword) throws IOException, InterruptedException {
+        // No userId: the server reads an absent one as "mine", which is the only thing this method
+        // means.
+        ChangePasswordRequest request = ChangePasswordRequest.builder().oldPassword(oldPassword).newPassword(newPassword).build();
+        String body = OBJECT_MAPPER.writeValueAsString(request);
+        HttpResponse<String> response = new EuclidHttpClient(caCertPath).post(baseUrl + "/", body, "eam", "change-password",
+                requestHeaders(Map.of("Content-Type", "application/json", "Authorization", "Bearer " + token)));
+
+        if (response.statusCode() / 100 != 2) {
+            throw new EuclidServiceException("eam", "change-password", response.statusCode(), response.body());
+        }
+    }
+
+    /**
+     * Resets another user's password. Administrator only.
+     *
+     * <p>No old password, because an administrator is not supposed to know one; being an
+     * administrator is the proof instead. Aiming this at yourself is refused here rather than at the
+     * server, which reads a request naming yourself as the <em>change</em> and would refuse it for
+     * the old password it did not get - a confusing way to learn you wanted
+     * {@link #changePassword(String, String)}.
+     *
+     * @param userId      the user whose password to reset
+     * @param newPassword the password to give them
+     * @throws IllegalArgumentException if userId names this session's own user
+     * @throws EuclidServiceException   if the caller is not an administrator (403), the user does
+     *                                  not exist (404), or that user does not log in with a
+     *                                  password (409)
+     * @throws IOException              if an I/O error occurs during the operation
+     * @throws InterruptedException     if the operation is interrupted while waiting for a response
+     */
+    public void resetPassword(String userId, String newPassword) throws IOException, InterruptedException {
+        if (userId != null && userId.equals(this.userId)) {
+            throw new IllegalArgumentException("resetPassword() is for another user's password; use changePassword(oldPassword, newPassword) for your own");
+        }
+
+        ChangePasswordRequest request = ChangePasswordRequest.builder().userId(userId).newPassword(newPassword).build();
+        String body = OBJECT_MAPPER.writeValueAsString(request);
+        HttpResponse<String> response = new EuclidHttpClient(caCertPath).post(baseUrl + "/", body, "eam", "change-password",
+                requestHeaders(Map.of("Content-Type", "application/json", "Authorization", "Bearer " + token)));
+
+        if (response.statusCode() / 100 != 2) {
+            throw new EuclidServiceException("eam", "change-password", response.statusCode(), response.body());
         }
     }
 
