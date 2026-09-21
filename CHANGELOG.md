@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.45](https://github.com/jensvogt/euclid-jdk/compare/euclid-jdk-v0.1.44...euclid-jdk-v0.1.45) (2026-09-21)
+
+
+### Features
+
+* add EAM change-password ([e246723](https://github.com/jensvogt/euclid-jdk/commit/e246723079faa2fc0be190e529c1ecd655315f1e))
+
 ## [0.1.44](https://github.com/jensvogt/euclid-jdk/compare/euclid-jdk-v0.1.43...euclid-jdk-v0.1.44) (2026-09-20)
 
 
