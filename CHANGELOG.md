@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.1.46](https://github.com/jensvogt/euclid-jdk/compare/euclid-jdk-v0.1.45...euclid-jdk-v0.1.46) (2026-09-22)
+
+
+### Bug Fixes
+
+* add EQSsens-message-batch, application scaling ([020b885](https://github.com/jensvogt/euclid-jdk/commit/020b88530615fe016f326c52d1cb69a3b267b393))
+* add EQSsens-message-batch, application scaling ([ad34851](https://github.com/jensvogt/euclid-jdk/commit/ad348512825204c04963b9d8c66864fe6a33a818))
+
 ## [0.1.45](https://github.com/jensvogt/euclid-jdk/compare/euclid-jdk-v0.1.44...euclid-jdk-v0.1.45) (2026-09-21)
 
 
