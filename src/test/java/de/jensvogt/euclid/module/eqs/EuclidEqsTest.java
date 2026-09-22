@@ -1,5 +1,9 @@
 package de.jensvogt.euclid.module.eqs;
 
+import de.jensvogt.euclid.dto.eqs.SendMessageBatchResponse;
+
+import de.jensvogt.euclid.dto.eqs.SendMessageBatchRequest;
+
 import com.sun.net.httpserver.Headers;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpHandler;
@@ -62,6 +66,37 @@ class EuclidEqsTest {
         if (server != null) {
             server.stop(0);
         }
+    }
+
+    // A batch names the queue once and carries the messages; a rejected one is reported against its
+    // position and the rest still go. Two things worth pinning: an unset field stays out of the
+    // entry - an empty priority would override a queue configured otherwise - and the failure's
+    // index survives, since that index is the only thing mapping a rejection back to what was sent.
+    @Test
+    void sendMessageBatchSendsManyAndNamesWhatItWouldNot() throws Exception {
+        AtomicReference<SignableRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(captureRequest(exchange));
+            sendResponse(exchange, 200, "{\"ern\": \"ern:queue/orders\", \"asked\": 3, \"sent\": 2,"
+                    + " \"messageIds\": [\"id-0\", \"id-2\"],"
+                    + " \"failed\": [{\"index\": 1, \"reason\": \"message is 2048 bytes, and this queue accepts 1024\"}]}");
+        });
+
+        SendMessageBatchResponse result = newClient().sendMessageBatch(SendMessageBatchRequest.builder()
+                .ern("orders")
+                .message("first")
+                .message("second")
+                .message(new SendMessageBatchRequest.Entry("third", Map.of(), Map.of(), "HIGH"))
+                .build());
+
+        assertEquals(3L, result.asked());
+        assertEquals(2L, result.sent());
+        assertEquals(List.of("id-0", "id-2"), result.messageIds());
+        assertEquals(1, result.failed().size());
+        assertEquals(1L, result.failed().get(0).index());
+
+        String body = received.get().body();
+        assertBodyContains(body, "\"ern\":\"orders\"", "\"body\":\"first\"", "\"priority\":\"HIGH\"");
     }
 
     @Test

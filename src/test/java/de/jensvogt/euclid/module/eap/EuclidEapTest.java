@@ -6,7 +6,9 @@ import com.sun.net.httpserver.HttpHandler;
 import com.sun.net.httpserver.HttpServer;
 import de.jensvogt.euclid.auth.SigV4;
 import de.jensvogt.euclid.auth.SignableRequest;
+import de.jensvogt.euclid.dto.eap.CopyApplicationRequest;
 import de.jensvogt.euclid.dto.eap.CreateApplicationRequest;
+import de.jensvogt.euclid.dto.eap.ScaleApplicationRequest;
 import de.jensvogt.euclid.dto.eap.RedeployApplicationRequest;
 import de.jensvogt.euclid.dto.eap.RestartApplicationResponse;
 import de.jensvogt.euclid.dto.eap.SetLogLevelResponse;
@@ -145,6 +147,57 @@ class EuclidEapTest {
         assertFalse(body.contains("environment"), "an unset environment should not be sent, was " + body);
         // Left unset, EAP mints a technical principal rather than the application borrowing a user.
         assertFalse(body.contains("\"user\""), "an unset user should not be sent, was " + body);
+    }
+
+    // A copy names where it is going. targetApplicationId stays out of the body unless it is being
+    // changed: the server reads an absent one as "the original's name", so sending null would have
+    // to be read as a request for an application with no name.
+    @Test
+    void copyApplicationNamesTheTargetNamespace() throws Exception {
+        AtomicReference<SignableRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(captureRequest(exchange));
+            sendResponse(exchange, 200, applicationJson());
+        });
+
+        EuclidEap client = newClient();
+        client.copyApplication(CopyApplicationRequest.builder()
+                .applicationId("billing").targetNamespace("production").build());
+
+        String body = received.get().body();
+        assertBodyContains(body, "\"applicationId\":\"billing\"", "\"targetNamespace\":\"production\"");
+        assertFalse(body.contains("targetApplicationId"), "an unset targetApplicationId must not be sent, was " + body);
+
+        client.copyApplication(CopyApplicationRequest.builder()
+                .applicationId("billing").targetNamespace("development")
+                .targetApplicationId("billing-next").build());
+
+        assertBodyContains(received.get().body(), "\"targetApplicationId\":\"billing-next\"");
+    }
+
+    // A bound the caller did not set must not be sent: the server reads an absent one as "leave it
+    // as it stands", which is what lets a ceiling be raised without disturbing the floor under it.
+    @Test
+    void scaleApplicationSendsOnlyTheBoundItWasGiven() throws Exception {
+        AtomicReference<SignableRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(captureRequest(exchange));
+            sendResponse(exchange, 200, applicationJson());
+        });
+
+        EuclidEap client = newClient();
+        client.scaleApplication(ScaleApplicationRequest.builder()
+                .applicationId("billing").maxInstances(16L).build());
+
+        String body = received.get().body();
+        assertBodyContains(body, "\"applicationId\":\"billing\"", "\"maxInstances\":16");
+        assertFalse(body.contains("minInstances"), "an unset minInstances must not be sent, was " + body);
+
+        // The builder's instances() shorthand sets both, which pins the pool at that size.
+        client.scaleApplication(ScaleApplicationRequest.builder()
+                .applicationId("billing").instances(3).build());
+
+        assertBodyContains(received.get().body(), "\"minInstances\":3", "\"maxInstances\":3");
     }
 
     // update-application only touches the fields it receives, so anything the caller did not set

@@ -37,6 +37,8 @@ import de.jensvogt.euclid.dto.eqs.ReceiveMessagesRequest;
 import de.jensvogt.euclid.dto.eqs.ReceiveMessagesResponse;
 import de.jensvogt.euclid.dto.eqs.RedriveDlqRequest;
 import de.jensvogt.euclid.dto.eqs.RedriveDlqResponse;
+import de.jensvogt.euclid.dto.eqs.SendMessageBatchRequest;
+import de.jensvogt.euclid.dto.eqs.SendMessageBatchResponse;
 import de.jensvogt.euclid.dto.eqs.SendMessageRequest;
 import de.jensvogt.euclid.dto.eqs.SendMessageResponse;
 import de.jensvogt.euclid.dto.eqs.SetMessageAttributeRequest;
@@ -982,6 +984,44 @@ public final class EuclidEqs implements TokenRefreshable, SigningSchemeSelectabl
     }
 
     /**
+     * Sends several messages to one queue in a single call.
+     *
+     * The saving over calling {@link #sendMessage(String, String, Map, String)} in a loop is mostly
+     * in the database rather than the round trips: the whole batch is written in one insert, and
+     * the queue's counters are adjusted once instead of once per message.
+     *
+     * A message that cannot be sent - a body over the queue's limit, a priority that is not one of
+     * the three - does not stop the others. The response says how many were asked for and how many
+     * went, lists the ids of those that went in request order, and names each rejection by its
+     * position in the list you sent, so a producer can retry exactly those rather than the whole
+     * batch and duplicate everything else.
+     *
+     * Every message being rejected is still a successful call: the request was well formed and has
+     * been answered, with a reason for each. Check {@code sent} rather than the absence of an
+     * exception.
+     *
+     * @param request the queue and the messages to send
+     * @return what was sent, and what was not
+     * @throws IOException If an I/O error occurs during the operation.
+     * @throws InterruptedException If the operation is interrupted.
+     * @throws EuclidServiceException with status 400 if the batch is empty or over the
+     * installation's euclid.modules.eqs.max-batch-size - those are mistakes in the request rather
+     * than in a message, so there is no partial outcome to report
+     */
+    public SendMessageBatchResponse sendMessageBatch(SendMessageBatchRequest request)
+            throws IOException, InterruptedException {
+        String requestBody = OBJECT_MAPPER.writeValueAsString(request);
+        HttpResponse<String> response = httpClient.post(baseUrl + "/", requestBody, "eqs", "send-message-batch",
+                requestHeaders("send-message-batch", requestBody));
+
+        if (response.statusCode() / 100 != 2) {
+            throw new EuclidServiceException("eqs", "send-message-batch", response.statusCode(), response.body());
+        }
+
+        return extractSendMessageBatchResponse(response.body());
+    }
+
+    /**
      * Retrieves messages from a specified resource.
      *
      * @param ern The endpoint resource name (ERN) from which messages are to be received.
@@ -1332,6 +1372,34 @@ public final class EuclidEqs implements TokenRefreshable, SigningSchemeSelectabl
     private static SendMessageResponse extractSendMessageResponse(String responseBody) throws IOException {
         JsonNode root = OBJECT_MAPPER.readTree(responseBody);
         return SendMessageResponse.builder().messageId(textOrNull(root, "messageId")).build();
+    }
+
+    /**
+     * Extracts a {@link SendMessageBatchResponse} from the provided JSON response body.
+     *
+     * @param responseBody the JSON response body as a string
+     * @return the response, with both lists present but possibly empty
+     * @throws IOException if an error occurs while parsing the JSON response body
+     */
+    private static SendMessageBatchResponse extractSendMessageBatchResponse(String responseBody) throws IOException {
+        JsonNode root = OBJECT_MAPPER.readTree(responseBody);
+
+        List<String> messageIds = new ArrayList<>();
+        JsonNode ids = root.get("messageIds");
+        if (ids != null && ids.isArray()) {
+            ids.forEach(id -> messageIds.add(id.asText()));
+        }
+
+        List<SendMessageBatchResponse.Failure> failed = new ArrayList<>();
+        JsonNode failures = root.get("failed");
+        if (failures != null && failures.isArray()) {
+            failures.forEach(failure -> failed.add(new SendMessageBatchResponse.Failure(
+                    failure.path("index").asLong(), failure.path("reason").asText(""))));
+        }
+
+        return new SendMessageBatchResponse(textOrNull(root, "ern"),
+                root.path("asked").asLong(), root.path("sent").asLong(),
+                List.copyOf(messageIds), List.copyOf(failed));
     }
 
     /**
