@@ -183,22 +183,6 @@ class EuclidEkvTest {
     }
 
     @Test
-    @SuppressWarnings("deprecation")
-    void theDeprecatedDescribeTableSendsTheNewAction() throws Exception {
-        AtomicReference<SignableRequest> received = new AtomicReference<>();
-        server = startServer(exchange -> {
-            received.set(captureRequest(exchange));
-            sendResponse(exchange, 200, tableJson(42));
-        });
-
-        // Kept for callers that still name it the old way, but describe-table no longer exists
-        // server-side - so the delegate has to send get-table rather than what it is named after.
-        assertEquals(42, newClient().describeTable("suppliers").itemCount());
-
-        assertEquals("get-table", received.get().header("x-euclid-action"));
-    }
-
-    @Test
     void getTableSurfacesATableThatDoesNotExist() throws Exception {
         server = startServer(exchange -> {
             exchange.getRequestBody().readAllBytes();

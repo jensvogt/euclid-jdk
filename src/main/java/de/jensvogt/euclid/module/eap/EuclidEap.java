@@ -9,9 +9,11 @@ import de.jensvogt.euclid.auth.SigningScheme;
 import de.jensvogt.euclid.auth.SigningSchemeSelectable;
 import de.jensvogt.euclid.auth.TokenRefreshable;
 import de.jensvogt.euclid.dto.eap.ApplicationRequest;
+import de.jensvogt.euclid.dto.eap.CopyApplicationRequest;
 import de.jensvogt.euclid.dto.eap.CreateApplicationRequest;
 import de.jensvogt.euclid.dto.eap.ListApplicationsRequest;
 import de.jensvogt.euclid.dto.eap.RedeployApplicationRequest;
+import de.jensvogt.euclid.dto.eap.ScaleApplicationRequest;
 import de.jensvogt.euclid.dto.eap.RestartApplicationResponse;
 import de.jensvogt.euclid.dto.eap.SetLogLevelRequest;
 import de.jensvogt.euclid.dto.eap.SetLogLevelResponse;
@@ -220,6 +222,66 @@ public final class EuclidEap implements TokenRefreshable, SigningSchemeSelectabl
     public Application updateApplication(UpdateApplicationRequest request)
             throws IOException, InterruptedException {
         return toApplication(post("update-application", OBJECT_MAPPER.writeValueAsString(request)));
+    }
+
+    /**
+     * Defines the same application again in another namespace, leaving the original alone and
+     * running. This is how a build is promoted - development to integration, integration to
+     * production - without taking the namespace it came from out of service.
+     * <p>
+     * To move an application rather than copy it, set the namespace on
+     * {@link #updateApplication(UpdateApplicationRequest)}: that takes the definition with it, so
+     * what ran in the old namespace stops running there.
+     * <p>
+     * The copy runs the same artifact - bucket, key and checksum are taken as they stand - and is
+     * given its own runtime name and its own technical principal with its own access key, because
+     * both are installation-wide and cannot be shared. Revoking the copy's credentials therefore
+     * leaves the original running. An application told to run as a named user keeps that user.
+     * <p>
+     * It is created stopped, whatever the original is doing: a copy that started itself would put
+     * a second consumer on the target namespace's queues the moment this returned. Start it with
+     * {@link #startApplication(String)} once you have looked at it.
+     *
+     * @param request the application to copy and where to copy it to
+     * @return the stored definition of the copy
+     * @throws IOException if an I/O error occurs during the operation
+     * @throws InterruptedException if the operation is interrupted
+     * @throws de.jensvogt.euclid.exception.EuclidServiceException with status 404 if the
+     * application, the target namespace, or a bucket or queue the original may use has no
+     * counterpart of that name in the target namespace; with status 409 if an application of that
+     * name is already defined there
+     */
+    public Application copyApplication(CopyApplicationRequest request)
+            throws IOException, InterruptedException {
+        return toApplication(post("copy-application", OBJECT_MAPPER.writeValueAsString(request)));
+    }
+
+    /**
+     * Changes how many instances an application runs, without restarting the ones it has.
+     * <p>
+     * {@link #updateApplication(UpdateApplicationRequest)} can set the same two fields, but it
+     * writes the whole definition and stamps the modification date - and the manager restarts a
+     * pool whose application changed since it started it. Scaling that way stops every running
+     * instance and starts it again, which is the opposite of what asking for capacity means and
+     * worst at the moment it is asked for.
+     * <p>
+     * What is set is the range the autoscaler works within, not a count. The manager scales toward
+     * it on its next reconcile; nothing is started or stopped by this call. Setting both bounds to
+     * the same number pins the pool at that size - {@code ScaleApplicationRequest.Builder.instances}
+     * is the shorthand for it.
+     *
+     * @param request the application to scale and the bounds to set; a bound left null is left alone
+     * @return the stored definition after the change
+     * @throws IOException if an I/O error occurs during the operation
+     * @throws InterruptedException if the operation is interrupted
+     * @throws de.jensvogt.euclid.exception.EuclidServiceException with status 404 if the
+     * application does not exist; with status 400 if neither bound was given, if a floor of zero
+     * was asked for - stop the application instead - or if the bounds would leave a floor above a
+     * ceiling, which is checked against the bound as it will stand rather than as it is
+     */
+    public Application scaleApplication(ScaleApplicationRequest request)
+            throws IOException, InterruptedException {
+        return toApplication(post("scale-application", OBJECT_MAPPER.writeValueAsString(request)));
     }
 
     /**
