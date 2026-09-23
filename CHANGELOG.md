@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.1.47](https://github.com/jensvogt/euclid-jdk/compare/euclid-jdk-v0.1.46...euclid-jdk-v0.1.47) (2026-09-23)
+
+
+### Bug Fixes
+
+* add new commands ([3162b55](https://github.com/jensvogt/euclid-jdk/commit/3162b55a79df6333491a7fcdba6e3574bf2efd1a))
+* add new commands ([094312d](https://github.com/jensvogt/euclid-jdk/commit/094312db57785f4d73cf3c752697aacab47fe8b2))
+
 ## [0.1.46](https://github.com/jensvogt/euclid-jdk/compare/euclid-jdk-v0.1.45...euclid-jdk-v0.1.46) (2026-09-22)
 
 
