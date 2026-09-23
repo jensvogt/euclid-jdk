@@ -305,6 +305,38 @@ public final class EuclidEkm implements TokenRefreshable, SigningSchemeSelectabl
     }
 
     /**
+     * Whether a key exists.
+     *
+     * <p>Three answers, not two. {@code true} and {@code false} are the ones a caller expects;
+     * the third is a {@link EuclidServiceException}, and it is the one that matters. An expired
+     * session, an unreachable gateway or a refused permission is not the same as "not there", and a
+     * method that returned {@code false} for them would have callers deleting and recreating
+     * things over an outage. Only HTTP 404 - the answer that actually says it is absent - becomes
+     * {@code false}; everything else is thrown.
+     *
+     * <p>Reads the key's description, never its material. A revoked or pending-deletion key
+     * still exists and this returns {@code true} for it; {@link #getKey} carries the status that
+     * tells those apart.
+     *
+     * @param nameOrErn name of the key in this client's account and namespace, or a full ERN
+     * @return {@code true} if it exists, {@code false} if the server said 404
+     * @throws EuclidServiceException if the question could not be answered
+     * @throws IOException if an I/O error occurs during the request
+     * @throws InterruptedException if the operation is interrupted while waiting for the response
+     */
+    public boolean existsKey(String nameOrErn) throws IOException, InterruptedException {
+        try {
+            getKey(nameOrErn);
+            return true;
+        } catch (EuclidServiceException e) {
+            if (e.statusCode() == 404) {
+                return false;
+            }
+            throw e;
+        }
+    }
+
+    /**
      * Schedules a key for permanent deletion after the default seven-day grace period.
      *
      * @param keyId the ID of the key to delete, as returned by {@link #createKey}

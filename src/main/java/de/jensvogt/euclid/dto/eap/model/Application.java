@@ -26,8 +26,8 @@ import java.util.Map;
  * @param accountId      the account the application belongs to
  * @param namespace      the namespace the application belongs to, empty for one at the account root
  * @param region         the region the application runs in
- * @param runtime        how the artifact is executed: {@code "JAVA"}, {@code "PYTHON"},
- *                       {@code "NODEJS"} or {@code "BINARY"}
+ * @param runtime        how the artifact is executed: {@code "JAVA"}, {@code "JAVA21"},
+ *                       {@code "JAVA25"}, {@code "PYTHON"}, {@code "NODEJS"} or {@code "BINARY"}
  * @param bucketErn      ERN of the bucket holding the artifact, resolved when the application was
  *                       deployed
  * @param artifactKey    key of the artifact object within that bucket

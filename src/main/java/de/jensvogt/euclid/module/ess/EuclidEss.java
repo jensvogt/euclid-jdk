@@ -260,6 +260,36 @@ public final class EuclidEss implements TokenRefreshable, SigningSchemeSelectabl
     }
 
     /**
+     * Whether a secret exists.
+     *
+     * <p>Three answers, not two. {@code true} and {@code false} are the ones a caller expects; the
+     * third is a {@link EuclidServiceException}, and it is the one that matters. An expired session,
+     * an unreachable gateway or a refused permission is not the same as "not there", and a method
+     * that returned {@code false} for them would have callers recreating secrets over an outage.
+     *
+     * <p>Asks {@link #listSecrets} rather than {@link #getSecret}, and that is deliberate.
+     * {@code getSecret} answers with the decrypted value, so asking it whether a secret exists would
+     * mean holding {@code ess:get-secret} - permission to read the password rather than to know the
+     * name is taken - decrypting it, carrying the plaintext back across the wire, and leaving an
+     * audit entry indistinguishable from somebody actually reading it. None of that is any part of
+     * the question. This needs {@code ess:list-secrets} and never touches the value.
+     *
+     * <p>The whole matching page is asked for rather than the default ten, because the prefix also
+     * matches longer names - {@code "db-password"} matches {@code "db-password-old"} too - and a
+     * name could otherwise be called absent because longer ones crowded it off page one.
+     *
+     * @param name name of the secret to look for, matched exactly
+     * @return {@code true} if a secret of exactly that name exists
+     * @throws EuclidServiceException if the question could not be answered
+     * @throws IOException if an I/O error occurs during the operation
+     * @throws InterruptedException if the operation is interrupted
+     */
+    public boolean existsSecret(String name) throws IOException, InterruptedException {
+        ListSecretsResponse matching = listSecrets(name, 0, 0, "name", "asc");
+        return matching.secrets().stream().anyMatch(secret -> name.equals(secret.name()));
+    }
+
+    /**
      * Replaces a secret's value, which is what counts as a rotation and what bumps
      * {@link Secret#version()}.
      *
