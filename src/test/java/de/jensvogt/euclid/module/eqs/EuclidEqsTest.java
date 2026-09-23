@@ -1154,4 +1154,37 @@ class EuclidEqsTest {
             os.write(bytes);
         }
     }
+    @Test
+    void existsQueueAnswersTrueWhenTheErnResolves() throws Exception {
+        server = startServer(exchange ->
+                sendResponse(exchange, 200, "{\"ern\":\"ern:eqs:x:1:dev:queue:orders\"}"));
+
+        assertTrue(newClient().existsQueue("orders"));
+    }
+
+    @Test
+    void existsQueueAnswersFalseOnlyForA404() throws Exception {
+        server = startServer(exchange ->
+                sendResponse(exchange, 404, "{\"error\":\"Queue not found, name: nope\"}"));
+
+        assertFalse(newClient().existsQueue("nope"));
+    }
+
+    @Test
+    void existsQueueThrowsWhenItCouldNotTell() throws Exception {
+        // The third answer, and the reason this is not a two-state method. A caller that got false
+        // from an expired session would delete and recreate a queue that was there all along, so
+        // anything that is not a 404 has to be thrown rather than answered.
+        for (int status : new int[] {401, 403, 500}) {
+            server = startServer(exchange -> sendResponse(exchange, status, "{\"error\":\"not today\"}"));
+
+            EuclidEqs eqs = newClient();
+            EuclidServiceException exception =
+                    assertThrows(EuclidServiceException.class, () -> eqs.existsQueue("orders"));
+            assertEquals(status, exception.statusCode());
+
+            server.stop(0);
+        }
+    }
+
 }

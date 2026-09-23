@@ -11,7 +11,7 @@ import java.util.Map;
  * its own default for them - which is why the optional numbers are boxed types.
  *
  * @param applicationId  name identifying the application, unique within its account and namespace
- * @param runtime        how the artifact is executed: {@code "JAVA"}, {@code "PYTHON"}, {@code "NODEJS"} or {@code "BINARY"}
+ * @param runtime        how the artifact is executed: {@code "JAVA"}, {@code "JAVA21"}, {@code "JAVA25"}, {@code "PYTHON"}, {@code "NODEJS"} or {@code "BINARY"}
  * @param bucket         name of the ESM bucket holding the artifact
  * @param artifact       key of the artifact object within that bucket
  * @param version        version this build is, e.g. {@code "1.4.0"}; left unset, EAP reads it out of the
@@ -57,7 +57,7 @@ public record CreateApplicationRequest(String applicationId, String runtime, Str
         private String applicationId;
 
         /**
-         * How the artifact is executed: {@code "JAVA"}, {@code "PYTHON"}, {@code "NODEJS"} or {@code "BINARY"}.
+         * How the artifact is executed: {@code "JAVA"}, {@code "JAVA21"}, {@code "JAVA25"}, {@code "PYTHON"}, {@code "NODEJS"} or {@code "BINARY"}.
          */
         private String runtime;
 
@@ -133,9 +133,9 @@ public record CreateApplicationRequest(String applicationId, String runtime, Str
         }
 
         /**
-         * Sets how the artifact is executed: {@code "JAVA"}, {@code "PYTHON"}, {@code "NODEJS"} or {@code "BINARY"}.
+         * Sets how the artifact is executed: {@code "JAVA"}, {@code "JAVA21"}, {@code "JAVA25"}, {@code "PYTHON"}, {@code "NODEJS"} or {@code "BINARY"}.
          *
-         * @param runtime how the artifact is executed: {@code "JAVA"}, {@code "PYTHON"}, {@code "NODEJS"} or {@code "BINARY"}
+         * @param runtime how the artifact is executed: {@code "JAVA"}, {@code "JAVA21"}, {@code "JAVA25"}, {@code "PYTHON"}, {@code "NODEJS"} or {@code "BINARY"}
          * @return the builder instance
          */
         public Builder runtime(String runtime) {

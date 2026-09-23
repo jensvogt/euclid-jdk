@@ -453,6 +453,36 @@ public final class EuclidEsm implements TokenRefreshable, SigningSchemeSelectabl
     }
 
     /**
+     * Whether a bucket exists.
+     *
+     * <p>Three answers, not two. {@code true} and {@code false} are the ones a caller expects;
+     * the third is a {@link EuclidServiceException}, and it is the one that matters. An expired
+     * session, an unreachable gateway or a refused permission is not the same as "not there", and a
+     * method that returned {@code false} for them would have callers deleting and recreating
+     * things over an outage. Only HTTP 404 - the answer that actually says it is absent - becomes
+     * {@code false}; everything else is thrown.
+     *
+     * <p>Asks about the bucket, not about anything in it: an empty bucket exists.
+     *
+     * @param name name of the bucket to look for, resolved in this client's own account and namespace
+     * @return {@code true} if it exists, {@code false} if the server said 404
+     * @throws EuclidServiceException if the question could not be answered
+     * @throws IOException if an I/O error occurs during the request
+     * @throws InterruptedException if the operation is interrupted while waiting for the response
+     */
+    public boolean existsBucket(String name) throws IOException, InterruptedException {
+        try {
+            getBucketErn(name);
+            return true;
+        } catch (EuclidServiceException e) {
+            if (e.statusCode() == 404) {
+                return false;
+            }
+            throw e;
+        }
+    }
+
+    /**
      * Retrieves one bucket, by name or by ERN.
      * <p>
      * The bucket comes back exactly as a listing describes each of its own - ERN, account,
