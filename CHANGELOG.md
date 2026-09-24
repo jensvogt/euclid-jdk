@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.1.48](https://github.com/jensvogt/euclid-jdk/compare/euclid-jdk-v0.1.47...euclid-jdk-v0.1.48) (2026-09-24)
+
+
+### Bug Fixes
+
+* add bucket priority ([c9c8bb0](https://github.com/jensvogt/euclid-jdk/commit/c9c8bb0dc5ae2dc5a300796aaa3dac5df8ee1f54))
+* add bucket priority ([d64cdab](https://github.com/jensvogt/euclid-jdk/commit/d64cdab3f2c6e8d9411fe0f7b77f76814e9f930b))
+
 ## [0.1.47](https://github.com/jensvogt/euclid-jdk/compare/euclid-jdk-v0.1.46...euclid-jdk-v0.1.47) (2026-09-23)
 
 
