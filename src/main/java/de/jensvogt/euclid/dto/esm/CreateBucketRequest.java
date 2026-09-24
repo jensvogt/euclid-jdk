@@ -1,5 +1,7 @@
 package de.jensvogt.euclid.dto.esm;
 
+import com.fasterxml.jackson.annotation.JsonInclude;
+
 /**
  * Represents a request to create a new bucket with a specified name.
  * This class is immutable and provides a builder to simplify the construction process.
@@ -16,9 +18,16 @@ package de.jensvogt.euclid.dto.esm;
  * Example usage of the builder pattern is encouraged for creating instances of this
  * class to ensure clarity and immutability.
  *
- * @param name The name of the bucket to be created.
+ * @param name     The name of the bucket to be created.
+ * @param priority The priority the notifications this bucket sends are given, or null for none. The
+ *                 bucket does nothing with it - see
+ *                 {@link de.jensvogt.euclid.module.esm.EuclidEsm#setBucketPriority}.
  */
-public record CreateBucketRequest(String name) {
+// Nulls are left out rather than sent, so a create with no priority says exactly what a create has
+// always said - and an older installation is not handed a field it has no meaning for. Scoped to this
+// record rather than set on the module's ObjectMapper, which every other ESM request shares.
+@JsonInclude(JsonInclude.Include.NON_NULL)
+public record CreateBucketRequest(String name, String priority) {
 
     /**
      * Provides a static method to obtain a new instance of the Builder.
@@ -60,6 +69,11 @@ public record CreateBucketRequest(String name) {
         private String name;
 
         /**
+         * The priority the notifications this bucket sends are given, or null for none.
+         */
+        private String priority;
+
+        /**
          * Sets the name of the bucket to be created.
          *
          * @param name the name of the bucket
@@ -71,6 +85,17 @@ public record CreateBucketRequest(String name) {
         }
 
         /**
+         * Sets the priority the notifications this bucket sends are given.
+         *
+         * @param priority {@code "LOW"}, {@code "MEDIUM"} or {@code "HIGH"}, or null for none
+         * @return the updated builder instance
+         */
+        public Builder priority(String priority) {
+            this.priority = priority;
+            return this;
+        }
+
+        /**
          * Constructs and returns a new instance of {@code CreateBucketRequest}
          * based on the current state of the builder.
          *
@@ -78,7 +103,7 @@ public record CreateBucketRequest(String name) {
          *         the configured bucket name
          */
         public CreateBucketRequest build() {
-            return new CreateBucketRequest(name);
+            return new CreateBucketRequest(name, priority);
         }
     }
 }

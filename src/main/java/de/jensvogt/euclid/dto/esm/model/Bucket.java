@@ -11,9 +11,12 @@ import java.util.Map;
  * @param size     total size in bytes of all objects currently in the bucket
  * @param objects  number of objects currently in the bucket
  * @param tags     the bucket's user-defined tags, keyed by tag key
+ * @param priority the priority the notifications this bucket sends are given, empty when it sets
+ *                 none. Nothing about the bucket depends on it - see
+ *                 {@link de.jensvogt.euclid.module.esm.EuclidEsm#setBucketPriority}
  * @param created  creation timestamp
  * @param modified last-modified timestamp
  */
 public record Bucket(String owner, String name, String ern, long size, long objects, Map<String, String> tags,
-                     String created, String modified) {
+                     String priority, String created, String modified) {
 }
