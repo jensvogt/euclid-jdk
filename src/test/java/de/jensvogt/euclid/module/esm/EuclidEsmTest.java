@@ -26,6 +26,7 @@ import de.jensvogt.euclid.dto.esm.DeleteBucketResponse;
 import de.jensvogt.euclid.dto.esm.PurgeBucketResponse;
 import de.jensvogt.euclid.dto.esm.RenameBucketResponse;
 import de.jensvogt.euclid.dto.esm.SetBucketInternalResponse;
+import de.jensvogt.euclid.dto.esm.SetBucketPriorityResponse;
 import de.jensvogt.euclid.dto.esm.SubscribeResponse;
 import de.jensvogt.euclid.dto.esm.TouchObjectResponse;
 import de.jensvogt.euclid.dto.esm.model.Bucket;
@@ -1528,6 +1529,52 @@ class EuclidEsmTest {
 
     private EuclidEsm newClient() {
         return new EuclidEsm(baseUrl(), "test-token", "eu-central-1", "863459426936", "alice", null, null, null, null);
+    }
+
+    @Test
+    void setBucketPrioritySendsThePriority() throws Exception {
+        AtomicReference<SignableRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(captureRequest(exchange));
+            sendResponse(exchange, 200, "{\"ern\":\"bucket-ern\",\"name\":\"inbox\",\"priority\":\"HIGH\"}");
+        });
+
+        SetBucketPriorityResponse response = newClient().setBucketPriority("bucket-ern", "HIGH");
+
+        assertEquals("set-bucket-priority", received.get().header("x-euclid-action"));
+        assertBodyContains(received.get().body(), "\"ern\":\"bucket-ern\"", "\"priority\":\"HIGH\"");
+        assertEquals("HIGH", response.priority());
+    }
+
+    @Test
+    void clearingABucketPriorityStillSendsTheField() throws Exception {
+        // Empty is an instruction here, not an omission: it is the only way back to letting the target
+        // queue's own default decide. Leaving the field out would ask the server to change nothing.
+        AtomicReference<SignableRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(captureRequest(exchange));
+            sendResponse(exchange, 200, "{\"ern\":\"bucket-ern\",\"name\":\"inbox\",\"priority\":\"\"}");
+        });
+
+        newClient().setBucketPriority("bucket-ern", "");
+
+        assertBodyContains(received.get().body(), "\"priority\":\"\"");
+    }
+
+    @Test
+    void createBucketOnlyCarriesAPriorityWhenThereIsOne() throws Exception {
+        AtomicReference<SignableRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(captureRequest(exchange));
+            sendResponse(exchange, 200, "{\"name\":\"inbox\",\"ern\":\"bucket-ern\"}");
+        });
+
+        newClient().createBucket("inbox");
+        // Absent rather than empty, so an older installation is not handed a field it has no meaning for.
+        assertFalse(received.get().body().contains("priority"));
+
+        newClient().createBucket("inbox", "HIGH");
+        assertBodyContains(received.get().body(), "\"priority\":\"HIGH\"");
     }
 
     private static void assertBodyContains(String body, String... fragments) {

@@ -57,7 +57,9 @@ import de.jensvogt.euclid.dto.esm.RenameBucketResponse;
 import de.jensvogt.euclid.dto.esm.RenameObjectRequest;
 import de.jensvogt.euclid.dto.esm.PurgeBucketResponse;
 import de.jensvogt.euclid.dto.esm.SetBucketInternalRequest;
+import de.jensvogt.euclid.dto.esm.SetBucketPriorityRequest;
 import de.jensvogt.euclid.dto.esm.SetBucketInternalResponse;
+import de.jensvogt.euclid.dto.esm.SetBucketPriorityResponse;
 import de.jensvogt.euclid.dto.esm.SetBucketTagRequest;
 import de.jensvogt.euclid.dto.esm.SubscribeRequest;
 import de.jensvogt.euclid.dto.esm.SubscribeResponse;
@@ -304,7 +306,29 @@ public final class EuclidEsm implements TokenRefreshable, SigningSchemeSelectabl
      * @throws InterruptedException if the operation is interrupted
      */
     public CreateBucketResponse createBucket(String name) throws IOException, InterruptedException {
-        String body = OBJECT_MAPPER.writeValueAsString(CreateBucketRequest.builder().name(name).build());
+        return createBucket(name, "");
+    }
+
+    /**
+     * Creates a bucket, and sets the priority the notifications it sends are given.
+     *
+     * <p>The priority is for the notifications a subscription of this bucket produces, not for the
+     * bucket - see {@link #setBucketPriority}. An empty one is not sent at all, so a create says
+     * exactly what it always said and an older installation is not handed a field it has no meaning
+     * for.
+     *
+     * @param name     the name of the bucket
+     * @param priority {@code "LOW"}, {@code "MEDIUM"} or {@code "HIGH"}, or empty for none
+     * @return the created bucket
+     * @throws IOException if an I/O error occurs during the HTTP request
+     * @throws InterruptedException if the operation is interrupted while waiting for a response
+     */
+    public CreateBucketResponse createBucket(String name, String priority) throws IOException, InterruptedException {
+        CreateBucketRequest.Builder request = CreateBucketRequest.builder().name(name);
+        if (priority != null && !priority.isEmpty()) {
+            request.priority(priority);
+        }
+        String body = OBJECT_MAPPER.writeValueAsString(request.build());
         HttpResponse<String> response = httpClient.post(baseUrl + "/", body, "esm", "create-bucket",
                 requestHeaders("create-bucket", body));
 
@@ -592,6 +616,48 @@ public final class EuclidEsm implements TokenRefreshable, SigningSchemeSelectabl
         }
 
         return extractSetBucketInternalResponse(response.body());
+    }
+
+    /**
+     * Sets the priority the notifications this bucket sends are given.
+     *
+     * <p>The bucket does nothing with it. A bucket is not consumed from and has no queue of its own,
+     * so there is nothing here for a priority to mean - it exists to be handed on, to the messages a
+     * subscription of this bucket turns an object event into. "Everything that lands in this bucket
+     * is urgent" is the statement it makes, and the queue on the other side of the subscription is
+     * where that statement finally has an effect.
+     *
+     * <p><b>Which priority wins.</b> Four statements can be in play about one message, least specific
+     * first: the target queue's own default, this, the priority in the object's own system
+     * attributes, and a priority a message already had when a topic passed it on. The object's beats
+     * the bucket's because it is the narrower claim - which is what lets a bucket set a floor without
+     * taking away the ability to say more about a particular object.
+     *
+     * <p><b>Empty is not MEDIUM.</b> An empty priority clears it, and is the only way back to letting
+     * the queue decide. A bucket that says nothing leaves a queue created with {@code LOW} delivering
+     * at {@code LOW}, where a bucket saying {@code MEDIUM} would override it. Sent even when empty,
+     * unlike {@link #createBucket(String, String)}, because here it is an instruction rather than an
+     * omission.
+     *
+     * @param ern      the bucket, by name or by ERN
+     * @param priority {@code "LOW"}, {@code "MEDIUM"} or {@code "HIGH"}, or empty to clear it. Case is
+     *                 not significant; anything else is refused rather than ignored
+     * @return the bucket and the priority it now carries
+     * @throws IOException if an I/O error occurs during the HTTP request
+     * @throws InterruptedException if the operation is interrupted while waiting for a response
+     */
+    public SetBucketPriorityResponse setBucketPriority(String ern, String priority)
+            throws IOException, InterruptedException {
+        String body = OBJECT_MAPPER.writeValueAsString(
+                SetBucketPriorityRequest.builder().ern(ern).priority(priority == null ? "" : priority).build());
+        HttpResponse<String> response = httpClient.post(baseUrl + "/", body, "esm", "set-bucket-priority",
+                requestHeaders("set-bucket-priority", body));
+
+        if (response.statusCode() / 100 != 2) {
+            throw new EuclidServiceException("esm", "set-bucket-priority", response.statusCode(), response.body());
+        }
+
+        return extractSetBucketPriorityResponse(response.body());
     }
 
     /**
@@ -2297,6 +2363,19 @@ public final class EuclidEsm implements TokenRefreshable, SigningSchemeSelectabl
     }
 
     /**
+     * Extracts a {@code SetBucketPriorityResponse} object from the given JSON response body.
+     *
+     * @param responseBody the JSON response body
+     * @return the parsed response
+     * @throws IOException if the body cannot be read
+     */
+    private static SetBucketPriorityResponse extractSetBucketPriorityResponse(String responseBody) throws IOException {
+        JsonNode root = OBJECT_MAPPER.readTree(responseBody);
+        return SetBucketPriorityResponse.builder().ern(textOrNull(root, "ern")).name(textOrNull(root, "name"))
+                .priority(textOrNull(root, "priority")).build();
+    }
+
+    /**
      * Extracts an {@code EnableEncryptionResponse} object from the given JSON response body.
      *
      * @param responseBody the JSON response body as a string
@@ -2438,6 +2517,7 @@ public final class EuclidEsm implements TokenRefreshable, SigningSchemeSelectabl
                 bucketNode.path("size").asLong(0),
                 bucketNode.path("objects").asLong(0),
                 toStringMap(bucketNode.get("tags")),
+                textOrNull(bucketNode, "priority"),
                 textOrNull(bucketNode, "created"),
                 textOrNull(bucketNode, "modified"));
     }
