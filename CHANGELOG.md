@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.49](https://github.com/jensvogt/euclid-jdk/compare/euclid-jdk-v0.1.48...euclid-jdk-v0.1.49) (2026-09-27)
+
+
+### Features
+
+* add infrastructure deployment ([a507b7d](https://github.com/jensvogt/euclid-jdk/commit/a507b7d198a49465d552969d25d91e67073eaa90))
+
 ## [0.1.48](https://github.com/jensvogt/euclid-jdk/compare/euclid-jdk-v0.1.47...euclid-jdk-v0.1.48) (2026-09-24)
 
 
