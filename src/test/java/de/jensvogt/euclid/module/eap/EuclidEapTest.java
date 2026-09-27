@@ -6,6 +6,7 @@ import com.sun.net.httpserver.HttpHandler;
 import com.sun.net.httpserver.HttpServer;
 import de.jensvogt.euclid.auth.SigV4;
 import de.jensvogt.euclid.auth.SignableRequest;
+import de.jensvogt.euclid.dto.eap.ApplyInfrastructureResponse;
 import de.jensvogt.euclid.dto.eap.CopyApplicationRequest;
 import de.jensvogt.euclid.dto.eap.CreateApplicationRequest;
 import de.jensvogt.euclid.dto.eap.ScaleApplicationRequest;
@@ -407,6 +408,60 @@ class EuclidEapTest {
         EuclidEap eap = newClient();
         EuclidServiceException thrown =
                 assertThrows(EuclidServiceException.class, () -> eap.restartApplication("billing"));
+
+        assertEquals(400, thrown.statusCode());
+    }
+
+    @Test
+    void applyInfrastructureNamesWhatItCreatedAndWhatItRemoved() throws Exception {
+        Map<String, String> bodyByAction = new ConcurrentHashMap<>();
+        server = startServer(exchange -> {
+            String action = exchange.getRequestHeaders().getFirst("x-euclid-action");
+            bodyByAction.put(action, new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8));
+            sendResponse(exchange, 200, "{\"applicationId\":\"billing\",\"declared\":true,"
+                    + "\"created\":[\"ern:eqs:eu-central-1:000000000000:development:queue:orders\"],"
+                    + "\"deleted\":[\"ern:eqs:eu-central-1:000000000000:development:queue:retired\"],"
+                    + "\"granted\":[\"access-queue-consume\"],\"revoked\":[\"access-queue-produce\"]}");
+        });
+
+        ApplyInfrastructureResponse applied = newClient().applyInfrastructure("billing");
+
+        assertBodyContains(bodyByAction.get("apply-infrastructure"), "\"applicationId\":\"billing\"");
+        assertTrue(applied.declared());
+        assertEquals(List.of("ern:eqs:eu-central-1:000000000000:development:queue:orders"), applied.created());
+
+        // The half worth reading before trusting a declaration: a reconcile is full, so a resource
+        // this application created and the file no longer names is gone, and took its messages with
+        // it. Named rather than counted, so a removal nobody intended is visible in the answer.
+        assertEquals(List.of("ern:eqs:eu-central-1:000000000000:development:queue:retired"), applied.deleted());
+        assertEquals(List.of("access-queue-consume"), applied.granted());
+        assertEquals(List.of("access-queue-produce"), applied.revoked());
+    }
+
+    @Test
+    void anApplicationWithNoDeclarationIsAnsweredRatherThanRefused() throws Exception {
+        server = startServer(exchange -> sendResponse(exchange, 200,
+                "{\"applicationId\":\"billing\",\"declared\":false}"));
+
+        ApplyInfrastructureResponse applied = newClient().applyInfrastructure("billing");
+
+        // Not an error: an application that provisions its resources by hand reads this way every
+        // time, and the four lists come back empty rather than absent.
+        assertFalse(applied.declared());
+        assertTrue(applied.created().isEmpty());
+        assertTrue(applied.deleted().isEmpty());
+        assertTrue(applied.granted().isEmpty());
+        assertTrue(applied.revoked().isEmpty());
+    }
+
+    @Test
+    void aDeclarationClaimingAnotherApplicationsResourceIsRefused() throws Exception {
+        server = startServer(exchange -> sendResponse(exchange, 400,
+                "{\"message\":\"declaration belongs to \\\"protocolizing\\\", not to \\\"billing\\\"\"}"));
+
+        EuclidEap eap = newClient();
+        EuclidServiceException thrown =
+                assertThrows(EuclidServiceException.class, () -> eap.applyInfrastructure("billing"));
 
         assertEquals(400, thrown.statusCode());
     }

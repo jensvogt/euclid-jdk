@@ -9,6 +9,7 @@ import de.jensvogt.euclid.auth.SigningScheme;
 import de.jensvogt.euclid.auth.SigningSchemeSelectable;
 import de.jensvogt.euclid.auth.TokenRefreshable;
 import de.jensvogt.euclid.dto.eap.ApplicationRequest;
+import de.jensvogt.euclid.dto.eap.ApplyInfrastructureResponse;
 import de.jensvogt.euclid.dto.eap.CopyApplicationRequest;
 import de.jensvogt.euclid.dto.eap.CreateApplicationRequest;
 import de.jensvogt.euclid.dto.eap.ListApplicationsRequest;
@@ -425,6 +426,34 @@ public final class EuclidEap implements TokenRefreshable, SigningSchemeSelectabl
     }
 
     /**
+     * Makes the installation match the application's own infrastructure declaration.
+     * <p>
+     * The declaration is a file the application has already stored beside its artifact -
+     * {@code <applicationId>.euclid.json} in the bucket it deploys from - which names the queues,
+     * topics and buckets it owns and the ones belonging to others that it reaches. This applies it:
+     * creates what is missing, grants the access it asks for, and <b>deletes what this application
+     * created and the declaration no longer names</b>, with everything that resource held.
+     * <p>
+     * Applying is idempotent and changes nothing about the running instances - the modification date
+     * is deliberately not stamped, so euclid-mgr does not read it as a new revision and cycle the
+     * pool. It happens on its own whenever the application is created, updated or redeployed; this
+     * is for reconciling without a deploy.
+     * <p>
+     * An application with no declaration stored is answered rather than refused, with
+     * {@code declared} false. A declaration that cannot be applied is an error: one that names a
+     * resource belonging to another application, or claims one it does not own, is refused with
+     * HTTP 400 rather than partly applied.
+     *
+     * @param applicationId the ID of the application, in the session's namespace
+     * @return what was created, removed, granted and revoked
+     * @throws IOException if an I/O error occurs during the operation
+     * @throws InterruptedException if the operation is interrupted
+     */
+    public ApplyInfrastructureResponse applyInfrastructure(String applicationId) throws IOException, InterruptedException {
+        return toApplyInfrastructureResponse(post("apply-infrastructure", applicationBody(applicationId)));
+    }
+
+    /**
      * Overrides the level an application logs at, without redeploying or restarting it.
      * <p>
      * An unrecognised level is refused with HTTP 400 rather than defaulted: "warnign" quietly
@@ -556,6 +585,21 @@ public final class EuclidEap implements TokenRefreshable, SigningSchemeSelectabl
         return RestartApplicationResponse.builder().applicationId(textOrNull(node, "applicationId"))
                 .restarting(node.path("restarting").asBoolean(false))
                 .instances(node.path("instances").asLong(0)).build();
+    }
+
+    /**
+     * Builds an {@link ApplyInfrastructureResponse} from the apply-infrastructure answer.
+     *
+     * @param node the response JSON
+     * @return the parsed response
+     */
+    private static ApplyInfrastructureResponse toApplyInfrastructureResponse(JsonNode node) {
+        return ApplyInfrastructureResponse.builder().applicationId(textOrNull(node, "applicationId"))
+                .declared(node.path("declared").asBoolean(false))
+                .created(toStringList(node.path("created")))
+                .deleted(toStringList(node.path("deleted")))
+                .granted(toStringList(node.path("granted")))
+                .revoked(toStringList(node.path("revoked"))).build();
     }
 
     /**
