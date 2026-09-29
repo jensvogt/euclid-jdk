@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.1.50](https://github.com/jensvogt/euclid-jdk/compare/euclid-jdk-v0.1.49...euclid-jdk-v0.1.50) (2026-09-29)
+
+
+### Features
+
+* new EQS and ENS update message body commands ([cfea169](https://github.com/jensvogt/euclid-jdk/commit/cfea1697e6da1950b1e60c72a7126bf9923d3e12))
+* new EQS and ENS update message body commands ([8b8f99b](https://github.com/jensvogt/euclid-jdk/commit/8b8f99ba96e5c5511ba5efa68e4abc9b85d1695d))
+
 ## [0.1.49](https://github.com/jensvogt/euclid-jdk/compare/euclid-jdk-v0.1.48...euclid-jdk-v0.1.49) (2026-09-27)
 
 
