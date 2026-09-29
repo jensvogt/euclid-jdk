@@ -50,6 +50,8 @@ import de.jensvogt.euclid.dto.eqs.SetQueueMaxMessageLengthRequest;
 import de.jensvogt.euclid.dto.eqs.SetQueueMaxMessageLengthResponse;
 import de.jensvogt.euclid.dto.eqs.SetQueueVisibilityRequest;
 import de.jensvogt.euclid.dto.eqs.SetQueueVisibilityResponse;
+import de.jensvogt.euclid.dto.eqs.UpdateMessageBodyRequest;
+import de.jensvogt.euclid.dto.eqs.UpdateMessageBodyResponse;
 import de.jensvogt.euclid.dto.eqs.model.Message;
 import de.jensvogt.euclid.dto.eqs.model.Queue;
 import de.jensvogt.euclid.dto.eqs.model.RedriveTarget;
@@ -1311,6 +1313,37 @@ public final class EuclidEqs implements TokenRefreshable, SigningSchemeSelectabl
     }
 
     /**
+     * Replaces the body of a message already on a queue.
+     *
+     * <p>The whole body, not part of it - a message body is opaque to euclid, so there is nothing that
+     * could merge two of them. The message keeps its ID, status, priority, visibility and attributes;
+     * the body, its size and its content type are what change.
+     *
+     * <p>The queue's maximum message length applies exactly as it does to
+     * {@link #sendMessage}, so a body that could not have been sent cannot be reached by sending
+     * something short and then growing it.
+     *
+     * @param messageId the unique identifier of the message to rewrite
+     * @param body      the new body, which may be empty
+     * @return an {@code UpdateMessageBodyResponse} carrying the new size and the one it replaced
+     * @throws IOException if an I/O error occurs during the HTTP request
+     * @throws InterruptedException if the operation is interrupted while waiting for the response
+     */
+    public UpdateMessageBodyResponse updateMessageBody(String messageId, String body)
+            throws IOException, InterruptedException {
+        String requestBody = OBJECT_MAPPER.writeValueAsString(
+                UpdateMessageBodyRequest.builder().messageId(messageId).body(body).build());
+        HttpResponse<String> response = httpClient.post(baseUrl + "/", requestBody, "eqs", "update-message-body",
+                requestHeaders("update-message-body", requestBody));
+
+        if (response.statusCode() / 100 != 2) {
+            throw new EuclidServiceException("eqs", "update-message-body", response.statusCode(), response.body());
+        }
+
+        return extractUpdateMessageBodyResponse(response.body());
+    }
+
+    /**
      * Sets the value of a single message attribute, creating it if it doesn't exist yet.
      *
      * @param messageId the unique identifier of the message to update
@@ -1510,6 +1543,21 @@ public final class EuclidEqs implements TokenRefreshable, SigningSchemeSelectabl
         Variant value = valueNode == null ? null : new Variant(textOrNull(valueNode, "type"), textOrNull(valueNode, "value"));
         return GetMessageAttributeResponse.builder().messageId(textOrNull(root, "messageId")).name(textOrNull(root, "name"))
                 .value(value).build();
+    }
+
+    /**
+     * Extracts an {@link UpdateMessageBodyResponse} object from the provided JSON response body.
+     *
+     * @param responseBody the JSON response body
+     * @return an {@link UpdateMessageBodyResponse} with the new size and the size it replaced
+     * @throws IOException if an error occurs while reading or parsing the JSON response body
+     */
+    private static UpdateMessageBodyResponse extractUpdateMessageBodyResponse(String responseBody) throws IOException {
+        JsonNode root = OBJECT_MAPPER.readTree(responseBody);
+        return UpdateMessageBodyResponse.builder().messageId(textOrNull(root, "messageId"))
+                .queueErn(textOrNull(root, "queueErn")).size(root.path("size").asLong(0))
+                .previousSize(root.path("previousSize").asLong(0))
+                .contentType(textOrNull(root, "contentType")).build();
     }
 
     /**
