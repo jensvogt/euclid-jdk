@@ -47,6 +47,8 @@ import de.jensvogt.euclid.dto.ens.ResendMessagesResponse;
 import de.jensvogt.euclid.dto.ens.TopicStatusRequest;
 import de.jensvogt.euclid.dto.ens.TopicStatusResponse;
 import de.jensvogt.euclid.dto.ens.UnsubscribeRequest;
+import de.jensvogt.euclid.dto.ens.UpdateMessageBodyRequest;
+import de.jensvogt.euclid.dto.ens.UpdateMessageBodyResponse;
 import de.jensvogt.euclid.dto.ens.model.Message;
 import de.jensvogt.euclid.dto.ens.model.Subscription;
 import de.jensvogt.euclid.dto.ens.model.Topic;
@@ -618,6 +620,40 @@ public final class EuclidEns implements TokenRefreshable, SigningSchemeSelectabl
     }
 
     /**
+     * Replaces the body of a message already published to a topic.
+     *
+     * <p>The whole body, not part of it - a message body is opaque to euclid, so there is nothing that
+     * could merge two of them. The message keeps its ID and its attributes; the body, its size and its
+     * content type are what change.
+     *
+     * <p>What this reaches is the copy ENS still holds - what {@link #listMessages} and
+     * {@link #getMessage} answer with, and what a resend would send. A topic fans a message out to its
+     * subscribers when it is published, so the copies that already left are past changing: this
+     * corrects the record rather than the delivery, which is the opposite of what one would assume.
+     *
+     * <p>The topic's maximum message length applies exactly as it does to {@link #publishMessage}.
+     *
+     * @param messageId the unique identifier of the message to rewrite
+     * @param body      the new body, which may be empty
+     * @return an {@code UpdateMessageBodyResponse} carrying the new size and the one it replaced
+     * @throws IOException if an I/O error occurs during the operation
+     * @throws InterruptedException if the operation is interrupted
+     */
+    public UpdateMessageBodyResponse updateMessageBody(String messageId, String body)
+            throws IOException, InterruptedException {
+        String requestBody = OBJECT_MAPPER.writeValueAsString(
+                UpdateMessageBodyRequest.builder().messageId(messageId).body(body).build());
+        HttpResponse<String> response = httpClient.post(baseUrl + "/", requestBody, "ens", "update-message-body",
+                requestHeaders("update-message-body", requestBody));
+
+        if (response.statusCode() / 100 != 2) {
+            throw new EuclidServiceException("ens", "update-message-body", response.statusCode(), response.body());
+        }
+
+        return extractUpdateMessageBodyResponse(response.body());
+    }
+
+    /**
      * Sets the value of a single message attribute, creating it if it doesn't exist yet.
      *
      * @param messageId the unique identifier of the message to update
@@ -1037,6 +1073,14 @@ public final class EuclidEns implements TokenRefreshable, SigningSchemeSelectabl
         JsonNode root = OBJECT_MAPPER.readTree(responseBody);
         return GetMessageCountResponse.builder().ern(textOrNull(root, "ern")).available(root.path("available").asLong(0))
                 .send(root.path("send").asLong(0)).resend(root.path("resend").asLong(0)).build();
+    }
+
+    private static UpdateMessageBodyResponse extractUpdateMessageBodyResponse(String responseBody) throws IOException {
+        JsonNode root = OBJECT_MAPPER.readTree(responseBody);
+        return UpdateMessageBodyResponse.builder().messageId(textOrNull(root, "messageId"))
+                .topicErn(textOrNull(root, "topicErn")).size(root.path("size").asLong(0))
+                .previousSize(root.path("previousSize").asLong(0))
+                .contentType(textOrNull(root, "contentType")).build();
     }
 
     private static GetMessageAttributeResponse extractGetMessageAttributeResponse(String responseBody) throws IOException {
