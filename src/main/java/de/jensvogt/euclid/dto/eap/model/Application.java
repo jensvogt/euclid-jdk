@@ -43,11 +43,27 @@ import java.util.Map;
  * @param userId         the identity the application runs and signs its own calls as - either a
  *                       user named at deployment, or a technical principal EAP minted and removes
  *                       along with the application
+ * @param userExists     whether the identity {@code userId} names still exists. Checked when the
+ *                       application is created and never again, so a principal can be deleted or
+ *                       renamed underneath a definition that goes on naming it - after which the
+ *                       application runs, authenticates as nobody and is refused everything.
+ *                       {@code false} is the interesting answer: it turns "euclid refused my
+ *                       secret" into "this application's user does not exist"
  * @param logLevel       the level the application's own processes log at, as last set by
  *                       {@link de.jensvogt.euclid.module.eap.EuclidEap#setLogLevel}
  * @param minInstances   smallest number of processes kept running
  * @param maxInstances   largest number of processes run
- * @param readyTimeoutMs milliseconds a process is given to report ready
+ * @param readyTimeoutMs milliseconds a process is given to report ready. Kept on the definition
+ *                       but no longer decides readiness - an application counts as started by
+ *                       surviving its own startup rather than by creating a socket
+ * @param nodeLabels     labels a worker node has to carry to be allowed to run this, e.g.
+ *                       {@code os=windows}. Empty means any node will do
+ * @param type           whether this stays up ({@link ApplicationType#PROCESS}) or runs once and
+ *                       finishes ({@link ApplicationType#JOB})
+ * @param schedule       the cron expression a {@link ApplicationType#JOB} runs on, in UTC, or
+ *                       empty for one that only runs on demand
+ * @param nextRunAt      when the schedule next fires, ISO8601. Empty when there is no schedule -
+ *                       rather than the epoch, which would read as a job overdue by half a century
  * @param desiredState   what the application should be doing, {@code "RUNNING"} or {@code "STOPPED"} -
  *                       recorded intent, which euclid-mgr's reconciler acts on
  * @param state          what the application is observed to be doing, derived live from how many
@@ -65,9 +81,12 @@ public record Application(String applicationId, String runtimeName, String ern, 
                           String region, String runtime,
                           String bucketErn, String artifactKey, String version, String md5Sum, String command,
                           List<String> arguments,
-                          Map<String, String> environment, List<String> resources, String userId, String logLevel,
+                          Map<String, String> environment, List<String> resources, String userId,
+                          boolean userExists, String logLevel,
                           long minInstances,
-                          long maxInstances, long readyTimeoutMs, String desiredState, String state, long instances,
+                          long maxInstances, long readyTimeoutMs, Map<String, String> nodeLabels,
+                          ApplicationType type, String schedule, String nextRunAt,
+                          String desiredState, String state, long instances,
                           List<ApplicationEndpoint> endpoints,
                           String created, String modified) {
 }

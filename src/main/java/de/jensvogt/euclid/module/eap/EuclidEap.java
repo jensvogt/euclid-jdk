@@ -13,6 +13,7 @@ import de.jensvogt.euclid.dto.eap.ApplyInfrastructureResponse;
 import de.jensvogt.euclid.dto.eap.CopyApplicationRequest;
 import de.jensvogt.euclid.dto.eap.CreateApplicationRequest;
 import de.jensvogt.euclid.dto.eap.ListApplicationsRequest;
+import de.jensvogt.euclid.dto.eap.ListNodesResponse;
 import de.jensvogt.euclid.dto.eap.RedeployApplicationRequest;
 import de.jensvogt.euclid.dto.eap.ScaleApplicationRequest;
 import de.jensvogt.euclid.dto.eap.RestartApplicationResponse;
@@ -21,6 +22,9 @@ import de.jensvogt.euclid.dto.eap.SetLogLevelResponse;
 import de.jensvogt.euclid.dto.eap.UpdateApplicationRequest;
 import de.jensvogt.euclid.dto.eap.model.Application;
 import de.jensvogt.euclid.dto.eap.model.ApplicationEndpoint;
+import de.jensvogt.euclid.dto.eap.model.ApplicationType;
+import de.jensvogt.euclid.dto.eap.model.Node;
+import de.jensvogt.euclid.dto.eap.model.NodeApplication;
 import de.jensvogt.euclid.exception.EuclidServiceException;
 import de.jensvogt.euclid.http.EuclidHttpClient;
 
@@ -475,6 +479,81 @@ public final class EuclidEap implements TokenRefreshable, SigningSchemeSelectabl
     }
 
     /**
+     * Lists the worker nodes registered to this account, and whether each is live.
+     * <p>
+     * A node is a machine euclid may place application instances on. It registers itself and then
+     * renews a lease, and {@link Node#live()} is derived from whether that lease is still current -
+     * so a machine that was switched off reads as not live without anything having to notice.
+     * <p>
+     * {@link Node#applications()} is {@code null} on every entry here: what a node is running is
+     * the one thing not on the node record, so a listing does not pay for it. Use
+     * {@link #getNode(String)} for that.
+     *
+     * @return the registered nodes
+     * @throws IOException if an I/O error occurs during the operation
+     * @throws InterruptedException if the operation is interrupted
+     */
+    public ListNodesResponse listNodes() throws IOException, InterruptedException {
+        JsonNode root = post("list-nodes", "{}");
+        List<Node> nodes = toNodeList(root.get("nodes"));
+        return new ListNodesResponse(nodes, root.path("total").asLong(nodes.size()));
+    }
+
+    /**
+     * Reads one worker node's registration, together with what it is running.
+     * <p>
+     * This is the only action that reports {@link Node#applications()} - the slots the node holds
+     * per application and how many of them are actually serving. Both counts, because a node
+     * holding four slots and running none is exactly the state worth seeing.
+     *
+     * @param node the node's name
+     * @return the node
+     * @throws IOException if an I/O error occurs during the operation
+     * @throws InterruptedException if the operation is interrupted
+     * @throws de.jensvogt.euclid.exception.EuclidServiceException with status 404 if no node of
+     * that name is registered to this account
+     */
+    public Node getNode(String node) throws IOException, InterruptedException {
+        return toNode(post("get-node", OBJECT_MAPPER.writeValueAsString(Map.of("node", node))));
+    }
+
+    /**
+     * Removes a worker node's registration, which frees its name for another principal. Requires
+     * administrator privileges - unlike the other node actions, and for exactly that reason: a
+     * worker able to delete another's registration could re-register under its name and be handed
+     * its assignments and credentials.
+     * <p>
+     * This does not stop a node. Leases are left alone, so a worker that is still running finds
+     * itself unregistered on its next renewal and simply registers again - draining the node and
+     * then stopping the worker is how one is taken out of service.
+     *
+     * @param node the node's name
+     * @throws IOException if an I/O error occurs during the operation
+     * @throws InterruptedException if the operation is interrupted
+     * @throws de.jensvogt.euclid.exception.EuclidServiceException with status 403 for a
+     * non-administrator, or 404 if no node of that name is registered
+     */
+    public void deleteNode(String node) throws IOException, InterruptedException {
+        post("delete-node", OBJECT_MAPPER.writeValueAsString(Map.of("node", node)));
+    }
+
+    /**
+     * Converts a JsonNode holding an array of nodes into a list of them.
+     *
+     * @param nodesNode the JsonNode representing the array of nodes
+     * @return the parsed nodes, or an empty list if the node is null or not an array
+     */
+    private static List<Node> toNodeList(JsonNode nodesNode) {
+        List<Node> nodes = new ArrayList<>();
+        if (nodesNode != null && nodesNode.isArray()) {
+            for (JsonNode entry : nodesNode) {
+                nodes.add(toNode(entry));
+            }
+        }
+        return nodes;
+    }
+
+    /**
      * Tells euclid how loaded this instance is, which is what the autoscaler grows and shrinks the
      * pool on.
      *
@@ -659,10 +738,15 @@ public final class EuclidEap implements TokenRefreshable, SigningSchemeSelectabl
                 toStringMap(node.get("environment")),
                 toStringList(node.get("resources")),
                 textOrNull(node, "userId"),
+                node.path("userExists").asBoolean(false),
                 textOrNull(node, "logLevel"),
                 node.path("minInstances").asLong(0),
                 node.path("maxInstances").asLong(0),
                 node.path("readyTimeoutMs").asLong(0),
+                toStringMap(node.get("nodeLabels")),
+                ApplicationType.fromWireValue(textOrNull(node, "type")),
+                textOrNull(node, "schedule"),
+                emptyToNull(textOrNull(node, "nextRunAt")),
                 textOrNull(node, "desiredState"),
                 textOrNull(node, "state"),
                 node.path("instances").asLong(0),
@@ -677,6 +761,67 @@ public final class EuclidEap implements TokenRefreshable, SigningSchemeSelectabl
      * @param endpointsNode the JsonNode representing the array of endpoints
      * @return the parsed endpoints, or an empty list if the node is null or not an array
      */
+    /**
+     * Maps an empty string to {@code null}, for the fields the server reports as "" rather than
+     * omitting - a job with no schedule reports an empty {@code nextRunAt}.
+     *
+     * @param value the value to map
+     * @return the value, or {@code null} if it was null or empty
+     */
+    private static String emptyToNull(String value) {
+        return value == null || value.isEmpty() ? null : value;
+    }
+
+    /**
+     * Builds a {@link Node} from the node JSON the node actions answer with.
+     *
+     * @param node the JSON object describing the node
+     * @return the parsed node, or {@code null} if the node is null or not an object
+     */
+    private static Node toNode(JsonNode node) {
+        if (node == null || !node.isObject()) {
+            return null;
+        }
+        // Absent rather than empty for a listing, which does not report what a node is running at
+        // all - an empty list there would read as "this node is holding nothing".
+        JsonNode applications = node.get("applications");
+        return new Node(
+                textOrNull(node, "name"),
+                textOrNull(node, "address"),
+                textOrNull(node, "principal"),
+                toStringMap(node.get("labels")),
+                node.path("cpuCount").asLong(0),
+                textOrNull(node, "version"),
+                textOrNull(node, "os"),
+                textOrNull(node, "arch"),
+                node.path("drained").asBoolean(false),
+                node.path("live").asBoolean(false),
+                textOrNull(node, "lastSeen"),
+                applications == null ? null : toNodeApplicationList(applications));
+    }
+
+    /**
+     * Converts a JsonNode holding an array of a node's applications into a list of them.
+     *
+     * @param applicationsNode the JsonNode representing the array
+     * @return the parsed entries, or an empty list if the node is not an array
+     */
+    private static List<NodeApplication> toNodeApplicationList(JsonNode applicationsNode) {
+        List<NodeApplication> applications = new ArrayList<>();
+        if (applicationsNode.isArray()) {
+            for (JsonNode entry : applicationsNode) {
+                applications.add(new NodeApplication(
+                        textOrNull(entry, "applicationId"),
+                        textOrNull(entry, "runtimeName"),
+                        textOrNull(entry, "namespace"),
+                        textOrNull(entry, "runtime"),
+                        entry.path("instances").asLong(0),
+                        entry.path("running").asLong(0)));
+            }
+        }
+        return applications;
+    }
+
     private static List<ApplicationEndpoint> toEndpointList(JsonNode endpointsNode) {
         List<ApplicationEndpoint> endpoints = new ArrayList<>();
         if (endpointsNode != null && endpointsNode.isArray()) {
