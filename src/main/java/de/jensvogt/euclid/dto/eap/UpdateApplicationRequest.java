@@ -1,5 +1,7 @@
 package de.jensvogt.euclid.dto.eap;
 
+import de.jensvogt.euclid.dto.eap.model.ApplicationType;
+
 import java.util.List;
 import java.util.Map;
 
@@ -27,11 +29,22 @@ import java.util.Map;
  * @param minInstances   smallest number of processes to keep running
  * @param maxInstances   largest number of processes to run
  * @param readyTimeoutMs milliseconds to wait for a process to report ready
+ * @param nodeLabels     key/value labels a worker node has to carry to run this, e.g.
+ *                       {@code os=windows}; empty or unset means any node will do
+ * @param type           {@code "PROCESS"} (the server's default) for something that stays up, or
+ *                       {@code "JOB"} for something that runs once and finishes - a JOB is not
+ *                       restarted when it exits 0 and is not autoscaled. Case-sensitive: anything
+ *                       else is refused with HTTP 400 rather than read as PROCESS
+ * @param schedule       the cron expression a JOB runs on, in UTC, e.g. {@code "0 2 * * *"} or
+ *                       {@code "@daily"}. Only valid on a JOB - passing it otherwise is HTTP 400 -
+ *                       and an expression that does not parse is refused at the moment it is typed
+ *                       rather than silently never firing
  */
 public record UpdateApplicationRequest(String applicationId, String runtime, String artifact, String version,
                                        String command, List<String> arguments, Map<String, String> environment,
                                        List<String> buckets, List<String> queues, Long minInstances, Long maxInstances,
-                                       Long readyTimeoutMs) {
+                                       Long readyTimeoutMs, Map<String, String> nodeLabels,
+                                       String type, String schedule) {
 
     /**
      * Creates a new instance of the Builder for constructing an UpdateApplicationRequest object.
@@ -112,6 +125,21 @@ public record UpdateApplicationRequest(String applicationId, String runtime, Str
          * Milliseconds to wait for a process to report ready.
          */
         private Long readyTimeoutMs;
+
+        /**
+         * Labels a worker node has to carry to run this; null leaves it to the server.
+         */
+        private Map<String, String> nodeLabels;
+
+        /**
+         * Whether this stays up or runs once and finishes; null leaves it to the server.
+         */
+        private String type;
+
+        /**
+         * The cron expression a job runs on; null leaves it alone.
+         */
+        private String schedule;
 
         /**
          * Sets the application to change; the only required field.
@@ -251,13 +279,51 @@ public record UpdateApplicationRequest(String applicationId, String runtime, Str
             return this;
         }
 
+
+        /**
+         * Sets the labels a worker node has to carry to run this application.
+         *
+         * @param nodeLabels key/value labels, e.g. {@code os=windows}; empty means any node will do
+         * @return the builder instance
+         */
+        public Builder nodeLabels(Map<String, String> nodeLabels) {
+            this.nodeLabels = nodeLabels;
+            return this;
+        }
+
+        /**
+         * Sets whether this stays up or runs once and finishes.
+         *
+         * @param type {@link ApplicationType#PROCESS} or {@link ApplicationType#JOB}
+         * @return the builder instance
+         */
+        public Builder type(ApplicationType type) {
+            this.type = type == null ? null : type.wireValue();
+            return this;
+        }
+
+        /**
+         * Sets the cron expression a job runs on, in UTC.
+         *
+         * @param schedule a cron expression, e.g. {@code "0 2 * * *"} or {@code "@daily"}; only
+         *                 valid together with {@link ApplicationType#JOB}, and {@code ""}
+         *                 unschedules an existing one
+         * @return the builder instance
+         */
+        public Builder schedule(String schedule) {
+            this.schedule = schedule;
+            return this;
+        }
+
         /**
          * Builds and returns a new instance of UpdateApplicationRequest using the properties set on the Builder.
          *
          * @return a new UpdateApplicationRequest instance.
          */
         public UpdateApplicationRequest build() {
-            return new UpdateApplicationRequest(applicationId, runtime, artifact, version, command, arguments, environment, buckets, queues, minInstances, maxInstances, readyTimeoutMs);
+            return new UpdateApplicationRequest(applicationId, runtime, artifact, version, command, arguments,
+                    environment, buckets, queues, minInstances, maxInstances, readyTimeoutMs,
+                    nodeLabels, type, schedule);
         }
     }
 }
