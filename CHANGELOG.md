@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.1.51](https://github.com/jensvogt/euclid-jdk/compare/euclid-jdk-v0.1.50...euclid-jdk-v0.1.51) (2026-10-12)
+
+
+### Features
+
+* add cron jobs and one time jobs ([3267cda](https://github.com/jensvogt/euclid-jdk/commit/3267cda59cbc713db51f504dcac2bac7ca25a99e))
+* add cron jobs and one time jobs ([af25cf0](https://github.com/jensvogt/euclid-jdk/commit/af25cf0aac7515cd52db777034b5189d9daa2b32))
+
 ## [0.1.50](https://github.com/jensvogt/euclid-jdk/compare/euclid-jdk-v0.1.49...euclid-jdk-v0.1.50) (2026-09-29)
 
 
