@@ -446,7 +446,7 @@ class EuclidEqsTest {
                 sendResponse(exchange, 200, "{\"ern\":\"queue-ern\",\"available\":0,\"delayed\":0,\"invisible\":0}");
             } else if ("receive-messages".equals(action)) {
                 receiveMessagesCalls.incrementAndGet();
-                sendResponse(exchange, 200, "{\"messages\":[],\"total\":0}");
+                sendResponse(exchange, 200, "{\"messages\":[]}");
             } else {
                 sendResponse(exchange, 500, "{\"error\":\"unexpected action " + action + "\"}");
             }
@@ -467,7 +467,7 @@ class EuclidEqsTest {
                 sendResponse(exchange, 200, "{\"ern\":\"queue-ern\",\"available\":1,\"delayed\":0,\"invisible\":0}");
             } else if ("receive-messages".equals(action)) {
                 receiveRequest.set(captureRequest(exchange));
-                sendResponse(exchange, 200, "{\"messages\":[" + messageJson("msg-1", "rh-1") + "],\"total\":1}");
+                sendResponse(exchange, 200, "{\"messages\":[" + messageJson("msg-1", "rh-1") + "]}");
             } else {
                 sendResponse(exchange, 500, "{\"error\":\"unexpected action " + action + "\"}");
             }
@@ -492,7 +492,7 @@ class EuclidEqsTest {
             received.set(captureRequest(exchange));
             // What a server that honoured the wait does: hold the request, then answer empty.
             sleepQuietly(1200);
-            sendResponse(exchange, 200, "{\"messages\":[],\"total\":0}");
+            sendResponse(exchange, 200, "{\"messages\":[]}");
         });
 
         ReceiveMessagesResponse response = newClient().receiveMessages("queue-ern", 10, 1);
@@ -510,9 +510,9 @@ class EuclidEqsTest {
         AtomicInteger callCount = new AtomicInteger();
         server = startServer(exchange -> {
             if (callCount.getAndIncrement() == 0) {
-                sendResponse(exchange, 200, "{\"messages\":[],\"total\":0}");
+                sendResponse(exchange, 200, "{\"messages\":[]}");
             } else {
-                sendResponse(exchange, 200, "{\"messages\":[" + messageJson("msg-1", "rh-1") + "],\"total\":1}");
+                sendResponse(exchange, 200, "{\"messages\":[" + messageJson("msg-1", "rh-1") + "]}");
             }
         });
 
@@ -528,7 +528,7 @@ class EuclidEqsTest {
         AtomicInteger callCount = new AtomicInteger();
         server = startServer(exchange -> {
             callCount.incrementAndGet();
-            sendResponse(exchange, 200, "{\"messages\":[],\"total\":0}");
+            sendResponse(exchange, 200, "{\"messages\":[]}");
         });
 
         ReceiveMessagesResponse response = newClient().receiveMessages("queue-ern", 10, 2);
@@ -558,7 +558,6 @@ class EuclidEqsTest {
 
         ReceiveMessagesResponse response = newClient().receiveAllMessages("queue-ern");
 
-        assertEquals(2, response.total());
         assertEquals(List.of("msg-1", "msg-2"), response.messages().stream().map(Message::messageId).toList());
         assertEquals(2, messageCountCalls.get(), "should stop once the count check reports nothing left");
     }
