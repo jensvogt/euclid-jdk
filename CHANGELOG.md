@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.1.55](https://github.com/jensvogt/euclid-jdk/compare/euclid-jdk-v0.1.54...euclid-jdk-v0.1.55) (2026-10-15)
+
+
+### Features
+
+* change default /tmp dir ([8b6696b](https://github.com/jensvogt/euclid-jdk/commit/8b6696b59cc1f700d5831db02325ff360b443a80))
+* change default /tmp dir ([fba0165](https://github.com/jensvogt/euclid-jdk/commit/fba01656a4a90523afb8b47e64f318a54d366f23))
+
 ## [0.1.54](https://github.com/jensvogt/euclid-jdk/compare/euclid-jdk-v0.1.53...euclid-jdk-v0.1.54) (2026-10-15)
 
 
