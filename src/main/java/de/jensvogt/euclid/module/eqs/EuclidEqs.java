@@ -246,6 +246,19 @@ public final class EuclidEqs implements TokenRefreshable, SigningSchemeSelectabl
     private boolean internal;
 
     /**
+     * How long a short poll believes a message count of zero before it receives anyway - see
+     * {@link #receiveMessages(String, long, long)}. Package-private and not final only so a test
+     * does not have to wait it out.
+     */
+    volatile long zeroCountTrustNanos = Duration.ofSeconds(10).toNanos();
+
+    /**
+     * Since when each queue has read as empty, by ERN, for short polls - the start of the window a
+     * zero count is believed for. Cleared by every real receive.
+     */
+    private final Map<String, Long> zeroCountSince = new java.util.concurrent.ConcurrentHashMap<>();
+
+    /**
      * Constructs an instance of the EuclidEqs class with the specified parameters for
      * interacting with the Euclid API.
      *
@@ -1094,9 +1107,20 @@ public final class EuclidEqs implements TokenRefreshable, SigningSchemeSelectabl
 
         if (waitTime <= 0) {
             long available = getMessageCount(ern).available();
+            long now = System.nanoTime();
             if (available <= 0) {
-                return ReceiveMessagesResponse.builder().messages(new ArrayList<>()).build();
+                // The count is a counter EQS keeps beside the messages, not the messages: it trails
+                // them, and it can be wrong - one EQS instance holding increments it has not written
+                // while another's decrements are clamped at zero. Believed for ever, a queue holding
+                // 796,171 messages read as empty for the best part of an hour, the parser fetched
+                // nothing and the autoscaler scaled it down. So a zero is trusted only for so long:
+                // past that, one real receive asks the messages themselves.
+                Long since = zeroCountSince.putIfAbsent(ern, now);
+                if (since == null || now - since < zeroCountTrustNanos) {
+                    return ReceiveMessagesResponse.builder().messages(new ArrayList<>()).build();
+                }
             }
+            zeroCountSince.remove(ern);
             return doReceiveMessages(ern, maxMessages, 0);
         }
 
