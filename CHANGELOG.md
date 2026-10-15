@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.1.52](https://github.com/jensvogt/euclid-jdk/compare/euclid-jdk-v0.1.51...euclid-jdk-v0.1.52) (2026-10-15)
+
+
+### Features
+
+* remove total from EQS backend calls ([7046120](https://github.com/jensvogt/euclid-jdk/commit/7046120e566faea1c0cc55713f1cf9487dbdeac8))
+* remove total from EQS backend calls ([afa982e](https://github.com/jensvogt/euclid-jdk/commit/afa982ea6954eab0eed823959d4a72f15d3879c5))
+
 ## [0.1.51](https://github.com/jensvogt/euclid-jdk/compare/euclid-jdk-v0.1.50...euclid-jdk-v0.1.51) (2026-10-12)
 
 
