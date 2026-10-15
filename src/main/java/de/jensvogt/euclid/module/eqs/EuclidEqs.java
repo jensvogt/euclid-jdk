@@ -1095,7 +1095,7 @@ public final class EuclidEqs implements TokenRefreshable, SigningSchemeSelectabl
         if (waitTime <= 0) {
             long available = getMessageCount(ern).available();
             if (available <= 0) {
-                return ReceiveMessagesResponse.builder().messages(new ArrayList<>()).total(0).build();
+                return ReceiveMessagesResponse.builder().messages(new ArrayList<>()).build();
             }
             return doReceiveMessages(ern, maxMessages, 0);
         }
@@ -1136,7 +1136,7 @@ public final class EuclidEqs implements TokenRefreshable, SigningSchemeSelectabl
      *
      * @param ern The endpoint resource name from which to receive messages.
      * @param batchSize The maximum number of messages to receive in a single batch.
-     * @return A {@code ReceiveMessagesResponse} containing all messages retrieved and their total count.
+     * @return A {@code ReceiveMessagesResponse} containing all messages retrieved.
      * @throws IOException If an input or output exception occurs during message retrieval.
      * @throws InterruptedException If the operation is interrupted while waiting for the response.
      */
@@ -1149,7 +1149,7 @@ public final class EuclidEqs implements TokenRefreshable, SigningSchemeSelectabl
             }
             messages.addAll(batch);
         }
-        return ReceiveMessagesResponse.builder().messages(messages).total(messages.size()).build();
+        return ReceiveMessagesResponse.builder().messages(messages).build();
     }
 
     /**
@@ -1736,13 +1736,12 @@ public final class EuclidEqs implements TokenRefreshable, SigningSchemeSelectabl
      * Extracts a {@link ReceiveMessagesResponse} object from the provided JSON response string.
      *
      * @param responseBody The JSON response body as a string.
-     * @return A {@link ReceiveMessagesResponse} object containing the list of messages and the total count.
+     * @return A {@link ReceiveMessagesResponse} object containing the list of messages.
      * @throws IOException If an error occurs while parsing the JSON response.
      */
     private static ReceiveMessagesResponse extractReceiveMessagesResponse(String responseBody) throws IOException {
         JsonNode root = OBJECT_MAPPER.readTree(responseBody);
-        return ReceiveMessagesResponse.builder().messages(toMessageList(root.get("messages")))
-                .total(root.path("total").asLong(0)).build();
+        return ReceiveMessagesResponse.builder().messages(toMessageList(root.get("messages"))).build();
     }
 
     /**
