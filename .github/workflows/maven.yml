@@ -40,8 +40,11 @@ jobs:
           gpg-private-key: ${{ secrets.MAVEN_GPG_PRIVATE_KEY }}
           gpg-passphrase: MAVEN_GPG_PASSPHRASE
 
+      # Pinned through the wrapper: the runner image's Maven changed under us, and with it the
+      # staging metadata the central plugin cleans up before bundling - a newer Maven left an
+      # artifact-level metadata file in the bundle, which Central rejects as content without a pom.
       - name: Publish to Maven Central
-        run: mvn -B clean deploy -DskipTests
+        run: ./mvnw -B -V clean deploy -DskipTests
         env:
           CENTRAL_USERNAME: ${{ secrets.CENTRAL_USERNAME }}
           CENTRAL_TOKEN: ${{ secrets.CENTRAL_TOKEN }}
