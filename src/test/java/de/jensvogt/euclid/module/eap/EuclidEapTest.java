@@ -921,6 +921,38 @@ class EuclidEapTest {
                 + ",\"created\":\"2026-01-01\",\"modified\":\"2026-01-02\"}";
     }
 
+    @Test
+    void theEgressCallsSendTheSiteAndParseTheAnswer() throws Exception {
+        List<SignableRequest> received = new java.util.concurrent.CopyOnWriteArrayList<>();
+        server = startServer(exchange -> {
+            SignableRequest request = captureRequest(exchange);
+            received.add(request);
+            String action = request.header("x-euclid-action");
+            String body = switch (action) {
+                case "acquire-egress-permit" -> "{\"site\":\"downloads.example.com\",\"granted\":false,"
+                        + "\"reason\":\"rate\",\"retryAfterMs\":250,\"limits\":{}}";
+                case "release-egress-permit" -> "{\"site\":\"downloads.example.com\",\"released\":true}";
+                default -> "{\"site\":\"downloads.example.com\",\"blockedUntil\":\"2026-10-16T12:00:00Z\"}";
+            };
+            sendResponse(exchange, 200, body);
+        });
+
+        EuclidEap eap = newClient();
+        var answer = eap.acquireEgressPermit("downloads.example.com", 600);
+        assertTrue(eap.releaseEgressPermit("downloads.example.com", "p-1"));
+        eap.reportEgressThrottled("downloads.example.com", 90);
+
+        assertFalse(answer.granted());
+        assertEquals("rate", answer.reason());
+        assertEquals(250, answer.retryAfterMs());
+
+        assertEquals("acquire-egress-permit", received.get(0).header("x-euclid-action"));
+        assertBodyContains(received.get(0).body(), "\"site\":\"downloads.example.com\"", "\"leaseSeconds\":600");
+        assertBodyContains(received.get(1).body(), "\"permitId\":\"p-1\"");
+        assertEquals("report-egress-throttled", received.get(2).header("x-euclid-action"));
+        assertBodyContains(received.get(2).body(), "\"retryAfterSeconds\":90");
+    }
+
     private EuclidEap newClient() {
         return new EuclidEap(baseUrl(), "test-token", "eu-central-1", "863459426936", "alice", null, null, null, null);
     }
