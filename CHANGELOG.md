@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.1.56](https://github.com/jensvogt/euclid-jdk/compare/euclid-jdk-v0.1.55...euclid-jdk-v0.1.56) (2026-10-16)
+
+
+### Features
+
+* HTTP rate limiter ([f481cd4](https://github.com/jensvogt/euclid-jdk/commit/f481cd4bd187e61be48ccd92d4c33b5239f76414))
+* HTTP rate limiter ([e44a237](https://github.com/jensvogt/euclid-jdk/commit/e44a237d709230935610e500d130ba40abfbbebf))
+
 ## [0.1.55](https://github.com/jensvogt/euclid-jdk/compare/euclid-jdk-v0.1.54...euclid-jdk-v0.1.55) (2026-10-15)
 
 
