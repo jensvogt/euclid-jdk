@@ -18,6 +18,7 @@ import de.jensvogt.euclid.dto.eap.RedeployApplicationRequest;
 import de.jensvogt.euclid.dto.eap.ScaleApplicationRequest;
 import de.jensvogt.euclid.dto.eap.RestartApplicationResponse;
 import de.jensvogt.euclid.dto.eap.SetLogLevelRequest;
+import de.jensvogt.euclid.dto.eap.EgressPermitResponse;
 import de.jensvogt.euclid.dto.eap.SetLogLevelResponse;
 import de.jensvogt.euclid.dto.eap.UpdateApplicationRequest;
 import de.jensvogt.euclid.dto.eap.model.Application;
@@ -625,6 +626,59 @@ public final class EuclidEap implements TokenRefreshable, SigningSchemeSelectabl
                 "active", active,
                 "applicationId", applicationId));
         post("report-load", body);
+    }
+
+    /**
+     * Asks for one request's worth of an outside site: a token from its bucket and a slot among the
+     * requests to it in flight, shared by every instance of every application in the installation.
+     *
+     * <p>Never waits. If the answer is not {@link EgressPermitResponse#granted() granted}, it says
+     * how long to wait before asking again - see {@link EuclidEgressLimiter}, which does that.
+     *
+     * @param site         the host name to be called, e.g. {@code downloads.example.com}
+     * @param leaseSeconds how long the slot is held if it is not released first - longer than the
+     *                     request can take, since a request outliving its lease no longer counts
+     * @return the permit, or how long to wait
+     * @throws IOException if an I/O error occurs during the operation
+     * @throws InterruptedException if the operation is interrupted
+     */
+    public EgressPermitResponse acquireEgressPermit(String site, long leaseSeconds) throws IOException, InterruptedException {
+        JsonNode node = post("acquire-egress-permit", OBJECT_MAPPER.writeValueAsString(Map.of(
+                "site", site, "leaseSeconds", leaseSeconds)));
+        return new EgressPermitResponse(textOrNull(node, "site"), node.path("granted").asBoolean(false),
+                textOrNull(node, "permitId"), textOrNull(node, "expiresAt"), textOrNull(node, "reason"),
+                node.path("retryAfterMs").asLong(0));
+    }
+
+    /**
+     * Gives back a permit's slot, once the request it was for has finished.
+     *
+     * @param site     the site the permit is for
+     * @param permitId the permit, from {@link #acquireEgressPermit(String, long)}
+     * @return true if it was still held; false if its lease had already run out, which is not an
+     *         error - the slot is free either way
+     * @throws IOException if an I/O error occurs during the operation
+     * @throws InterruptedException if the operation is interrupted
+     */
+    public boolean releaseEgressPermit(String site, String permitId) throws IOException, InterruptedException {
+        JsonNode node = post("release-egress-permit", OBJECT_MAPPER.writeValueAsString(Map.of(
+                "site", site, "permitId", permitId)));
+        return node.path("released").asBoolean(false);
+    }
+
+    /**
+     * Reports that a site refused a request - a 429 or 503 - so that no instance of any application
+     * calls it again until {@code retryAfterSeconds} have passed.
+     *
+     * @param site              the site that refused
+     * @param retryAfterSeconds how long it asked to be left alone (its {@code Retry-After}); euclid
+     *                          caps one report at an hour
+     * @throws IOException if an I/O error occurs during the operation
+     * @throws InterruptedException if the operation is interrupted
+     */
+    public void reportEgressThrottled(String site, long retryAfterSeconds) throws IOException, InterruptedException {
+        post("report-egress-throttled", OBJECT_MAPPER.writeValueAsString(Map.of(
+                "site", site, "retryAfterSeconds", retryAfterSeconds)));
     }
 
     /**
