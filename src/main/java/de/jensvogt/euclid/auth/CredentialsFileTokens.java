@@ -51,6 +51,9 @@ public final class CredentialsFileTokens implements Supplier<String> {
      */
     public static final String CREDENTIALS_FILE_VARIABLE = "EUCLID_CREDENTIALS_FILE";
 
+    /**
+     * JSON mappe
+     */
     private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
     /**
      * What was read, and the state of the file it was read from.
@@ -215,7 +218,7 @@ public final class CredentialsFileTokens implements Supplier<String> {
         try {
             final BasicFileAttributes attributes = Files.readAttributes(path, BasicFileAttributes.class);
             return attributes.lastModifiedTime().toMillis() + ":" + attributes.size();
-        } catch (IOException | RuntimeException ex) {
+        } catch (IOException | RuntimeException _) {
             return null;
         }
     }
@@ -228,7 +231,7 @@ public final class CredentialsFileTokens implements Supplier<String> {
                 return null;
             }
             return new Snapshot(token, parsed.path("userId").asText(""), fingerprint);
-        } catch (IOException | RuntimeException ex) {
+        } catch (IOException | RuntimeException _) {
             return null;
         }
     }
