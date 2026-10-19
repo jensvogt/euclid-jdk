@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.1.57](https://github.com/jensvogt/euclid-jdk/compare/euclid-jdk-v0.1.56...euclid-jdk-v0.1.57) (2026-10-19)
+
+
+### Features
+
+* change long polling. ([b557ace](https://github.com/jensvogt/euclid-jdk/commit/b557acea06cbb065349cbbff4bc1153235d829b9))
+* change long polling. ([a63316c](https://github.com/jensvogt/euclid-jdk/commit/a63316c4e7d6c09bbedd5ac145c9812463601b05))
+* HTTP rate limiter ([0283ec6](https://github.com/jensvogt/euclid-jdk/commit/0283ec6c532d022fa763013fad4134852a245d97))
+* HTTP rate limiter ([2b28b8c](https://github.com/jensvogt/euclid-jdk/commit/2b28b8cda5c42fb69df35d82f4e78e519a60822d))
+* new EQS and ENS update message body commands ([44ee7a3](https://github.com/jensvogt/euclid-jdk/commit/44ee7a32a7c2f097864ddfa96e9296de293811f2))
+
 ## [0.1.56](https://github.com/jensvogt/euclid-jdk/compare/euclid-jdk-v0.1.55...euclid-jdk-v0.1.56) (2026-10-16)
 
 
