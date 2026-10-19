@@ -26,6 +26,7 @@ import de.jensvogt.euclid.dto.eqs.SendMessageResponse;
 import de.jensvogt.euclid.dto.eqs.SetQueueDelayResponse;
 import de.jensvogt.euclid.dto.eqs.SetQueueMaxMessageLengthResponse;
 import de.jensvogt.euclid.dto.eqs.SetQueueVisibilityResponse;
+import de.jensvogt.euclid.dto.eqs.UpdateMessageBodyResponse;
 import de.jensvogt.euclid.dto.eqs.model.Message;
 import de.jensvogt.euclid.dto.eqs.model.Queue;
 import de.jensvogt.euclid.exception.EuclidServiceException;
@@ -773,6 +774,28 @@ class EuclidEqsTest {
         assertEquals("VISIBLE", response.status());
         assertEquals(2, response.receivedCount());
         assertEquals(30, response.visibilityTimeout());
+    }
+
+    @Test
+    void updateMessageBodyParsesResponse() throws Exception {
+        AtomicReference<SignableRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(captureRequest(exchange));
+            sendResponse(exchange, 200, "{\"messageId\":\"msg-1\",\"queueErn\":\"ern:eqs:queue:orders\","
+                    + "\"size\":25,\"previousSize\":10,\"contentType\":\"text/plain\"}");
+        });
+
+        UpdateMessageBodyResponse response = newClient().updateMessageBody("msg-1", "0123456789012345678901234");
+
+        assertEquals("update-message-body", received.get().header("x-euclid-action"));
+        assertBodyContains(received.get().body(), "\"messageId\":\"msg-1\"",
+                "\"body\":\"0123456789012345678901234\"");
+        assertEquals("msg-1", response.messageId());
+        assertEquals("ern:eqs:queue:orders", response.queueErn());
+        assertEquals(25, response.size());
+        // The size it replaced, which is the one thing a caller cannot go back and check.
+        assertEquals(10, response.previousSize());
+        assertEquals("text/plain", response.contentType());
     }
 
     @Test
