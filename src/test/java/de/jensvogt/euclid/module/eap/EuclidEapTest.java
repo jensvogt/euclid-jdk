@@ -14,6 +14,9 @@ import de.jensvogt.euclid.dto.eap.RedeployApplicationRequest;
 import de.jensvogt.euclid.dto.eap.RestartApplicationResponse;
 import de.jensvogt.euclid.dto.eap.SetLogLevelResponse;
 import de.jensvogt.euclid.dto.eap.UpdateApplicationRequest;
+import de.jensvogt.euclid.dto.eap.ListNodesResponse;
+import de.jensvogt.euclid.dto.eap.model.ApplicationType;
+import de.jensvogt.euclid.dto.eap.model.Node;
 import de.jensvogt.euclid.dto.eap.model.Application;
 import de.jensvogt.euclid.exception.EuclidServiceException;
 import org.junit.jupiter.api.AfterEach;
@@ -656,6 +659,244 @@ class EuclidEapTest {
         assertEquals(400, exception.statusCode());
     }
 
+    @Test
+    void anApplicationIsAProcessWithNoScheduleByDefault() throws Exception {
+        server = startServer(exchange -> {
+            exchange.getRequestBody().readAllBytes();
+            sendResponse(exchange, 200, applicationJson());
+        });
+
+        Application found = newClient().getApplication("billing");
+
+        assertEquals(ApplicationType.PROCESS, found.type());
+        assertFalse(found.type().isJob());
+        // Empty rather than the epoch: a job with no schedule is not one overdue since 1970.
+        assertNull(found.nextRunAt());
+        assertEquals(Map.of("os", "linux"), found.nodeLabels());
+        assertTrue(found.userExists());
+    }
+
+    @Test
+    void aScheduledJobReportsItsTypeScheduleAndNextRun() throws Exception {
+        server = startServer(exchange -> {
+            exchange.getRequestBody().readAllBytes();
+            sendResponse(exchange, 200, applicationJson()
+                    .replace("\"type\":\"PROCESS\"", "\"type\":\"JOB\"")
+                    .replace("\"schedule\":\"\"", "\"schedule\":\"0 2 * * *\"")
+                    .replace("\"nextRunAt\":\"\"", "\"nextRunAt\":\"2026-10-14T02:00:00Z\""));
+        });
+
+        Application found = newClient().getApplication("billing");
+
+        assertEquals(ApplicationType.JOB, found.type());
+        assertTrue(found.type().isJob());
+        assertEquals("0 2 * * *", found.schedule());
+        assertEquals("2026-10-14T02:00:00Z", found.nextRunAt());
+    }
+
+    // A definition written before types existed answers without one, and has to keep the
+    // long-running behaviour rather than being read as a job.
+    @Test
+    void anUnrecognisedTypeReadsAsUnknownAndNotAsAJob() throws Exception {
+        server = startServer(exchange -> {
+            exchange.getRequestBody().readAllBytes();
+            sendResponse(exchange, 200, applicationJson().replace("\"type\":\"PROCESS\"", "\"type\":\"CRONJOB\""));
+        });
+
+        Application found = newClient().getApplication("billing");
+
+        assertEquals(ApplicationType.UNKNOWN, found.type());
+        assertFalse(found.type().isJob(), "UNKNOWN must keep the long-running behaviour");
+    }
+
+    // userExists false is the interesting answer: it turns "euclid refused my secret" into "this
+    // application's user does not exist".
+    @Test
+    void anApplicationWhoseUserWasDeletedSaysSo() throws Exception {
+        server = startServer(exchange -> {
+            exchange.getRequestBody().readAllBytes();
+            sendResponse(exchange, 200, applicationJson().replace("\"userExists\":true", "\"userExists\":false"));
+        });
+
+        assertFalse(newClient().getApplication("billing").userExists());
+    }
+
+    @Test
+    void deployCanDefineAScheduledJobWithNodeLabels() throws Exception {
+        AtomicReference<SignableRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(captureRequest(exchange));
+            sendResponse(exchange, 200, applicationJson());
+        });
+
+        newClient().createApplication(CreateApplicationRequest.builder()
+                .applicationId("nightly-import").runtime("JAVA").bucket("artifacts")
+                .artifact("import-1.0.jar").type(ApplicationType.JOB).schedule("0 2 * * *")
+                .nodeLabels(Map.of("os", "windows")).build());
+
+        assertBodyContains(received.get().body(), "\"type\":\"JOB\"", "\"schedule\":\"0 2 * * *\"",
+                "\"nodeLabels\":{\"os\":\"windows\"}");
+    }
+
+    // A schedule only means something on a JOB, and the server says so rather than storing one
+    // that never fires.
+    @Test
+    void deploySurfacesAScheduleOnANonJob() throws Exception {
+        server = startServer(exchange -> {
+            exchange.getRequestBody().readAllBytes();
+            sendResponse(exchange, 400, "{\"error\":\"schedule is only valid on a JOB - pass '--type JOB' as well\"}");
+        });
+
+        EuclidServiceException exception = assertThrows(EuclidServiceException.class,
+                () -> newClient().createApplication(CreateApplicationRequest.builder()
+                        .applicationId("billing").schedule("0 2 * * *").build()));
+
+        assertEquals("create-application", exception.action());
+        assertEquals(400, exception.statusCode());
+    }
+
+    // Case-sensitive on purpose: "job" must not quietly turn a service into a one-shot task.
+    @Test
+    void deploySurfacesAMisspelledType() throws Exception {
+        server = startServer(exchange -> {
+            exchange.getRequestBody().readAllBytes();
+            sendResponse(exchange, 400, "{\"error\":\"type must be PROCESS or JOB, not 'job'\"}");
+        });
+
+        EuclidServiceException exception = assertThrows(EuclidServiceException.class,
+                () -> newClient().createApplication(CreateApplicationRequest.builder()
+                        .applicationId("billing").build()));
+
+        assertEquals(400, exception.statusCode());
+    }
+
+    // An empty schedule is how a job goes back to on-demand only, so it has to reach the server
+    // rather than being dropped as unset.
+    @Test
+    void updateCanUnscheduleAJob() throws Exception {
+        AtomicReference<SignableRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(captureRequest(exchange));
+            sendResponse(exchange, 200, applicationJson());
+        });
+
+        newClient().updateApplication(UpdateApplicationRequest.builder()
+                .applicationId("nightly-import").schedule("").build());
+
+        String body = received.get().body();
+        assertBodyContains(body, "\"schedule\":\"\"");
+        assertFalse(body.contains("\"type\""), "an unset type must not reach the server: " + body);
+    }
+
+    @Test
+    void listNodesParsesTheRegistrations() throws Exception {
+        AtomicReference<SignableRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(captureRequest(exchange));
+            sendResponse(exchange, 200, "{\"nodes\":[" + nodeJson(true, false) + "],\"total\":1}");
+        });
+
+        ListNodesResponse response = newClient().listNodes();
+
+        assertEquals("list-nodes", received.get().header("x-euclid-action"));
+        assertEquals(1, response.total());
+
+        Node node = response.nodes().getFirst();
+        assertEquals("worker-1", node.name());
+        assertEquals(Map.of("os", "linux", "gpu", "true"), node.labels());
+        assertEquals(16, node.cpuCount());
+        assertTrue(node.live());
+        assertFalse(node.drained());
+        // A listing says nothing about what a node runs; an empty list would read as "holding
+        // nothing", which is a different claim.
+        assertNull(node.applications(), "list-nodes must not imply a node is holding nothing");
+    }
+
+    @Test
+    void aNodeThatStoppedRenewingIsNotLive() throws Exception {
+        server = startServer(exchange -> {
+            exchange.getRequestBody().readAllBytes();
+            sendResponse(exchange, 200, "{\"nodes\":[" + nodeJson(false, true) + "],\"total\":1}");
+        });
+
+        Node node = newClient().listNodes().nodes().getFirst();
+
+        assertFalse(node.live());
+        assertTrue(node.drained(), "draining refuses new work while keeping what it has");
+    }
+
+    @Test
+    void getNodeAlsoReportsWhatItIsRunning() throws Exception {
+        AtomicReference<SignableRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(captureRequest(exchange));
+            sendResponse(exchange, 200, nodeJson(true, false).replaceFirst("\\}$",
+                    ",\"applications\":[{\"applicationId\":\"billing\",\"runtimeName\":\"billing-7f3a91\","
+                            + "\"namespace\":\"development\",\"runtime\":\"JAVA\",\"instances\":4,"
+                            + "\"running\":1}]}"));
+        });
+
+        Node node = newClient().getNode("worker-1");
+
+        assertEquals("get-node", received.get().header("x-euclid-action"));
+        assertBodyContains(received.get().body(), "\"node\":\"worker-1\"");
+        assertEquals(1, node.applications().size());
+        // Four slots held, one actually serving - a single count could not say this.
+        assertEquals(4, node.applications().getFirst().instances());
+        assertEquals(1, node.applications().getFirst().running());
+    }
+
+    @Test
+    void getNodeSurfacesANodeThatIsNotRegistered() throws Exception {
+        server = startServer(exchange -> {
+            exchange.getRequestBody().readAllBytes();
+            sendResponse(exchange, 404, "{\"error\":\"Node is not registered, node: nope\"}");
+        });
+
+        EuclidServiceException exception = assertThrows(EuclidServiceException.class,
+                () -> newClient().getNode("nope"));
+
+        assertEquals("eap", exception.service());
+        assertEquals("get-node", exception.action());
+        assertEquals(404, exception.statusCode());
+    }
+
+    @Test
+    void deleteNodeSendsTheName() throws Exception {
+        AtomicReference<SignableRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(captureRequest(exchange));
+            sendResponse(exchange, 200, "{\"node\":\"worker-1\",\"deleted\":true}");
+        });
+
+        newClient().deleteNode("worker-1");
+
+        assertEquals("delete-node", received.get().header("x-euclid-action"));
+        assertBodyContains(received.get().body(), "\"node\":\"worker-1\"");
+    }
+
+    // Administrators only, unlike the other node actions: a worker able to delete another's
+    // registration could re-register under its name and inherit its credentials.
+    @Test
+    void deleteNodeSurfacesANonAdministrator() throws Exception {
+        server = startServer(exchange -> {
+            exchange.getRequestBody().readAllBytes();
+            sendResponse(exchange, 403, "{\"error\":\"Administrator privileges required\"}");
+        });
+
+        EuclidServiceException exception = assertThrows(EuclidServiceException.class,
+                () -> newClient().deleteNode("worker-1"));
+
+        assertEquals(403, exception.statusCode());
+    }
+
+    private static String nodeJson(boolean live, boolean drained) {
+        return "{\"name\":\"worker-1\",\"address\":\"10.0.0.7:9100\",\"principal\":\"node-worker-1\","
+                + "\"labels\":{\"os\":\"linux\",\"gpu\":\"true\"},\"cpuCount\":16,"
+                + "\"version\":\"1.2.20\",\"os\":\"linux\",\"arch\":\"x86_64\","
+                + "\"drained\":" + drained + ",\"live\":" + live + ",\"lastSeen\":\"2026-10-13T08:00:00Z\"}";
+    }
+
     private static String applicationJson() {
         return applicationJson("STOPPED", "STOPPED", 0);
     }
@@ -670,12 +911,46 @@ class EuclidEapTest {
                 + "\"md5Sum\":\"0dc7cdef5e707bae7f7b6bbb5be4c32a\",\"command\":\"java\","
                 + "\"arguments\":[\"-jar\",\"billing-1.0.jar\"],\"environment\":{\"LOG_LEVEL\":\"info\"},"
                 + "\"resources\":[\"ern:esm:eu-central-1:863459426936:bucket/invoices\"],"
-                + "\"userId\":\"eap-billing\",\"logLevel\":\"info\","
+                + "\"userId\":\"eap-billing\",\"userExists\":true,\"logLevel\":\"info\","
                 + "\"minInstances\":2,\"maxInstances\":5,\"readyTimeoutMs\":60000,"
+                + "\"nodeLabels\":{\"os\":\"linux\"},\"type\":\"PROCESS\","
+                + "\"schedule\":\"\",\"nextRunAt\":\"\","
                 + "\"desiredState\":\"" + desiredState + "\",\"state\":\"" + state + "\",\"instances\":" + instances
                 + ",\"endpoints\":[{\"instanceId\":\"i-1\",\"pid\":4711,\"httpPort\":34001},"
                 + "{\"instanceId\":\"i-2\",\"pid\":4712,\"httpPort\":34002}]"
                 + ",\"created\":\"2026-01-01\",\"modified\":\"2026-01-02\"}";
+    }
+
+    @Test
+    void theEgressCallsSendTheSiteAndParseTheAnswer() throws Exception {
+        List<SignableRequest> received = new java.util.concurrent.CopyOnWriteArrayList<>();
+        server = startServer(exchange -> {
+            SignableRequest request = captureRequest(exchange);
+            received.add(request);
+            String action = request.header("x-euclid-action");
+            String body = switch (action) {
+                case "acquire-egress-permit" -> "{\"site\":\"downloads.example.com\",\"granted\":false,"
+                        + "\"reason\":\"rate\",\"retryAfterMs\":250,\"limits\":{}}";
+                case "release-egress-permit" -> "{\"site\":\"downloads.example.com\",\"released\":true}";
+                default -> "{\"site\":\"downloads.example.com\",\"blockedUntil\":\"2026-10-16T12:00:00Z\"}";
+            };
+            sendResponse(exchange, 200, body);
+        });
+
+        EuclidEap eap = newClient();
+        var answer = eap.acquireEgressPermit("downloads.example.com", 600);
+        assertTrue(eap.releaseEgressPermit("downloads.example.com", "p-1"));
+        eap.reportEgressThrottled("downloads.example.com", 90);
+
+        assertFalse(answer.granted());
+        assertEquals("rate", answer.reason());
+        assertEquals(250, answer.retryAfterMs());
+
+        assertEquals("acquire-egress-permit", received.get(0).header("x-euclid-action"));
+        assertBodyContains(received.get(0).body(), "\"site\":\"downloads.example.com\"", "\"leaseSeconds\":600");
+        assertBodyContains(received.get(1).body(), "\"permitId\":\"p-1\"");
+        assertEquals("report-egress-throttled", received.get(2).header("x-euclid-action"));
+        assertBodyContains(received.get(2).body(), "\"retryAfterSeconds\":90");
     }
 
     private EuclidEap newClient() {

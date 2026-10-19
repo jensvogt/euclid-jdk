@@ -41,6 +41,8 @@ public class EuclidHttpClient {
 
     private static final Logger LOG = Logger.getLogger(EuclidHttpClient.class.getName());
 
+    private static final int DEFAULT_REQUEST_TIMEOUT = 10;
+
     /**
      * Represents the underlying HTTP client used for sending requests and receiving responses.
      * This client is configured during the construction of the {@code EuclidHttpClient} and
@@ -88,13 +90,14 @@ public class EuclidHttpClient {
 
     /**
      * Constructs a new {@code EuclidHttpClient} instance with a default request timeout
-     * of 10 seconds and no additional PEM CA certificate configured for trust.
+     * of DEFAULT_REQUEST_TIMEOUT seconds and no additional PEM CA certificate configured
+     * for trust.
      * <p>
      * This constructor sets up the HTTP client to trust only the system's default
      * trust store.
      */
     public EuclidHttpClient() {
-        this(Duration.ofSeconds(10), null);
+        this(Duration.ofSeconds(DEFAULT_REQUEST_TIMEOUT), null);
     }
 
     /**

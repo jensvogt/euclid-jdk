@@ -8,9 +8,8 @@ import java.util.List;
  * Response containing the messages received from a queue.
  *
  * @param messages the list of received messages
- * @param total    the total number of messages returned
  */
-public record ReceiveMessagesResponse(List<Message> messages, long total) {
+public record ReceiveMessagesResponse(List<Message> messages) {
 
     /**
      * Creates a new instance of the Builder for constructing a ReceiveMessagesResponse object.
@@ -37,11 +36,6 @@ public record ReceiveMessagesResponse(List<Message> messages, long total) {
         private List<Message> messages;
 
         /**
-         * The total number of messages returned.
-         */
-        private long total;
-
-        /**
          * Sets the list of received messages.
          *
          * @param messages the list of messages
@@ -53,23 +47,12 @@ public record ReceiveMessagesResponse(List<Message> messages, long total) {
         }
 
         /**
-         * Sets the total number of messages returned.
-         *
-         * @param total the total number of messages
-         * @return the builder instance
-         */
-        public Builder total(long total) {
-            this.total = total;
-            return this;
-        }
-
-        /**
          * Builds and returns a new instance of ReceiveMessagesResponse using the properties set on the Builder.
          *
-         * @return a new ReceiveMessagesResponse instance populated with the messages and total values.
+         * @return a new ReceiveMessagesResponse instance populated with the messages.
          */
         public ReceiveMessagesResponse build() {
-            return new ReceiveMessagesResponse(messages, total);
+            return new ReceiveMessagesResponse(messages);
         }
     }
 }
