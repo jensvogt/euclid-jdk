@@ -938,17 +938,19 @@ class EuclidEapTest {
         });
 
         EuclidEap eap = newClient();
-        var answer = eap.acquireEgressPermit("downloads.example.com", 600);
-        assertTrue(eap.releaseEgressPermit("downloads.example.com", "p-1"));
-        eap.reportEgressThrottled("downloads.example.com", 90);
+        var answer = eap.acquireEgressPermit("downloader", "downloads.example.com", 600);
+        assertTrue(eap.releaseEgressPermit("downloader", "downloads.example.com", "p-1"));
+        eap.reportEgressThrottled("downloader", "downloads.example.com", 90);
 
         assertFalse(answer.granted());
         assertEquals("rate", answer.reason());
         assertEquals(250, answer.retryAfterMs());
 
         assertEquals("acquire-egress-permit", received.get(0).header("x-euclid-action"));
-        assertBodyContains(received.get(0).body(), "\"site\":\"downloads.example.com\"", "\"leaseSeconds\":600");
-        assertBodyContains(received.get(1).body(), "\"permitId\":\"p-1\"");
+        assertBodyContains(received.get(0).body(), "\"applicationId\":\"downloader\"",
+                "\"site\":\"downloads.example.com\"", "\"leaseSeconds\":600");
+        assertBodyContains(received.get(1).body(), "\"applicationId\":\"downloader\"", "\"permitId\":\"p-1\"");
+        assertBodyContains(received.get(2).body(), "\"applicationId\":\"downloader\"");
         assertEquals("report-egress-throttled", received.get(2).header("x-euclid-action"));
         assertBodyContains(received.get(2).body(), "\"retryAfterSeconds\":90");
     }
