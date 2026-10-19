@@ -384,7 +384,7 @@ public final class EuclidEes implements TokenRefreshable, SigningSchemeSelectabl
      *
      * @param name the subscriber name the event was claimed under
      * @param eventId the ID from the claimed envelope
-     * @return how many events were deleted, and how many are still waiting
+     * @return how many events were deleted
      * @throws IOException if an I/O error occurs during the operation
      * @throws InterruptedException if the operation is interrupted
      */
@@ -401,7 +401,7 @@ public final class EuclidEes implements TokenRefreshable, SigningSchemeSelectabl
      *
      * @param name the subscriber name the events were claimed under
      * @param eventIds the IDs from the claimed envelopes
-     * @return how many events were deleted, and how many are still waiting
+     * @return how many events were deleted; {@link #listSubscriptions} says how many are still waiting
      * @throws IOException if an I/O error occurs during the operation
      * @throws InterruptedException if the operation is interrupted
      */
@@ -410,7 +410,7 @@ public final class EuclidEes implements TokenRefreshable, SigningSchemeSelectabl
                 AckEventsRequest.builder().name(name).eventIds(eventIds).build());
         JsonNode root = post("ack-events", body);
         return AckEventsResponse.builder().subscriber(textOrNull(root, "subscriber"))
-                .acknowledged(root.path("acknowledged").asLong(0)).waiting(root.path("waiting").asLong(0)).build();
+                .acknowledged(root.path("acknowledged").asLong(0)).build();
     }
 
     /**

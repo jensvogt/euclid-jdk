@@ -21,6 +21,7 @@ import de.jensvogt.euclid.dto.ens.SetTopicRetentionResponse;
 import de.jensvogt.euclid.dto.ens.SubscribeResponse;
 import de.jensvogt.euclid.dto.ens.ResendMessagesResponse;
 import de.jensvogt.euclid.dto.ens.TopicStatusResponse;
+import de.jensvogt.euclid.dto.ens.UpdateMessageBodyResponse;
 import de.jensvogt.euclid.dto.ens.model.Topic;
 import de.jensvogt.euclid.dto.ens.model.Message;
 import de.jensvogt.euclid.exception.EuclidServiceException;
@@ -444,6 +445,28 @@ class EuclidEnsTest {
         assertEquals("count", response.key());
         assertEquals("long", response.value().type());
         assertEquals("5", response.value().value());
+    }
+
+    @Test
+    void updateMessageBodyParsesResponse() throws Exception {
+        AtomicReference<SignableRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(captureRequest(exchange));
+            sendResponse(exchange, 200, "{\"messageId\":\"msg-1\",\"topicErn\":\"ern:ens:topic:order-events\","
+                    + "\"size\":25,\"previousSize\":10,\"contentType\":\"text/plain\"}");
+        });
+
+        UpdateMessageBodyResponse response = newClient().updateMessageBody("msg-1", "0123456789012345678901234");
+
+        assertEquals("update-message-body", received.get().header("x-euclid-action"));
+        assertBodyContains(received.get().body(), "\"messageId\":\"msg-1\"",
+                "\"body\":\"0123456789012345678901234\"");
+        assertEquals("msg-1", response.messageId());
+        // topicErn, not queueErn: the two modules answer the same action with different field names.
+        assertEquals("ern:ens:topic:order-events", response.topicErn());
+        assertEquals(25, response.size());
+        assertEquals(10, response.previousSize());
+        assertEquals("text/plain", response.contentType());
     }
 
     @Test

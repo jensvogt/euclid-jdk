@@ -230,7 +230,7 @@ class EuclidEesTest {
         AtomicReference<SignableRequest> received = new AtomicReference<>();
         server = startServer(exchange -> {
             received.set(captureRequest(exchange));
-            sendResponse(exchange, 200, "{\"subscriber\":\"billing\",\"acknowledged\":2,\"waiting\":5}");
+            sendResponse(exchange, 200, "{\"subscriber\":\"billing\",\"acknowledged\":2}");
         });
 
         AckEventsResponse response = newClient().ackEvents("billing", List.of("evt-1", "evt-2"));
@@ -238,8 +238,8 @@ class EuclidEesTest {
         assertEquals("ack-events", received.get().header("x-euclid-action"));
         assertBodyContains(received.get().body(), "\"name\":\"billing\"",
                 "\"eventIds\":[\"evt-1\",\"evt-2\"]");
+        assertEquals("billing", response.subscriber());
         assertEquals(2, response.acknowledged());
-        assertEquals(5, response.waiting());
     }
 
     // Acknowledging one event is the common case after processing it.

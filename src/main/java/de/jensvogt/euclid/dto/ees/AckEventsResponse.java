@@ -2,12 +2,14 @@ package de.jensvogt.euclid.dto.ees;
 
 /**
  * The outcome of an ack-events action.
+ * <p>
+ * How many events are still waiting is not part of it: counting scans the subscriber's whole
+ * backlog, too much to pay on every acknowledgement. {@code listSubscriptions} reports it.
  *
  * @param subscriber   the subscriber name
  * @param acknowledged number of events actually deleted
- * @param waiting      number of events still waiting for the subscriber
  */
-public record AckEventsResponse(String subscriber, long acknowledged, long waiting) {
+public record AckEventsResponse(String subscriber, long acknowledged) {
 
     /**
      * Creates a new instance of the Builder for constructing an AckEventsResponse object.
@@ -27,6 +29,7 @@ public record AckEventsResponse(String subscriber, long acknowledged, long waiti
          * Creates an empty builder.
          */
         public Builder() {
+            // Intentionally left empty
         }
 
         /**
@@ -38,11 +41,6 @@ public record AckEventsResponse(String subscriber, long acknowledged, long waiti
          * Number of events actually deleted.
          */
         private long acknowledged = 0;
-
-        /**
-         * Number of events still waiting for the subscriber.
-         */
-        private long waiting = 0;
 
         /**
          * Sets the subscriber name.
@@ -67,23 +65,12 @@ public record AckEventsResponse(String subscriber, long acknowledged, long waiti
         }
 
         /**
-         * Sets number of events still waiting for the subscriber.
-         *
-         * @param waiting number of events still waiting for the subscriber
-         * @return the builder instance
-         */
-        public Builder waiting(long waiting) {
-            this.waiting = waiting;
-            return this;
-        }
-
-        /**
          * Builds and returns a new instance of AckEventsResponse using the properties set on the Builder.
          *
          * @return a new AckEventsResponse instance.
          */
         public AckEventsResponse build() {
-            return new AckEventsResponse(subscriber, acknowledged, waiting);
+            return new AckEventsResponse(subscriber, acknowledged);
         }
     }
 }
