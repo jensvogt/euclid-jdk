@@ -23,16 +23,16 @@ import java.util.logging.Level;
 import java.util.logging.Logger;
 
 /**
- * Holds an application's calls to outside sites to the limits euclid keeps for each site - for all
- * instances of all applications together.
+ * Holds an application's calls to outside sites to the limits euclid keeps for it, per site - for
+ * all of its instances together.
  *
  * <p>A site that defends itself against denial of service counts per source address, and every
- * instance euclid runs reaches it from the same one. A limiter inside the application would count
- * per instance, which the autoscaler multiplies just when there is most to fetch. So the limit is
- * kept in euclid (EAP), and this asks it for a permit before each request:
+ * instance of the application reaches it from the same one. A limiter inside the application would
+ * count per instance, which the autoscaler multiplies just when there is most to fetch. So the
+ * limit is kept in euclid (EAP), and this asks it for a permit before each request:
  *
  * <pre>{@code
- * EuclidEgressLimiter limiter = new EuclidEgressLimiter(eap);
+ * EuclidEgressLimiter limiter = new EuclidEgressLimiter(eap);   // the application from EUCLID_APPLICATION_ID
  *
  * try (EuclidEgressLimiter.Permit permit = limiter.acquire(uri)) {
  *     HttpResponse<Path> response = http.send(request, BodyHandlers.ofFile(target));
@@ -44,8 +44,9 @@ import java.util.logging.Logger;
  *
  * <p>{@link #acquire(String)} waits until euclid grants a permit, polling with jitter so a crowd of
  * instances does not ask in step. Closing the permit gives its slot back; one never closed - the
- * instance died - comes back when its lease runs out. What a site is allowed is set with
- * {@code euclid-cli eap set-egress-limit}.
+ * instance died - comes back when its lease runs out. What the application is allowed for a site
+ * is set with {@code euclid-cli eap set-egress-limit}; another application calling the same site
+ * has limits of its own.
  *
  * <p>If euclid cannot be asked at all, the limiter does not stop the application: it falls back to
  * one request per {@link #fallbackInterval(Duration) fallback interval} per site, for this instance
@@ -106,27 +107,52 @@ public final class EuclidEgressLimiter {
     private final Map<String, Long> lastFallbackLogNanos = new ConcurrentHashMap<>();
 
     /**
-     * Creates a limiter that asks euclid through the given client.
+     * Creates a limiter for the application this process runs as: the one named by
+     * {@code EUCLID_APPLICATION_ID}, which euclid sets for every application it starts.
      *
      * @param eap the EAP client, authenticated as the application
+     * @throws IllegalStateException if {@code EUCLID_APPLICATION_ID} is not set - the process was
+     *                               not started by euclid; use {@link #EuclidEgressLimiter(EuclidEap, String)}
      */
     public EuclidEgressLimiter(EuclidEap eap) {
+        this(eap, applicationIdFromEnvironment());
+    }
+
+    /**
+     * Creates a limiter for the given application.
+     *
+     * @param eap           the EAP client, authenticated as the identity the application runs as
+     * @param applicationId the application whose limits apply
+     */
+    public EuclidEgressLimiter(EuclidEap eap, String applicationId) {
         this(new Backend() {
             @Override
             public EgressPermitResponse acquire(String site, long leaseSeconds) throws IOException, InterruptedException {
-                return eap.acquireEgressPermit(site, leaseSeconds);
+                return eap.acquireEgressPermit(applicationId, site, leaseSeconds);
             }
 
             @Override
             public boolean release(String site, String permitId) throws IOException, InterruptedException {
-                return eap.releaseEgressPermit(site, permitId);
+                return eap.releaseEgressPermit(applicationId, site, permitId);
             }
 
             @Override
             public void throttled(String site, long retryAfterSeconds) throws IOException, InterruptedException {
-                eap.reportEgressThrottled(site, retryAfterSeconds);
+                eap.reportEgressThrottled(applicationId, site, retryAfterSeconds);
             }
         }, duration -> Thread.sleep(duration.toMillis()), System::nanoTime);
+        if (applicationId == null || applicationId.isBlank()) {
+            throw new IllegalArgumentException("applicationId is required");
+        }
+    }
+
+    private static String applicationIdFromEnvironment() {
+        String id = System.getenv("EUCLID_APPLICATION_ID");
+        if (id == null || id.isBlank()) {
+            throw new IllegalStateException("EUCLID_APPLICATION_ID is not set - this process was not started by euclid; "
+                    + "pass the application id explicitly");
+        }
+        return id;
     }
 
     EuclidEgressLimiter(Backend backend, Sleeper sleeper, LongSupplier nanoTime) {
@@ -220,7 +246,7 @@ public final class EuclidEgressLimiter {
     }
 
     /**
-     * Reports that {@code site} refused a request - a 429 or 503 - so that no instance of any
+     * Reports that {@code site} refused a request - a 429 or 503 - so that no instance of this
      * application calls it until {@code retryAfter} has passed. Never throws: failing to report
      * is logged, and the caller goes on handling the refusal it got.
      *
