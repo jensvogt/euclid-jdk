@@ -8,6 +8,8 @@ import de.jensvogt.euclid.auth.SigV4;
 import de.jensvogt.euclid.auth.SignableRequest;
 import de.jensvogt.euclid.dto.com.Variant;
 import de.jensvogt.euclid.dto.esm.AbortUploadResponse;
+import de.jensvogt.euclid.dto.esm.BucketStoppedResponse;
+import de.jensvogt.euclid.dto.esm.GetObjectSizeResponse;
 import de.jensvogt.euclid.dto.esm.CompleteUploadResponse;
 import de.jensvogt.euclid.dto.esm.CreateBucketResponse;
 import de.jensvogt.euclid.dto.esm.DeleteObjectsResponse;
@@ -225,6 +227,92 @@ class EuclidEsmTest {
         assertEquals(2048, bucket.size());
         assertEquals(7, bucket.objects());
         assertEquals("media", bucket.tags().get("team"));
+    }
+
+    @Test
+    void getBucketParsesWhetherTheBucketIsStoppedEncryptedAndInternal() throws Exception {
+        server = startServer(exchange -> sendResponse(exchange, 200, "{\"bucket\":{\"name\":\"photos\",\"ern\":\"bucket-ern\","
+                + "\"objects\":7,\"directories\":2,\"encrypted\":true,\"encryptionKeyErn\":\"key-ern\","
+                + "\"internal\":true,\"stopped\":true}}"));
+
+        Bucket bucket = newClient().getBucket("photos").bucket();
+
+        assertEquals(2, bucket.directories());
+        assertTrue(bucket.encrypted());
+        assertEquals("key-ern", bucket.encryptionKeyErn());
+        assertTrue(bucket.internal());
+        assertTrue(bucket.stopped());
+    }
+
+    @Test
+    void stopBucketParsesHowManyDeliveriesAreHeld() throws Exception {
+        AtomicReference<SignableRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(captureRequest(exchange));
+            sendResponse(exchange, 200, "{\"ern\":\"bucket-ern\",\"name\":\"photos\",\"stopped\":true,\"held\":12}");
+        });
+
+        BucketStoppedResponse response = newClient().stopBucket("bucket-ern");
+
+        assertEquals("stop-bucket", received.get().header("x-euclid-action"));
+        assertBodyContains(received.get().body(), "\"ern\":\"bucket-ern\"");
+        assertTrue(response.stopped());
+        assertEquals(12, response.held());
+        assertEquals(0, response.released());
+    }
+
+    @Test
+    void startBucketParsesHowManyEventsWereReleased() throws Exception {
+        AtomicReference<SignableRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(captureRequest(exchange));
+            sendResponse(exchange, 200, "{\"ern\":\"bucket-ern\",\"name\":\"photos\",\"stopped\":false,\"released\":12}");
+        });
+
+        BucketStoppedResponse response = newClient().startBucket("bucket-ern");
+
+        assertEquals("start-bucket", received.get().header("x-euclid-action"));
+        assertFalse(response.stopped());
+        assertEquals(12, response.released());
+    }
+
+    @Test
+    void getObjectSizeAsksByBucketAndKey() throws Exception {
+        AtomicReference<SignableRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(captureRequest(exchange));
+            sendResponse(exchange, 200, "{\"ern\":\"obj-ern\",\"bucketErn\":\"bucket-ern\",\"key\":\"a.xml\",\"size\":4096}");
+        });
+
+        GetObjectSizeResponse response = newClient().getObjectSize("incoming", "a.xml");
+
+        assertEquals("get-object-size", received.get().header("x-euclid-action"));
+        assertBodyContains(received.get().body(), "\"bucketErn\":\"incoming\"", "\"key\":\"a.xml\"");
+        assertEquals(4096, response.size());
+        assertEquals("obj-ern", response.ern());
+    }
+
+    @Test
+    void getObjectSizeAsksByErn() throws Exception {
+        AtomicReference<SignableRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(captureRequest(exchange));
+            sendResponse(exchange, 200, "{\"ern\":\"obj-ern\",\"bucketErn\":\"bucket-ern\",\"key\":\"a.xml\",\"size\":1}");
+        });
+
+        newClient().getObjectSize("obj-ern");
+
+        assertEquals("{\"ern\":\"obj-ern\"}", received.get().body());
+    }
+
+    @Test
+    void getObjectSizeOfAnUnfinishedUploadIsAConflict() throws Exception {
+        server = startServer(exchange -> sendResponse(exchange, 409, "{\"message\":\"Object has no final size yet\"}"));
+
+        EuclidEsm esm = newClient();
+        EuclidServiceException thrown = assertThrows(EuclidServiceException.class, () -> esm.getObjectSize("obj-ern"));
+
+        assertEquals(409, thrown.statusCode());
     }
 
     @Test
@@ -1129,6 +1217,122 @@ class EuclidEsmTest {
         assertEquals(10, written);
         assertEquals(1, requests.get(), "an object that fits in one part should skip the multipart flow");
         assertArrayEquals("ABCDEFGHIJ".getBytes(StandardCharsets.US_ASCII), Files.readAllBytes(file));
+    }
+
+    @Test
+    void uploadDirectoryKeysEachFileByPrefixAndRelativePath(@TempDir Path tempDir) throws Exception {
+        Files.writeString(tempDir.resolve("a.txt"), "A");
+        Files.createDirectories(tempDir.resolve("sub"));
+        Files.writeString(tempDir.resolve("sub/b.txt"), "B");
+
+        List<String> keys = Collections.synchronizedList(new ArrayList<>());
+        server = startServer(exchange -> {
+            exchange.getRequestBody().readAllBytes();
+            String key = exchange.getRequestHeaders().getFirst("x-euclid-key");
+            keys.add(key);
+            sendResponse(exchange, 200, "{\"ern\":\"obj-ern\",\"bucketErn\":\"bucket-ern\",\"key\":\"" + key + "\",\"size\":1}");
+        });
+
+        List<CompleteUploadResponse> uploads = newClient().uploadDirectory("bucket-ern", tempDir, "in/", true);
+
+        // Forward slashes whatever the platform, and the subdirectory's file included.
+        assertEquals(List.of("in/a.txt", "in/sub/b.txt"), keys);
+        assertEquals(2, uploads.size());
+    }
+
+    @Test
+    void uploadDirectoryWithoutRecursionLeavesSubdirectoriesOut(@TempDir Path tempDir) throws Exception {
+        Files.writeString(tempDir.resolve("a.txt"), "A");
+        Files.createDirectories(tempDir.resolve("sub"));
+        Files.writeString(tempDir.resolve("sub/b.txt"), "B");
+
+        List<String> keys = Collections.synchronizedList(new ArrayList<>());
+        server = startServer(exchange -> {
+            exchange.getRequestBody().readAllBytes();
+            keys.add(exchange.getRequestHeaders().getFirst("x-euclid-key"));
+            sendResponse(exchange, 200, "{\"ern\":\"obj-ern\",\"size\":1}");
+        });
+
+        newClient().uploadDirectory("bucket-ern", tempDir, null, false);
+
+        assertEquals(List.of("a.txt"), keys);
+    }
+
+    /** Builds the list-objects answer the download tests serve, one object per key. */
+    private static String objectListing(String... keys) {
+        StringBuilder json = new StringBuilder("{\"objects\":[");
+        for (int i = 0; i < keys.length; i++) {
+            json.append(i == 0 ? "" : ",").append("{\"ern\":\"obj-").append(i).append("\",\"bucketErn\":\"bucket-ern\",\"key\":\"")
+                    .append(keys[i]).append("\",\"size\":1,\"status\":\"AVAILABLE\"}");
+        }
+        return json.append("],\"total\":").append(keys.length).append("}").toString();
+    }
+
+    @Test
+    void downloadBucketWritesDirectDescendantsWithThePrefixStripped(@TempDir Path tempDir) throws Exception {
+        List<String> fetched = Collections.synchronizedList(new ArrayList<>());
+        AtomicReference<String> listBody = new AtomicReference<>();
+        server = startServer(exchange -> {
+            String action = exchange.getRequestHeaders().getFirst("x-euclid-action");
+            String body = new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
+            if ("list-objects".equals(action)) {
+                listBody.set(body);
+                sendResponse(exchange, 200, objectListing("in/a.txt", "in/sub/b.txt"));
+                return;
+            }
+            String key = exchange.getRequestHeaders().getFirst("x-euclid-key");
+            fetched.add(key);
+            sendBinaryResponse(exchange, 200, key.getBytes(StandardCharsets.UTF_8));
+        });
+
+        List<Path> written = newClient().downloadBucket("bucket-ern", tempDir, "in/", false);
+
+        assertBodyContains(listBody.get(), "\"prefix\":\"in/\"");
+        assertEquals(List.of("in/a.txt"), fetched, "a nested key is left out without recursion");
+        assertEquals(List.of(tempDir.toAbsolutePath().resolve("a.txt")), written);
+        assertEquals("in/a.txt", Files.readString(tempDir.resolve("a.txt")));
+    }
+
+    @Test
+    void downloadBucketRecursivelyRecreatesNestedKeys(@TempDir Path tempDir) throws Exception {
+        server = startServer(exchange -> {
+            String action = exchange.getRequestHeaders().getFirst("x-euclid-action");
+            exchange.getRequestBody().readAllBytes();
+            if ("list-objects".equals(action)) {
+                sendResponse(exchange, 200, objectListing("in/a.txt", "in/sub/b.txt"));
+                return;
+            }
+            sendBinaryResponse(exchange, 200, "x".getBytes(StandardCharsets.UTF_8));
+        });
+
+        List<Path> written = newClient().downloadBucket("bucket-ern", tempDir, "in/", true);
+
+        assertEquals(2, written.size());
+        assertTrue(Files.exists(tempDir.resolve("sub/b.txt")));
+    }
+
+    /**
+     * A key is the server's data, not a trusted path: one that climbs out of the target directory
+     * is refused before anything is written for it - the zip-slip guard.
+     */
+    @Test
+    void downloadBucketRefusesAKeyThatWouldEscapeTheDirectory(@TempDir Path tempDir) throws Exception {
+        Path target = tempDir.resolve("target");
+        server = startServer(exchange -> {
+            String action = exchange.getRequestHeaders().getFirst("x-euclid-action");
+            exchange.getRequestBody().readAllBytes();
+            if ("list-objects".equals(action)) {
+                sendResponse(exchange, 200, objectListing("../evil.txt"));
+                return;
+            }
+            sendBinaryResponse(exchange, 200, "x".getBytes(StandardCharsets.UTF_8));
+        });
+
+        EuclidEsm esm = newClient();
+        // Recursive, since without it a key with a '/' in it is skipped as nested before the guard
+        // is reached.
+        assertThrows(IOException.class, () -> esm.downloadBucket("bucket-ern", target, "", true));
+        assertFalse(Files.exists(tempDir.resolve("evil.txt")));
     }
 
     // A download's size isn't known until asked, so the single-request path is always tried first
