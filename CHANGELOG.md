@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.1.58](https://github.com/jensvogt/euclid-jdk/compare/euclid-jdk-v0.1.57...euclid-jdk-v0.1.58) (2026-10-25)
+
+
+### Features
+
+* new method in ESM and EAP ([36b0be9](https://github.com/jensvogt/euclid-jdk/commit/36b0be9e66c440d19145a9c5c6500fde4a131ed0))
+* new method in ESM and EAP ([c011fa9](https://github.com/jensvogt/euclid-jdk/commit/c011fa9c99f24a4beb00f4215a23657415a25392))
+
 ## [0.1.57](https://github.com/jensvogt/euclid-jdk/compare/euclid-jdk-v0.1.56...euclid-jdk-v0.1.57) (2026-10-19)
 
 
