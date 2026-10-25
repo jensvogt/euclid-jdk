@@ -18,14 +18,22 @@ import de.jensvogt.euclid.dto.eap.RedeployApplicationRequest;
 import de.jensvogt.euclid.dto.eap.ScaleApplicationRequest;
 import de.jensvogt.euclid.dto.eap.RestartApplicationResponse;
 import de.jensvogt.euclid.dto.eap.SetLogLevelRequest;
+import de.jensvogt.euclid.dto.eap.EgressLimitResponse;
 import de.jensvogt.euclid.dto.eap.EgressPermitResponse;
+import de.jensvogt.euclid.dto.eap.ListEgressSitesResponse;
+import de.jensvogt.euclid.dto.eap.RebalanceApplicationResponse;
 import de.jensvogt.euclid.dto.eap.SetLogLevelResponse;
 import de.jensvogt.euclid.dto.eap.UpdateApplicationRequest;
 import de.jensvogt.euclid.dto.eap.model.Application;
 import de.jensvogt.euclid.dto.eap.model.ApplicationEndpoint;
 import de.jensvogt.euclid.dto.eap.model.ApplicationType;
+import de.jensvogt.euclid.dto.eap.model.EgressLimits;
+import de.jensvogt.euclid.dto.eap.model.EgressSite;
+import de.jensvogt.euclid.dto.eap.model.KeptResource;
 import de.jensvogt.euclid.dto.eap.model.Node;
 import de.jensvogt.euclid.dto.eap.model.NodeApplication;
+import de.jensvogt.euclid.dto.eap.model.Platform;
+import de.jensvogt.euclid.dto.eap.model.UpdatedResource;
 import de.jensvogt.euclid.exception.EuclidServiceException;
 import de.jensvogt.euclid.http.EuclidHttpClient;
 
@@ -431,13 +439,40 @@ public final class EuclidEap implements TokenRefreshable, SigningSchemeSelectabl
     }
 
     /**
+     * Asks the manager to spread an application's instances over the nodes again: onto a node that
+     * joined since they were placed, off one that is busier than the others.
+     * <p>
+     * The manager does this by itself after an instance goes away; this is for every other time - a
+     * new node, or a pool that ended up lopsided and was never scaled since. Like
+     * {@link #restartApplication}, it only records the request. The manager then moves one instance
+     * per pass, each move withdrawing a slot and placing its replacement, until no move would help -
+     * so the pool is one instance short while a move is under way, never more, and one that is
+     * already balanced is left exactly as it is. Done even where automatic rebalancing is turned off
+     * with {@code euclid.modules.eap.rebalance}.
+     *
+     * @param applicationId the ID of the application to rebalance
+     * @return that the request was recorded, and how many instances there are to spread
+     * @throws IOException if an I/O error occurs during the operation
+     * @throws InterruptedException if the operation is interrupted
+     * @throws de.jensvogt.euclid.exception.EuclidServiceException with status 404 if the
+     * application does not exist; with status 400 for a JOB, since moving a run would start it again
+     */
+    public RebalanceApplicationResponse rebalanceApplication(String applicationId) throws IOException, InterruptedException {
+        JsonNode node = post("rebalance-application", applicationBody(applicationId));
+        return new RebalanceApplicationResponse(textOrNull(node, "applicationId"),
+                node.path("rebalancing").asBoolean(false), node.path("instances").asLong(0));
+    }
+
+    /**
      * Makes the installation match the application's own infrastructure declaration.
      * <p>
      * The declaration is a file the application has already stored beside its artifact -
      * {@code <applicationId>.euclid.json} in the bucket it deploys from - which names the queues,
      * topics and buckets it owns and the ones belonging to others that it reaches. This applies it:
-     * creates what is missing, grants the access it asks for, and <b>deletes what this application
-     * created and the declaration no longer names</b>, with everything that resource held.
+     * creates what is missing, brings declared settings of what exists into line, grants the access
+     * it asks for, and <b>deletes what this application owned and the declaration no longer
+     * names</b> - but only when empty: a queue with messages, a bucket with objects or a topic with
+     * subscriptions is kept and listed in {@link ApplyInfrastructureResponse#kept()}.
      * <p>
      * Applying is idempotent and changes nothing about the running instances - the modification date
      * is deliberately not stamped, so euclid-mgr does not read it as a new revision and cycle the
@@ -455,7 +490,132 @@ public final class EuclidEap implements TokenRefreshable, SigningSchemeSelectabl
      * @throws InterruptedException if the operation is interrupted
      */
     public ApplyInfrastructureResponse applyInfrastructure(String applicationId) throws IOException, InterruptedException {
-        return toApplyInfrastructureResponse(post("apply-infrastructure", applicationBody(applicationId)));
+        return applyInfrastructure(applicationId, true);
+    }
+
+    /**
+     * Applies the application's stored declaration, choosing whether owned objects it no longer
+     * declares are removed.
+     *
+     * @param applicationId the ID of the application, in the session's namespace
+     * @param prune         true to remove owned objects the declaration no longer names, when they
+     *                      are empty; false to keep them all, listed in
+     *                      {@link ApplyInfrastructureResponse#kept()}
+     * @return what was created, adopted, updated, removed, kept, granted and revoked
+     * @throws IOException if an I/O error occurs during the operation
+     * @throws InterruptedException if the operation is interrupted
+     */
+    public ApplyInfrastructureResponse applyInfrastructure(String applicationId, boolean prune)
+            throws IOException, InterruptedException {
+        return toApplyInfrastructureResponse(post("apply-infrastructure", infrastructureBody(applicationId, null, prune)));
+    }
+
+    /**
+     * Works out what {@link #applyInfrastructure(String)} would do with the stored declaration, and
+     * changes nothing.
+     *
+     * @param applicationId the ID of the application, in the session's namespace
+     * @return what would be created, adopted, updated, removed, kept, granted and revoked
+     * @throws IOException if an I/O error occurs during the operation
+     * @throws InterruptedException if the operation is interrupted
+     */
+    public ApplyInfrastructureResponse planInfrastructure(String applicationId) throws IOException, InterruptedException {
+        return planInfrastructure(applicationId, null, true);
+    }
+
+    /**
+     * Works out what a declaration would do for an application, and changes nothing - what
+     * {@code euclid-cli eap apply --dry-run} does.
+     * <p>
+     * A plan is an action of its own rather than a flag on apply-infrastructure: an EAP from before
+     * plans existed ignores a field it does not know and would apply for real, removals included,
+     * where an action it does not know it refuses.
+     * <p>
+     * A declaration handed over is only planned with, never stored. To apply it, store it beside the
+     * artifact as {@code <applicationId>.euclid.json} - {@code EuclidEsm.putObject} into the
+     * application's bucket - and call {@link #applyInfrastructure(String)}; every later create,
+     * update and redeploy applies that stored one again.
+     *
+     * @param applicationId   the ID of the application, in the session's namespace
+     * @param declarationJson the declaration to plan with, as JSON, or {@code null} for the stored
+     *                        one. One that names a different application is refused
+     * @param prune           whether owned objects no longer declared would be removed
+     * @return what would be created, adopted, updated, removed, kept, granted and revoked
+     * @throws IOException if an I/O error occurs during the operation, or the declaration is not JSON
+     * @throws InterruptedException if the operation is interrupted
+     */
+    public ApplyInfrastructureResponse planInfrastructure(String applicationId, String declarationJson, boolean prune)
+            throws IOException, InterruptedException {
+        return toApplyInfrastructureResponse(post("plan-infrastructure", infrastructureBody(applicationId, declarationJson, prune)));
+    }
+
+    /**
+     * Makes the installation match a platform declaration: the shared objects of the namespace no
+     * application owns - the bucket an FTP server writes into, a topic several services publish to.
+     * <p>
+     * Applied by the same engine as an application's declaration, with three differences: it is
+     * handed over rather than read from beside an artifact, since a platform has none; it owns and
+     * never uses, since it has no principal to grant to; and what it owns is tagged
+     * {@code platform:<name>}. Applications reach those objects with {@code uses}.
+     *
+     * @param name            the platform's name; {@code "platform"} when {@code null} or empty
+     * @param declarationJson the declaration, as JSON. One that names an application, or lists
+     *                        {@code uses}, is refused with HTTP 400
+     * @param prune           whether owned objects no longer declared are removed, when empty
+     * @return what was created, adopted, updated, removed and kept
+     * @throws IOException if an I/O error occurs during the operation, or the declaration is not JSON
+     * @throws InterruptedException if the operation is interrupted
+     */
+    public ApplyInfrastructureResponse applyPlatform(String name, String declarationJson, boolean prune)
+            throws IOException, InterruptedException {
+        return toApplyInfrastructureResponse(post("apply-platform", platformBody(name, declarationJson, prune)));
+    }
+
+    /**
+     * Works out what {@link #applyPlatform} would do, and changes nothing.
+     *
+     * @param name            the platform's name; {@code "platform"} when {@code null} or empty
+     * @param declarationJson the declaration, as JSON
+     * @param prune           whether owned objects no longer declared would be removed
+     * @return what would be created, adopted, updated, removed and kept
+     * @throws IOException if an I/O error occurs during the operation, or the declaration is not JSON
+     * @throws InterruptedException if the operation is interrupted
+     */
+    public ApplyInfrastructureResponse planPlatform(String name, String declarationJson, boolean prune)
+            throws IOException, InterruptedException {
+        return toApplyInfrastructureResponse(post("plan-platform", platformBody(name, declarationJson, prune)));
+    }
+
+    /**
+     * Reads a platform declaration: what it owns, and the declaration last applied.
+     *
+     * @param name the platform's name; {@code "platform"} when {@code null} or empty
+     * @return the platform
+     * @throws IOException if an I/O error occurs during the operation
+     * @throws InterruptedException if the operation is interrupted
+     * @throws de.jensvogt.euclid.exception.EuclidServiceException with status 404 if no platform of
+     * that name was applied in the session's namespace
+     */
+    public Platform getPlatform(String name) throws IOException, InterruptedException {
+        return toPlatform(post("get-platform", OBJECT_MAPPER.writeValueAsString(Map.of("name", platformName(name)))));
+    }
+
+    /**
+     * Lists the platform declarations applied in the session's namespace.
+     *
+     * @return the platforms
+     * @throws IOException if an I/O error occurs during the operation
+     * @throws InterruptedException if the operation is interrupted
+     */
+    public List<Platform> listPlatforms() throws IOException, InterruptedException {
+        List<Platform> platforms = new ArrayList<>();
+        JsonNode node = post("list-platforms", "{}").get("platforms");
+        if (node != null && node.isArray()) {
+            for (JsonNode entry : node) {
+                platforms.add(toPlatform(entry));
+            }
+        }
+        return platforms;
     }
 
     /**
@@ -690,6 +850,120 @@ public final class EuclidEap implements TokenRefreshable, SigningSchemeSelectabl
     }
 
     /**
+     * Lists every application's outside sites in the session's namespace: what each is allowed, and
+     * how it stands now.
+     *
+     * @return the default limits and every site
+     * @throws IOException if an I/O error occurs during the operation
+     * @throws InterruptedException if the operation is interrupted
+     */
+    public ListEgressSitesResponse listEgressSites() throws IOException, InterruptedException {
+        return listEgressSites(null);
+    }
+
+    /**
+     * Lists one application's outside sites: what each is allowed, and how it stands now - tokens
+     * left, requests in flight, and whether the site asked to be left alone.
+     *
+     * @param applicationId the application, or {@code null} for every application in the namespace
+     * @return the default limits and the application's sites
+     * @throws IOException if an I/O error occurs during the operation
+     * @throws InterruptedException if the operation is interrupted
+     */
+    public ListEgressSitesResponse listEgressSites(String applicationId) throws IOException, InterruptedException {
+        String body = applicationId == null || applicationId.isEmpty() ? "{}" : applicationBody(applicationId);
+        JsonNode node = post("list-egress-sites", body);
+        List<EgressSite> sites = new ArrayList<>();
+        JsonNode sitesNode = node.get("sites");
+        if (sitesNode != null && sitesNode.isArray()) {
+            for (JsonNode entry : sitesNode) {
+                sites.add(new EgressSite(textOrNull(entry, "applicationId"), textOrNull(entry, "site"),
+                        toEgressLimits(entry.get("limits")), entry.path("limitsSet").asBoolean(false),
+                        entry.path("tokens").asDouble(0), entry.path("inFlight").asLong(0),
+                        emptyToNull(textOrNull(entry, "blockedUntil")), emptyToNull(textOrNull(entry, "lastUsed"))));
+            }
+        }
+        return new ListEgressSitesResponse(toEgressLimits(node.get("defaultLimits")), sites);
+    }
+
+    /**
+     * Sets how fast one application may call one outside site, shared by all of its instances.
+     * <p>
+     * With site {@code "*"} it sets the application's default, for every site of it that has no
+     * limit of its own; without either, {@code euclid.modules.eap.egress.default} applies. A limit
+     * left {@code null} keeps the value the site is held to now. Stored, so it applies to every EAP
+     * instance at once and survives a restart.
+     *
+     * @param applicationId     the application
+     * @param site              the host name, or {@code "*"} for the application's default
+     * @param requestsPerSecond how fast the site's bucket refills, or {@code null} to leave it
+     * @param burst             how many tokens the bucket holds, at least 1, or {@code null} to leave it
+     * @param concurrent        how many requests may be in flight at once, 0 for no limit, or
+     *                          {@code null} to leave it
+     * @return the limits the site is held to from now on
+     * @throws IOException if an I/O error occurs during the operation
+     * @throws InterruptedException if the operation is interrupted
+     * @throws de.jensvogt.euclid.exception.EuclidServiceException with status 400 if none of the
+     * three limits is given
+     */
+    public EgressLimitResponse setEgressLimit(String applicationId, String site, Double requestsPerSecond,
+                                              Double burst, Long concurrent) throws IOException, InterruptedException {
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("applicationId", applicationId);
+        body.put("site", site);
+        if (requestsPerSecond != null) {
+            body.put("requestsPerSecond", requestsPerSecond);
+        }
+        if (burst != null) {
+            body.put("burst", burst);
+        }
+        if (concurrent != null) {
+            body.put("concurrent", concurrent);
+        }
+        return toEgressLimitResponse(post("set-egress-limit", OBJECT_MAPPER.writeValueAsString(body)));
+    }
+
+    /**
+     * Takes back a limit set with {@link #setEgressLimit}, so the site is held to the application's
+     * {@code "*"} default again, or to {@code euclid.modules.eap.egress.default} if it has none.
+     * <p>
+     * The site's state - tokens, slots in flight, a block - stays: forgetting the slots in flight
+     * would let the site be overrun the moment this returns.
+     *
+     * @param applicationId the application
+     * @param site          the host name, or {@code "*"} for the application's default
+     * @return the limits the site is held to from now on
+     * @throws IOException if an I/O error occurs during the operation
+     * @throws InterruptedException if the operation is interrupted
+     * @throws de.jensvogt.euclid.exception.EuclidServiceException with status 404 if the site has
+     * no limit of its own
+     */
+    public EgressLimitResponse deleteEgressLimit(String applicationId, String site) throws IOException, InterruptedException {
+        return toEgressLimitResponse(post("delete-egress-limit", OBJECT_MAPPER.writeValueAsString(
+                Map.of("applicationId", applicationId, "site", site))));
+    }
+
+    /**
+     * Forgets one site of one application: its limit, its bucket, its slots, when it was last
+     * called. Where {@link #deleteEgressLimit} takes back a decision and leaves the site listed,
+     * this leaves nothing.
+     * <p>
+     * Not a ban. A site is listed because the application asked for a permit to call it, so one it
+     * still calls is back on its next request. This is for a site that is finished with - a host
+     * that was decommissioned, a limit set on a name that turned out to be a typo.
+     *
+     * @param applicationId the application
+     * @param site          the host name, or {@code "*"} for the application's default
+     * @throws IOException if an I/O error occurs during the operation
+     * @throws InterruptedException if the operation is interrupted
+     * @throws de.jensvogt.euclid.exception.EuclidServiceException with status 404 if the
+     * application has no state for the site
+     */
+    public void deleteEgressSite(String applicationId, String site) throws IOException, InterruptedException {
+        post("delete-egress-site", OBJECT_MAPPER.writeValueAsString(Map.of("applicationId", applicationId, "site", site)));
+    }
+
+    /**
      * Takes back a level set with {@link #setLogLevel(String, String)}, putting the application back
      * under whatever its channel is configured with.
      * <p>
@@ -735,12 +1009,112 @@ public final class EuclidEap implements TokenRefreshable, SigningSchemeSelectabl
      * @return the parsed response
      */
     private static ApplyInfrastructureResponse toApplyInfrastructureResponse(JsonNode node) {
+        List<UpdatedResource> updated = new ArrayList<>();
+        for (JsonNode entry : node.path("updated")) {
+            updated.add(new UpdatedResource(textOrNull(entry, "ern"), toStringList(entry.get("changes"))));
+        }
+        List<KeptResource> kept = new ArrayList<>();
+        for (JsonNode entry : node.path("kept")) {
+            kept.add(new KeptResource(textOrNull(entry, "ern"), textOrNull(entry, "reason")));
+        }
         return ApplyInfrastructureResponse.builder().applicationId(textOrNull(node, "applicationId"))
+                .platform(textOrNull(node, "platform"))
                 .declared(node.path("declared").asBoolean(false))
+                .dryRun(node.path("dryRun").asBoolean(false))
                 .created(toStringList(node.path("created")))
+                .adopted(toStringList(node.path("adopted")))
+                .updated(updated)
                 .deleted(toStringList(node.path("deleted")))
+                .kept(kept)
                 .granted(toStringList(node.path("granted")))
                 .revoked(toStringList(node.path("revoked"))).build();
+    }
+
+    /**
+     * Builds the request body for apply-infrastructure and plan-infrastructure.
+     *
+     * @param applicationId   the ID of the application
+     * @param declarationJson a declaration to plan with, or {@code null} for the stored one
+     * @param prune           whether owned objects no longer declared are removed
+     * @return the serialized request body
+     * @throws IOException if the declaration is not JSON
+     */
+    private static String infrastructureBody(String applicationId, String declarationJson, boolean prune) throws IOException {
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("applicationId", applicationId);
+        body.put("prune", prune);
+        if (declarationJson != null) {
+            // Embedded as an object rather than a string: EAP reads the field as the declaration
+            // itself.
+            body.put("declaration", OBJECT_MAPPER.readTree(declarationJson));
+        }
+        return OBJECT_MAPPER.writeValueAsString(body);
+    }
+
+    /**
+     * Builds the request body for apply-platform and plan-platform.
+     *
+     * @param name            the platform's name
+     * @param declarationJson the declaration, as JSON
+     * @param prune           whether owned objects no longer declared are removed
+     * @return the serialized request body
+     * @throws IOException if the declaration is not JSON
+     */
+    private static String platformBody(String name, String declarationJson, boolean prune) throws IOException {
+        Objects.requireNonNull(declarationJson, "a platform declaration is required");
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("name", platformName(name));
+        body.put("prune", prune);
+        body.put("declaration", OBJECT_MAPPER.readTree(declarationJson));
+        return OBJECT_MAPPER.writeValueAsString(body);
+    }
+
+    /**
+     * The name a platform goes by when none is given, as the CLI and the server both default it.
+     *
+     * @param name the name given, possibly {@code null} or empty
+     * @return the name, or {@code "platform"}
+     */
+    private static String platformName(String name) {
+        return name == null || name.isEmpty() ? "platform" : name;
+    }
+
+    /**
+     * Builds a {@link Platform} from the JSON get-platform and list-platforms answer with.
+     *
+     * @param node the JSON object describing the platform
+     * @return the parsed platform
+     */
+    private static Platform toPlatform(JsonNode node) {
+        JsonNode declaration = node.get("declaration");
+        return new Platform(textOrNull(node, "name"), textOrNull(node, "namespace"), toStringList(node.get("owns")),
+                declaration == null || declaration.isNull() ? null : declaration.toString(),
+                textOrNull(node, "modified"));
+    }
+
+    /**
+     * Builds {@link EgressLimits} from the limits object the egress actions answer with.
+     *
+     * @param node the JSON object describing the limits
+     * @return the parsed limits, all zero if the node is absent
+     */
+    private static EgressLimits toEgressLimits(JsonNode node) {
+        if (node == null || !node.isObject()) {
+            return new EgressLimits(0, 0, 0);
+        }
+        return new EgressLimits(node.path("requestsPerSecond").asDouble(0), node.path("burst").asDouble(0),
+                node.path("concurrent").asLong(0));
+    }
+
+    /**
+     * Builds an {@link EgressLimitResponse} from the set-egress-limit and delete-egress-limit answer.
+     *
+     * @param node the response JSON
+     * @return the parsed response
+     */
+    private static EgressLimitResponse toEgressLimitResponse(JsonNode node) {
+        return new EgressLimitResponse(textOrNull(node, "applicationId"), textOrNull(node, "site"),
+                toEgressLimits(node.get("limits")));
     }
 
     /**

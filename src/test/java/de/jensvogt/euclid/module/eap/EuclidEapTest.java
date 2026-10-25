@@ -9,6 +9,9 @@ import de.jensvogt.euclid.auth.SignableRequest;
 import de.jensvogt.euclid.dto.eap.ApplyInfrastructureResponse;
 import de.jensvogt.euclid.dto.eap.CopyApplicationRequest;
 import de.jensvogt.euclid.dto.eap.CreateApplicationRequest;
+import de.jensvogt.euclid.dto.eap.EgressLimitResponse;
+import de.jensvogt.euclid.dto.eap.ListEgressSitesResponse;
+import de.jensvogt.euclid.dto.eap.RebalanceApplicationResponse;
 import de.jensvogt.euclid.dto.eap.ScaleApplicationRequest;
 import de.jensvogt.euclid.dto.eap.RedeployApplicationRequest;
 import de.jensvogt.euclid.dto.eap.RestartApplicationResponse;
@@ -16,7 +19,9 @@ import de.jensvogt.euclid.dto.eap.SetLogLevelResponse;
 import de.jensvogt.euclid.dto.eap.UpdateApplicationRequest;
 import de.jensvogt.euclid.dto.eap.ListNodesResponse;
 import de.jensvogt.euclid.dto.eap.model.ApplicationType;
+import de.jensvogt.euclid.dto.eap.model.EgressSite;
 import de.jensvogt.euclid.dto.eap.model.Node;
+import de.jensvogt.euclid.dto.eap.model.Platform;
 import de.jensvogt.euclid.dto.eap.model.Application;
 import de.jensvogt.euclid.exception.EuclidServiceException;
 import org.junit.jupiter.api.AfterEach;
@@ -467,6 +472,240 @@ class EuclidEapTest {
                 assertThrows(EuclidServiceException.class, () -> eap.applyInfrastructure("billing"));
 
         assertEquals(400, thrown.statusCode());
+    }
+
+    @Test
+    void applyInfrastructureCanKeepWhatIsNoLongerDeclared() throws Exception {
+        AtomicReference<SignableRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(captureRequest(exchange));
+            sendResponse(exchange, 200, "{\"applicationId\":\"billing\",\"declared\":true,\"dryRun\":false,"
+                    + "\"kept\":[{\"ern\":\"queue-ern\",\"reason\":\"not pruned\"}]}");
+        });
+
+        ApplyInfrastructureResponse applied = newClient().applyInfrastructure("billing", false);
+
+        assertEquals("apply-infrastructure", received.get().header("x-euclid-action"));
+        assertBodyContains(received.get().body(), "\"applicationId\":\"billing\"", "\"prune\":false");
+        assertEquals("not pruned", applied.kept().getFirst().reason());
+    }
+
+    /**
+     * A plan is its own action, never a flag on apply-infrastructure: an EAP that predates plans
+     * would ignore the flag and apply for real, removals included.
+     */
+    @Test
+    void planInfrastructureHandsOverTheDeclarationAsAnObjectAndParsesThePlan() throws Exception {
+        AtomicReference<SignableRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(captureRequest(exchange));
+            sendResponse(exchange, 200, "{\"applicationId\":\"billing\",\"declared\":true,\"dryRun\":true,"
+                    + "\"created\":[\"new-ern\"],\"adopted\":[\"old-ern\"],"
+                    + "\"updated\":[{\"ern\":\"queue-ern\",\"changes\":[\"visibility 30 -> 60\"]}],"
+                    + "\"deleted\":[],\"kept\":[{\"ern\":\"busy-ern\",\"reason\":\"queue has 3 messages\"}],"
+                    + "\"granted\":[\"access-queue-consume on q\"],\"revoked\":[]}");
+        });
+
+        ApplyInfrastructureResponse plan = newClient().planInfrastructure("billing",
+                "{\"applicationId\":\"billing\",\"owns\":{\"queues\":[{\"name\":\"orders\"}]}}", true);
+
+        assertEquals("plan-infrastructure", received.get().header("x-euclid-action"));
+        // Embedded, not a string holding JSON: EAP reads the field as the declaration itself.
+        assertBodyContains(received.get().body(), "\"declaration\":{\"applicationId\":\"billing\"", "\"prune\":true");
+        assertTrue(plan.dryRun());
+        assertEquals(List.of("new-ern"), plan.created());
+        assertEquals(List.of("old-ern"), plan.adopted());
+        assertEquals("queue-ern", plan.updated().getFirst().ern());
+        assertEquals(List.of("visibility 30 -> 60"), plan.updated().getFirst().changes());
+        assertEquals("queue has 3 messages", plan.kept().getFirst().reason());
+        assertEquals(List.of("access-queue-consume on q"), plan.granted());
+    }
+
+    @Test
+    void planInfrastructureWithoutADeclarationPlansTheStoredOne() throws Exception {
+        AtomicReference<SignableRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(captureRequest(exchange));
+            sendResponse(exchange, 200, "{\"applicationId\":\"billing\",\"declared\":true,\"dryRun\":true}");
+        });
+
+        newClient().planInfrastructure("billing");
+
+        assertEquals("plan-infrastructure", received.get().header("x-euclid-action"));
+        assertFalse(received.get().body().contains("declaration"));
+    }
+
+    @Test
+    void applyPlatformSendsTheNameAndDeclarationAndParsesThePlatform() throws Exception {
+        AtomicReference<SignableRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(captureRequest(exchange));
+            sendResponse(exchange, 200, "{\"platform\":\"ftp\",\"declared\":true,\"dryRun\":false,"
+                    + "\"created\":[\"bucket-ern\"]}");
+        });
+
+        ApplyInfrastructureResponse applied = newClient().applyPlatform("ftp", "{\"owns\":{\"buckets\":[{\"name\":\"inbox\"}]}}", true);
+
+        assertEquals("apply-platform", received.get().header("x-euclid-action"));
+        assertBodyContains(received.get().body(), "\"name\":\"ftp\"", "\"declaration\":{\"owns\"");
+        assertEquals("ftp", applied.platform());
+        assertNull(applied.applicationId());
+        assertEquals(List.of("bucket-ern"), applied.created());
+    }
+
+    @Test
+    void aPlatformWithoutANameIsCalledPlatform() throws Exception {
+        AtomicReference<SignableRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(captureRequest(exchange));
+            sendResponse(exchange, 200, "{\"platform\":\"platform\",\"declared\":true,\"dryRun\":true}");
+        });
+
+        newClient().planPlatform(null, "{}", true);
+
+        assertEquals("plan-platform", received.get().header("x-euclid-action"));
+        assertBodyContains(received.get().body(), "\"name\":\"platform\"");
+    }
+
+    @Test
+    void getPlatformParsesWhatItOwnsAndItsDeclaration() throws Exception {
+        server = startServer(exchange -> sendResponse(exchange, 200, "{\"name\":\"ftp\",\"namespace\":\"development\","
+                + "\"owns\":[\"bucket-ern\"],\"declaration\":{\"owns\":{}},\"modified\":\"2026-10-25T10:00:00Z\"}"));
+
+        Platform platform = newClient().getPlatform("ftp");
+
+        assertEquals("ftp", platform.name());
+        assertEquals("development", platform.namespace());
+        assertEquals(List.of("bucket-ern"), platform.owns());
+        assertEquals("{\"owns\":{}}", platform.declaration());
+    }
+
+    @Test
+    void listPlatformsParsesEveryPlatform() throws Exception {
+        AtomicReference<SignableRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(captureRequest(exchange));
+            sendResponse(exchange, 200, "{\"platforms\":[{\"name\":\"ftp\",\"owns\":[],\"declaration\":null},"
+                    + "{\"name\":\"platform\",\"owns\":[\"topic-ern\"]}]}");
+        });
+
+        List<Platform> platforms = newClient().listPlatforms();
+
+        assertEquals("list-platforms", received.get().header("x-euclid-action"));
+        assertEquals(2, platforms.size());
+        assertNull(platforms.getFirst().declaration());
+        assertEquals(List.of("topic-ern"), platforms.get(1).owns());
+    }
+
+    @Test
+    void rebalanceApplicationParsesTheAnswer() throws Exception {
+        AtomicReference<SignableRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(captureRequest(exchange));
+            sendResponse(exchange, 200, "{\"applicationId\":\"billing\",\"rebalancing\":true,\"instances\":3}");
+        });
+
+        RebalanceApplicationResponse response = newClient().rebalanceApplication("billing");
+
+        assertEquals("rebalance-application", received.get().header("x-euclid-action"));
+        assertBodyContains(received.get().body(), "\"applicationId\":\"billing\"");
+        assertTrue(response.rebalancing());
+        assertEquals(3, response.instances());
+    }
+
+    @Test
+    void listEgressSitesParsesSitesAndTheDefault() throws Exception {
+        AtomicReference<SignableRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(captureRequest(exchange));
+            sendResponse(exchange, 200, "{\"defaultLimits\":{\"requestsPerSecond\":5.0,\"burst\":10.0,\"concurrent\":4},"
+                    + "\"sites\":[{\"applicationId\":\"billing\",\"site\":\"*\","
+                    + "\"limits\":{\"requestsPerSecond\":2.0,\"burst\":2.0,\"concurrent\":1},\"limitsSet\":true},"
+                    + "{\"applicationId\":\"billing\",\"site\":\"api.example.com\","
+                    + "\"limits\":{\"requestsPerSecond\":2.0,\"burst\":2.0,\"concurrent\":1},\"limitsSet\":false,"
+                    + "\"tokens\":1.5,\"inFlight\":1,\"blockedUntil\":\"\",\"lastUsed\":\"2026-10-25T10:00:00Z\"}]}");
+        });
+
+        ListEgressSitesResponse response = newClient().listEgressSites("billing");
+
+        assertEquals("list-egress-sites", received.get().header("x-euclid-action"));
+        assertBodyContains(received.get().body(), "\"applicationId\":\"billing\"");
+        assertEquals(5.0, response.defaultLimits().requestsPerSecond());
+        assertEquals(4, response.defaultLimits().concurrent());
+
+        // The "*" entry is a default and nothing else: limits, and no state.
+        EgressSite all = response.sites().getFirst();
+        assertTrue(all.limitsSet());
+        assertEquals(0, all.inFlight());
+        assertNull(all.lastUsed());
+
+        EgressSite site = response.sites().get(1);
+        assertEquals("api.example.com", site.site());
+        assertEquals(1.5, site.tokens());
+        assertEquals(1, site.inFlight());
+        assertNull(site.blockedUntil(), "an empty blockedUntil means not blocked");
+        assertEquals("2026-10-25T10:00:00Z", site.lastUsed());
+    }
+
+    @Test
+    void listEgressSitesWithoutAnApplicationAsksForAll() throws Exception {
+        AtomicReference<SignableRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(captureRequest(exchange));
+            sendResponse(exchange, 200, "{\"sites\":[]}");
+        });
+
+        newClient().listEgressSites();
+
+        assertEquals("{}", received.get().body());
+    }
+
+    /** A limit left null keeps what the site is held to now, so it must not be sent at all. */
+    @Test
+    void setEgressLimitSendsOnlyTheLimitsGiven() throws Exception {
+        AtomicReference<SignableRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(captureRequest(exchange));
+            sendResponse(exchange, 200, "{\"applicationId\":\"billing\",\"site\":\"api.example.com\","
+                    + "\"limits\":{\"requestsPerSecond\":2.5,\"burst\":10.0,\"concurrent\":4}}");
+        });
+
+        EgressLimitResponse response = newClient().setEgressLimit("billing", "api.example.com", 2.5, null, null);
+
+        assertEquals("set-egress-limit", received.get().header("x-euclid-action"));
+        assertBodyContains(received.get().body(), "\"site\":\"api.example.com\"", "\"requestsPerSecond\":2.5");
+        assertFalse(received.get().body().contains("burst"));
+        assertFalse(received.get().body().contains("concurrent"));
+        assertEquals(2.5, response.limits().requestsPerSecond());
+        assertEquals(10.0, response.limits().burst());
+    }
+
+    @Test
+    void deleteEgressLimitParsesWhatTheSiteIsHeldToNow() throws Exception {
+        AtomicReference<SignableRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(captureRequest(exchange));
+            sendResponse(exchange, 200, "{\"applicationId\":\"billing\",\"site\":\"*\","
+                    + "\"limits\":{\"requestsPerSecond\":5.0,\"burst\":10.0,\"concurrent\":0}}");
+        });
+
+        EgressLimitResponse response = newClient().deleteEgressLimit("billing", "*");
+
+        assertEquals("delete-egress-limit", received.get().header("x-euclid-action"));
+        assertEquals("*", response.site());
+        assertEquals(5.0, response.limits().requestsPerSecond());
+    }
+
+    @Test
+    void deleteEgressSiteForAnUnknownSiteIsNotFound() throws Exception {
+        server = startServer(exchange -> sendResponse(exchange, 404,
+                "{\"message\":\"application billing has no state for site gone.example.com\"}"));
+
+        EuclidEap eap = newClient();
+        EuclidServiceException thrown =
+                assertThrows(EuclidServiceException.class, () -> eap.deleteEgressSite("billing", "gone.example.com"));
+
+        assertEquals(404, thrown.statusCode());
     }
 
     @Test

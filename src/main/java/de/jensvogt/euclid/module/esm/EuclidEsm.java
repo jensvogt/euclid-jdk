@@ -9,6 +9,7 @@ import de.jensvogt.euclid.auth.SigningSchemeSelectable;
 import de.jensvogt.euclid.auth.TokenRefreshable;
 import de.jensvogt.euclid.dto.com.Variant;
 import de.jensvogt.euclid.dto.esm.AddBucketTagRequest;
+import de.jensvogt.euclid.dto.esm.BucketStoppedResponse;
 import de.jensvogt.euclid.dto.esm.CompleteDownloadRequest;
 import de.jensvogt.euclid.dto.esm.AbortUploadRequest;
 import de.jensvogt.euclid.dto.esm.AbortUploadResponse;
@@ -41,6 +42,7 @@ import de.jensvogt.euclid.dto.esm.GetBucketSizeResponse;
 import de.jensvogt.euclid.dto.esm.CountObjectsResponse;
 import de.jensvogt.euclid.dto.esm.GetObjectCountRequest;
 import de.jensvogt.euclid.dto.esm.GetObjectCountResponse;
+import de.jensvogt.euclid.dto.esm.GetObjectSizeResponse;
 import de.jensvogt.euclid.dto.esm.ListBucketsRequest;
 import de.jensvogt.euclid.dto.esm.ListBucketsResponse;
 import de.jensvogt.euclid.dto.esm.ListObjectAttributesRequest;
@@ -92,6 +94,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.Semaphore;
+import java.util.stream.Stream;
 import java.util.function.Supplier;
 
 /**
@@ -136,6 +139,11 @@ public final class EuclidEsm implements TokenRefreshable, SigningSchemeSelectabl
      * system resources.
      */
     private static final int DEFAULT_CONCURRENCY = 4;
+
+    /**
+     * How many objects {@link #downloadBucket} asks for per listing page.
+     */
+    private static final long LIST_ALL_PAGE_SIZE = 1000;
 
     /**
      * The maximum number of attempts allowed for a single step of the create-upload/upload-part/
@@ -616,6 +624,42 @@ public final class EuclidEsm implements TokenRefreshable, SigningSchemeSelectabl
         }
 
         return extractSetBucketInternalResponse(response.body());
+    }
+
+    /**
+     * Stops a bucket's events.
+     * <p>
+     * Objects are put, read, moved and deleted exactly as before, and every event about them is
+     * still made and stored for every subscriber it would have reached - but held: no queue
+     * subscribed to the bucket is sent one, no receive-events returns one, and none of them expires.
+     * Deliveries that were still waiting when the bucket was stopped are held too.
+     * <p>
+     * For when a consumer downstream is broken or being redeployed, and what arrives in the meantime
+     * should wait for it rather than be lost or pile up as failures. {@link #startBucket} lets them
+     * all go, oldest first. A subscriber that is only pushed events live, and stores none, misses
+     * those made while the bucket was stopped. Stopping a stopped bucket changes nothing.
+     *
+     * @param ern the bucket's ERN, or its name
+     * @return the bucket, and how many deliveries are held for it now
+     * @throws IOException if an I/O error occurs during the HTTP request
+     * @throws InterruptedException if the operation is interrupted while waiting for a response
+     */
+    public BucketStoppedResponse stopBucket(String ern) throws IOException, InterruptedException {
+        return toBucketStoppedResponse(postJson("stop-bucket", Map.of("ern", ern)));
+    }
+
+    /**
+     * Starts a bucket stopped with {@link #stopBucket}: every event held for it becomes deliverable
+     * again, with a fresh retention period, and new events are delivered as they are made. Safe on a
+     * bucket that is not stopped, which releases nothing.
+     *
+     * @param ern the bucket's ERN, or its name
+     * @return the bucket, and how many held events were released
+     * @throws IOException if an I/O error occurs during the HTTP request
+     * @throws InterruptedException if the operation is interrupted while waiting for a response
+     */
+    public BucketStoppedResponse startBucket(String ern) throws IOException, InterruptedException {
+        return toBucketStoppedResponse(postJson("start-bucket", Map.of("ern", ern)));
     }
 
     /**
@@ -1147,6 +1191,35 @@ public final class EuclidEsm implements TokenRefreshable, SigningSchemeSelectabl
 
         JsonNode root = OBJECT_MAPPER.readTree(response.body());
         return GetObjectCountResponse.builder().ern(textOrNull(root, "ern")).count(root.path("count").asLong(0)).build();
+    }
+
+    /**
+     * Returns an object's size in bytes, without downloading it.
+     *
+     * @param bucketErn the object's bucket; its ERN, or its name
+     * @param key       the object's key within the bucket
+     * @return the object and its size
+     * @throws IOException if an I/O error occurs during the HTTP request
+     * @throws InterruptedException if the operation is interrupted while waiting for a response
+     * @throws EuclidServiceException with status 404 if there is no such object; with status 409 if
+     * its upload has not finished, so it has no final size yet
+     */
+    public GetObjectSizeResponse getObjectSize(String bucketErn, String key) throws IOException, InterruptedException {
+        return toGetObjectSizeResponse(postJson("get-object-size", Map.of("bucketErn", bucketErn, "key", key)));
+    }
+
+    /**
+     * Returns an object's size in bytes, without downloading it, naming the object by its ERN.
+     *
+     * @param objectErn the object's ERN
+     * @return the object and its size
+     * @throws IOException if an I/O error occurs during the HTTP request
+     * @throws InterruptedException if the operation is interrupted while waiting for a response
+     * @throws EuclidServiceException with status 404 if there is no such object; with status 409 if
+     * its upload has not finished, so it has no final size yet
+     */
+    public GetObjectSizeResponse getObjectSize(String objectErn) throws IOException, InterruptedException {
+        return toGetObjectSizeResponse(postJson("get-object-size", Map.of("ern", objectErn)));
     }
 
     /**
@@ -1735,6 +1808,168 @@ public final class EuclidEsm implements TokenRefreshable, SigningSchemeSelectabl
      */
     public long downloadFile(String bucketErn, String key, Path file) throws IOException, InterruptedException {
         return downloadFile(bucketErn, key, file, DEFAULT_UPLOAD_PART_SIZE, DEFAULT_CONCURRENCY);
+    }
+
+    /**
+     * Uploads every file in a local directory to a bucket, one object per file.
+     * <p>
+     * Each object's key is {@code prefix} followed by the file's path relative to {@code directory},
+     * with forward slashes whatever the platform. Without {@code recursive} only the files directly
+     * inside the directory are uploaded. Each file goes up the way {@link #uploadFile} sends it, in
+     * one request or in parts depending on its size.
+     *
+     * @param bucketErn the target bucket's ERN
+     * @param directory the local directory to upload
+     * @param prefix    prepended to each object's key; {@code null} or empty for none
+     * @param recursive whether files in subdirectories are uploaded too
+     * @return the completed uploads, in the order the files were uploaded
+     * @throws IOException if the directory cannot be read or an upload fails; files uploaded before
+     * the failure stay uploaded
+     * @throws InterruptedException if the operation is interrupted
+     */
+    public List<CompleteUploadResponse> uploadDirectory(String bucketErn, Path directory, String prefix, boolean recursive)
+            throws IOException, InterruptedException {
+        return uploadDirectory(bucketErn, directory, prefix, recursive, DEFAULT_UPLOAD_PART_SIZE, DEFAULT_CONCURRENCY);
+    }
+
+    /**
+     * Uploads every file in a local directory to a bucket, choosing the part size and how many parts
+     * of each file go up at once.
+     *
+     * @param bucketErn   the target bucket's ERN
+     * @param directory   the local directory to upload
+     * @param prefix      prepended to each object's key; {@code null} or empty for none
+     * @param recursive   whether files in subdirectories are uploaded too
+     * @param partSize    the size of each part, in bytes
+     * @param concurrency how many parts of one file to upload at once
+     * @return the completed uploads, in the order the files were uploaded
+     * @throws IOException if the directory cannot be read or an upload fails; files uploaded before
+     * the failure stay uploaded
+     * @throws InterruptedException if the operation is interrupted
+     */
+    public List<CompleteUploadResponse> uploadDirectory(String bucketErn, Path directory, String prefix, boolean recursive,
+                                                        int partSize, int concurrency) throws IOException, InterruptedException {
+        if (!Files.isDirectory(directory)) {
+            throw new IOException("not a directory: " + directory);
+        }
+        String keyPrefix = prefix == null ? "" : prefix;
+        List<Path> files;
+        try (Stream<Path> walk = recursive ? Files.walk(directory) : Files.list(directory)) {
+            files = walk.filter(Files::isRegularFile).sorted().toList();
+        }
+        List<CompleteUploadResponse> uploads = new ArrayList<>();
+        for (Path file : files) {
+            String relative = directory.relativize(file).toString().replace(file.getFileSystem().getSeparator(), "/");
+            uploads.add(uploadFile(bucketErn, keyPrefix + relative, file, partSize, concurrency));
+        }
+        return uploads;
+    }
+
+    /**
+     * Downloads objects from a bucket to a local directory, one file per object.
+     * <p>
+     * Without {@code recursive} only the prefix's direct descendants are downloaded - keys matching
+     * {@code prefix} with no further {@code /} after it - the way an S3-style listing shows one
+     * directory. With it, every key matching the prefix is, however deeply nested. Each file's path
+     * is {@code directory} followed by the object's key with {@code prefix} stripped off the front.
+     * <p>
+     * A key is server-held data rather than a trusted path, so one that would land outside
+     * {@code directory} - through a {@code ..} component - is refused. A key starting with {@code /}
+     * is taken as relative.
+     *
+     * @param bucketErn the source bucket's ERN
+     * @param directory the local directory to download into, created if missing
+     * @param prefix    only keys starting with this are downloaded; {@code null} or empty for all
+     * @param recursive whether nested keys are downloaded too
+     * @return the files written, in key order
+     * @throws IOException if a key would escape the directory or a download fails; files downloaded
+     * before the failure stay where they are
+     * @throws InterruptedException if the operation is interrupted
+     */
+    public List<Path> downloadBucket(String bucketErn, Path directory, String prefix, boolean recursive)
+            throws IOException, InterruptedException {
+        return downloadBucket(bucketErn, directory, prefix, recursive, DEFAULT_UPLOAD_PART_SIZE, DEFAULT_CONCURRENCY);
+    }
+
+    /**
+     * Downloads objects from a bucket to a local directory, choosing the part size and how many parts
+     * of each object are fetched at once.
+     *
+     * @param bucketErn   the source bucket's ERN
+     * @param directory   the local directory to download into, created if missing
+     * @param prefix      only keys starting with this are downloaded; {@code null} or empty for all
+     * @param recursive   whether nested keys are downloaded too
+     * @param partSize    the size of each part to request, in bytes
+     * @param concurrency how many parts of one object to download at once
+     * @return the files written, in key order
+     * @throws IOException if a key would escape the directory or a download fails; files downloaded
+     * before the failure stay where they are
+     * @throws InterruptedException if the operation is interrupted
+     */
+    public List<Path> downloadBucket(String bucketErn, Path directory, String prefix, boolean recursive,
+                                     int partSize, int concurrency) throws IOException, InterruptedException {
+        String keyPrefix = prefix == null ? "" : prefix;
+        Path root = directory.toAbsolutePath().normalize();
+        Files.createDirectories(root);
+
+        List<Path> written = new ArrayList<>();
+        for (EsmObject object : listAllObjects(bucketErn, keyPrefix)) {
+            String key = object.key();
+            String remainder = key.startsWith(keyPrefix) ? key.substring(keyPrefix.length()) : key;
+            if (!recursive && remainder.contains("/")) {
+                continue;
+            }
+            Path file = safeJoin(root, remainder);
+            if (file == null) {
+                throw new IOException("refusing key '" + key + "': its path would escape " + root);
+            }
+            downloadFile(bucketErn, key, file, partSize, concurrency);
+            written.add(file);
+        }
+        return written;
+    }
+
+    /**
+     * Every object under a prefix, read page by page, in key order.
+     *
+     * @param bucketErn the bucket's ERN
+     * @param prefix    the key prefix to list
+     * @return the objects
+     * @throws IOException if a listing fails
+     * @throws InterruptedException if the operation is interrupted
+     */
+    private List<EsmObject> listAllObjects(String bucketErn, String prefix) throws IOException, InterruptedException {
+        List<EsmObject> objects = new ArrayList<>();
+        for (long page = 0; ; page++) {
+            ListObjectsResponse listed = listObjects(bucketErn, prefix, LIST_ALL_PAGE_SIZE, page, "key", "asc", false);
+            objects.addAll(listed.objects());
+            if (listed.objects().size() < LIST_ALL_PAGE_SIZE) {
+                return objects;
+            }
+        }
+    }
+
+    /**
+     * Joins a download root with the part of an object's key below the prefix, or answers
+     * {@code null} if the result would lie outside the root - the zip-slip guard, since a key is
+     * server-held data rather than local input.
+     *
+     * @param root      the normalized download root
+     * @param remainder the key with the prefix stripped off
+     * @return the local file, or {@code null} to refuse it
+     */
+    private static Path safeJoin(Path root, String remainder) {
+        String relative = remainder;
+        while (relative.startsWith("/")) {
+            relative = relative.substring(1);
+        }
+        for (String part : relative.split("/")) {
+            if (part.equals("..")) {
+                return null;
+            }
+        }
+        Path file = root.resolve(relative).normalize();
+        return file.startsWith(root) && !file.equals(root) ? file : null;
     }
 
     /**
@@ -2516,8 +2751,13 @@ public final class EuclidEsm implements TokenRefreshable, SigningSchemeSelectabl
                 textOrNull(bucketNode, "ern"),
                 bucketNode.path("size").asLong(0),
                 bucketNode.path("objects").asLong(0),
+                bucketNode.path("directories").asLong(0),
                 toStringMap(bucketNode.get("tags")),
+                bucketNode.path("encrypted").asBoolean(false),
+                textOrNull(bucketNode, "encryptionKeyErn"),
+                bucketNode.path("internal").asBoolean(false),
                 textOrNull(bucketNode, "priority"),
+                bucketNode.path("stopped").asBoolean(false),
                 textOrNull(bucketNode, "created"),
                 textOrNull(bucketNode, "modified"));
     }
@@ -2613,6 +2853,34 @@ public final class EuclidEsm implements TokenRefreshable, SigningSchemeSelectabl
      * @param field the name of the field to retrieve
      * @return the text value of the specified field, or null if the field is missing or its value is null
      */
+    /**
+     * Posts one of ESM's actions with a small JSON body and parses the answer.
+     *
+     * @param action the ESM action to post
+     * @param body   the request fields
+     * @return the parsed response body
+     * @throws IOException if an I/O error occurs during the request
+     * @throws InterruptedException if the operation is interrupted while waiting for the response
+     */
+    private JsonNode postJson(String action, Map<String, ?> body) throws IOException, InterruptedException {
+        String json = OBJECT_MAPPER.writeValueAsString(body);
+        HttpResponse<String> response = httpClient.post(baseUrl + "/", json, "esm", action, requestHeaders(action, json));
+        if (response.statusCode() / 100 != 2) {
+            throw new EuclidServiceException("esm", action, response.statusCode(), response.body());
+        }
+        return OBJECT_MAPPER.readTree(response.body());
+    }
+
+    private static BucketStoppedResponse toBucketStoppedResponse(JsonNode node) {
+        return new BucketStoppedResponse(textOrNull(node, "ern"), textOrNull(node, "name"),
+                node.path("stopped").asBoolean(false), node.path("held").asLong(0), node.path("released").asLong(0));
+    }
+
+    private static GetObjectSizeResponse toGetObjectSizeResponse(JsonNode node) {
+        return new GetObjectSizeResponse(textOrNull(node, "ern"), textOrNull(node, "bucketErn"),
+                textOrNull(node, "key"), node.path("size").asLong(0));
+    }
+
     private static String textOrNull(JsonNode node, String field) {
         JsonNode value = node.get(field);
         return value == null || value.isNull() ? null : value.asText();
