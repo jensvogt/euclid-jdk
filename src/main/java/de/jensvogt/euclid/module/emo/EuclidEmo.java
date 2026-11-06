@@ -511,7 +511,7 @@ public final class EuclidEmo implements TokenRefreshable, SigningSchemeSelectabl
     private static Map<String, String> toStringMap(JsonNode node) {
         Map<String, String> values = new LinkedHashMap<>();
         if (node != null && node.isObject()) {
-            node.fields().forEachRemaining(entry -> values.put(entry.getKey(), entry.getValue().asText()));
+            node.properties().forEach(entry -> values.put(entry.getKey(), entry.getValue().asText()));
         }
         return values;
     }

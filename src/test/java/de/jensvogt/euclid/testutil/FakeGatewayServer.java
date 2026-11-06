@@ -287,7 +287,7 @@ public final class FakeGatewayServer implements AutoCloseable {
         Map<String, String> filter = new LinkedHashMap<>();
         JsonNode filterNode = node.get("filter");
         if (filterNode != null && filterNode.isObject()) {
-            filterNode.fields().forEachRemaining(entry -> filter.put(entry.getKey(), entry.getValue().asText()));
+            filterNode.properties().forEach(entry -> filter.put(entry.getKey(), entry.getValue().asText()));
         }
         Subscription subscription = new Subscription(topic, filter);
         if ("subscribe".equals(type)) {

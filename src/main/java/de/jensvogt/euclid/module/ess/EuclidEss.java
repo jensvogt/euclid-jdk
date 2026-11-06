@@ -444,7 +444,7 @@ public final class EuclidEss implements TokenRefreshable, SigningSchemeSelectabl
     private static Map<String, String> toStringMap(JsonNode node) {
         Map<String, String> map = new LinkedHashMap<>();
         if (node != null && node.isObject()) {
-            node.fields().forEachRemaining(entry -> map.put(entry.getKey(), entry.getValue().asText()));
+            node.properties().forEach(entry -> map.put(entry.getKey(), entry.getValue().asText()));
         }
         return map;
     }

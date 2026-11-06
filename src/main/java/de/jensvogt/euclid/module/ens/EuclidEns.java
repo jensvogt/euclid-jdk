@@ -1254,7 +1254,7 @@ public final class EuclidEns implements TokenRefreshable, SigningSchemeSelectabl
     private static Map<String, Variant> toVariantMap(JsonNode node) {
         Map<String, Variant> map = new LinkedHashMap<>();
         if (node != null && node.isObject()) {
-            node.fields().forEachRemaining(entry -> {
+            node.properties().forEach(entry -> {
                 JsonNode valueNode = entry.getValue();
                 map.put(entry.getKey(), new Variant(textOrNull(valueNode, "type"), textOrNull(valueNode, "value")));
             });
@@ -1323,7 +1323,7 @@ public final class EuclidEns implements TokenRefreshable, SigningSchemeSelectabl
     private static Map<String, String> toStringMap(JsonNode node) {
         Map<String, String> map = new LinkedHashMap<>();
         if (node != null && node.isObject()) {
-            node.fields().forEachRemaining(entry -> map.put(entry.getKey(), entry.getValue().asText()));
+            node.properties().forEach(entry -> map.put(entry.getKey(), entry.getValue().asText()));
         }
         return map;
     }

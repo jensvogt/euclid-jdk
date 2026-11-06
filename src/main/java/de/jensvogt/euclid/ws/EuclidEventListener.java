@@ -224,7 +224,7 @@ public final class EuclidEventListener implements AutoCloseable, EventStreamList
 
     private static Map<String, Object> toMap(JsonNode body) {
         Map<String, Object> payload = new java.util.LinkedHashMap<>();
-        body.fields().forEachRemaining(entry -> {
+        body.properties().forEach(entry -> {
             JsonNode value = entry.getValue();
             if (value.isNumber()) {
                 payload.put(entry.getKey(), value.numberValue());

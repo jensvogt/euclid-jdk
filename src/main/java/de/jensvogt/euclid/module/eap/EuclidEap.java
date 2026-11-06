@@ -1238,12 +1238,6 @@ public final class EuclidEap implements TokenRefreshable, SigningSchemeSelectabl
     }
 
     /**
-     * Converts a JsonNode holding an array of endpoints into a list of them.
-     *
-     * @param endpointsNode the JsonNode representing the array of endpoints
-     * @return the parsed endpoints, or an empty list if the node is null or not an array
-     */
-    /**
      * Maps an empty string to {@code null}, for the fields the server reports as "" rather than
      * omitting - a job with no schedule reports an empty {@code nextRunAt}.
      *
@@ -1304,6 +1298,12 @@ public final class EuclidEap implements TokenRefreshable, SigningSchemeSelectabl
         return applications;
     }
 
+    /**
+     * Converts a JsonNode holding an array of endpoints into a list of them.
+     *
+     * @param endpointsNode the JsonNode representing the array of endpoints
+     * @return the parsed endpoints, or an empty list if the node is null or not an array
+     */
     private static List<ApplicationEndpoint> toEndpointList(JsonNode endpointsNode) {
         List<ApplicationEndpoint> endpoints = new ArrayList<>();
         if (endpointsNode != null && endpointsNode.isArray()) {
@@ -1342,7 +1342,7 @@ public final class EuclidEap implements TokenRefreshable, SigningSchemeSelectabl
     private static Map<String, String> toStringMap(JsonNode node) {
         Map<String, String> map = new LinkedHashMap<>();
         if (node != null && node.isObject()) {
-            node.fields().forEachRemaining(entry -> map.put(entry.getKey(), entry.getValue().asText()));
+            node.properties().forEach(entry -> map.put(entry.getKey(), entry.getValue().asText()));
         }
         return map;
     }

@@ -7,6 +7,7 @@ import com.fasterxml.jackson.annotation.JsonInclude;
  *
  * @param bucketErn the ERN of the bucket holding the object
  * @param key       the key of the object to download
+ * @param versionId the version ID of the object
  */
 @JsonInclude(JsonInclude.Include.NON_NULL)
 public record CreateDownloadRequest(String bucketErn, String key, String versionId) {
@@ -66,11 +67,6 @@ public record CreateDownloadRequest(String bucketErn, String key, String version
         }
 
         /**
-         * Builds and returns a new instance of CreateDownloadRequest using the properties set on the Builder.
-         *
-         * @return a new CreateDownloadRequest instance.
-         */
-        /**
          * Sets a non-current version of the object to download instead of the current one.
          *
          * @param versionId the version, or {@code null} for the current object
@@ -81,6 +77,11 @@ public record CreateDownloadRequest(String bucketErn, String key, String version
             return this;
         }
 
+        /**
+         * Builds and returns a new instance of CreateDownloadRequest using the properties set on the Builder.
+         *
+         * @return a new CreateDownloadRequest instance.
+         */
         public CreateDownloadRequest build() {
             return new CreateDownloadRequest(bucketErn, key, versionId);
         }

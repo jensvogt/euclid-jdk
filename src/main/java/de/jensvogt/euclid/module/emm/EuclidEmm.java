@@ -626,7 +626,7 @@ public final class EuclidEmm implements TokenRefreshable, SigningSchemeSelectabl
         Map<String, ImportedCollection> imported = new LinkedHashMap<>();
         JsonNode importedNode = root.get("imported");
         if (importedNode != null && importedNode.isObject()) {
-            importedNode.fields().forEachRemaining(entry -> imported.put(entry.getKey(),
+            importedNode.properties().forEach(entry -> imported.put(entry.getKey(),
                     new ImportedCollection(entry.getValue().path("imported").asLong(),
                             entry.getValue().path("failed").asLong(0))));
         }

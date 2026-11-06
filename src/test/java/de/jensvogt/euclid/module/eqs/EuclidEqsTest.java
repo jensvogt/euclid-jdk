@@ -1,6 +1,7 @@
 package de.jensvogt.euclid.module.eqs;
 
 import de.jensvogt.euclid.dto.eqs.SendMessageBatchResponse;
+import de.jensvogt.euclid.dto.eqs.SetQueueMaxRetriesResponse;
 
 import de.jensvogt.euclid.dto.eqs.SendMessageBatchRequest;
 
@@ -95,7 +96,7 @@ class EuclidEqsTest {
         assertEquals(2L, result.sent());
         assertEquals(List.of("id-0", "id-2"), result.messageIds());
         assertEquals(1, result.failed().size());
-        assertEquals(1L, result.failed().get(0).index());
+        assertEquals(1L, result.failed().getFirst());
 
         String body = received.get().body();
         assertBodyContains(body, "\"ern\":\"orders\"", "\"body\":\"first\"", "\"priority\":\"HIGH\"");
@@ -1081,6 +1082,36 @@ class EuclidEqsTest {
                 () -> newClient().setQueueMaxMessageLength("queue-ern", -1));
 
         assertEquals("set-queue-max-message-length", exception.action());
+        assertEquals(400, exception.statusCode());
+    }
+
+    @Test
+    void setQueueMaxRetriesSendsErnAndLimit() throws Exception {
+        AtomicReference<SignableRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(captureRequest(exchange));
+            sendResponse(exchange, 200, "{\"ern\":\"queue-ern\",\"maxRetries\":5}");
+        });
+
+        SetQueueMaxRetriesResponse response = newClient().setQueueMaxRetries("queue-ern", 5);
+
+        assertEquals("set-queue-max-retries", received.get().header("x-euclid-action"));
+        assertBodyContains(received.get().body(), "\"ern\":\"queue-ern\"", "\"maxRetries\":5");
+        assertEquals("queue-ern", response.ern());
+        assertEquals(5, response.maxRetries());
+    }
+
+    @Test
+    void setQueueMaxRetriesSurfacesAnOutOfRangeLimit() throws Exception {
+        server = startServer(exchange -> {
+            exchange.getRequestBody().readAllBytes();
+            sendResponse(exchange, 400, "{\"error\":\"maxRetries must be between 1 and 1000\"}");
+        });
+
+        EuclidServiceException exception = assertThrows(EuclidServiceException.class,
+                () -> newClient().setQueueMaxRetries("queue-ern", 0));
+
+        assertEquals("set-queue-max-retries", exception.action());
         assertEquals(400, exception.statusCode());
     }
 

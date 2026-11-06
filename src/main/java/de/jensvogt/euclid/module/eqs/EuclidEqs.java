@@ -48,6 +48,8 @@ import de.jensvogt.euclid.dto.eqs.SetQueueDelayRequest;
 import de.jensvogt.euclid.dto.eqs.SetQueueDelayResponse;
 import de.jensvogt.euclid.dto.eqs.SetQueueMaxMessageLengthRequest;
 import de.jensvogt.euclid.dto.eqs.SetQueueMaxMessageLengthResponse;
+import de.jensvogt.euclid.dto.eqs.SetQueueMaxRetriesRequest;
+import de.jensvogt.euclid.dto.eqs.SetQueueMaxRetriesResponse;
 import de.jensvogt.euclid.dto.eqs.SetQueueVisibilityRequest;
 import de.jensvogt.euclid.dto.eqs.SetQueueVisibilityResponse;
 import de.jensvogt.euclid.dto.eqs.UpdateMessageBodyRequest;
@@ -117,6 +119,13 @@ public final class EuclidEqs implements TokenRefreshable, SigningSchemeSelectabl
     private static final Duration LONG_POLL_RESPONSE_MARGIN = Duration.ofSeconds(10);
 
     /**
+     * The size a message is measured against when a queue carries no limit of its own - one
+     * mebibyte, which is what the server's {@code kDefaultMaxMessageLength} is and what a queue
+     * created before the limit meant anything is held to.
+     */
+    private static final long DEFAULT_MAX_MESSAGE_LENGTH = 1024 * 1024;
+
+    /**
      * Represents the constant target identifier used within the EuclidEqs class.
      * This specific string value is tied to the term "eqs" and may serve as an
      * identifier, namespace, or discriminator for operations related to its scope.
@@ -124,13 +133,6 @@ public final class EuclidEqs implements TokenRefreshable, SigningSchemeSelectabl
      * Being a static and final constant, the value of TARGET remains unchanged
      * throughout the runtime of the application.
      */
-    /**
-     * The size a message is measured against when a queue carries no limit of its own - one
-     * mebibyte, which is what the server's {@code kDefaultMaxMessageLength} is and what a queue
-     * created before the limit meant anything is held to.
-     */
-    private static final long DEFAULT_MAX_MESSAGE_LENGTH = 1024 * 1024;
-
     private static final String TARGET = "eqs";
 
     /**
@@ -924,6 +926,37 @@ public final class EuclidEqs implements TokenRefreshable, SigningSchemeSelectabl
     }
 
     /**
+     * Changes how often this queue hands out a message before moving it to its dead letter queue -
+     * the {@code maxReceiveCount} given as {@code maxRetries} when the queue was created.
+     * <p>
+     * A message keeps the receive count it has and is measured against the new limit on its next
+     * receive, so lowering the limit below a message's count moves it to the dead letter queue then,
+     * not now. Values outside 1 to 1000 are refused with HTTP 400, an unknown queue with 404.
+     *
+     * @param ern        the ERN (Entity Resource Name) of the queue
+     * @param maxRetries the new limit, between 1 and 1000
+     * @return the limit the queue now carries
+     * @throws IOException          If an I/O error occurs during the operation.
+     * @throws InterruptedException If the operation is interrupted.
+     */
+    public SetQueueMaxRetriesResponse setQueueMaxRetries(String ern, long maxRetries)
+            throws IOException, InterruptedException {
+        String body = OBJECT_MAPPER.writeValueAsString(
+                SetQueueMaxRetriesRequest.builder().ern(ern).maxRetries(maxRetries).build());
+        HttpResponse<String> response = httpClient.post(baseUrl + "/", body, "eqs", "set-queue-max-retries",
+                requestHeaders("set-queue-max-retries", body));
+
+        if (response.statusCode() / 100 != 2) {
+            throw new EuclidServiceException("eqs", "set-queue-max-retries", response.statusCode(), response.body());
+        }
+
+        JsonNode root = OBJECT_MAPPER.readTree(response.body());
+        return SetQueueMaxRetriesResponse.builder().ern(textOrNull(root, "ern"))
+                .maxRetries(root.path("maxRetries").asLong(maxRetries))
+                .build();
+    }
+
+    /**
      * Moves messages out of a dead letter queue and back onto the queues they came from.
      *
      * @param ern the ERN (Entity Resource Name) of the dead letter queue to drain
@@ -1028,17 +1061,17 @@ public final class EuclidEqs implements TokenRefreshable, SigningSchemeSelectabl
 
     /**
      * Sends several messages to one queue in a single call.
-     *
+     * <p>
      * The saving over calling {@link #sendMessage(String, String, Map, String)} in a loop is mostly
      * in the database rather than the round trips: the whole batch is written in one insert, and
      * the queue's counters are adjusted once instead of once per message.
-     *
+     * <p>
      * A message that cannot be sent - a body over the queue's limit, a priority that is not one of
      * the three - does not stop the others. The response says how many were asked for and how many
      * went, lists the ids of those that went in request order, and names each rejection by its
      * position in the list you sent, so a producer can retry exactly those rather than the whole
      * batch and duplicate everything else.
-     *
+     * <p>
      * Every message being rejected is still a successful call: the request was well formed and has
      * been answered, with a reason for each. Check {@code sent} rather than the absence of an
      * exception.
@@ -1769,15 +1802,6 @@ public final class EuclidEqs implements TokenRefreshable, SigningSchemeSelectabl
     }
 
     /**
-     * Converts a JSON array node containing message data into a list of {@link Message} objects.
-     *
-     * @param messagesNode the JSON node representing an array of message data.
-     *                      Each element in the array is expected to contain fields required to
-     *                      construct a {@link Message} object.
-     * @return a list of {@link Message} objects constructed from the input JSON node. If the input
-     *         node is null or not an array, an empty list is returned.
-     */
-    /**
      * Builds a {@link Queue} from the JSON the server describes one with.
      * <p>
      * One reader for the one representation: a listing and {@link #getQueue} are answered with the
@@ -1832,6 +1856,15 @@ public final class EuclidEqs implements TokenRefreshable, SigningSchemeSelectabl
                 textOrNull(messageNode, "modified"));
     }
 
+    /**
+     * Converts a JSON array node containing message data into a list of {@link Message} objects.
+     *
+     * @param messagesNode the JSON node representing an array of message data.
+     *                      Each element in the array is expected to contain fields required to
+     *                      construct a {@link Message} object.
+     * @return a list of {@link Message} objects constructed from the input JSON node. If the input
+     *         node is null or not an array, an empty list is returned.
+     */
     private static List<Message> toMessageList(JsonNode messagesNode) {
         List<Message> messages = new ArrayList<>();
         if (messagesNode != null && messagesNode.isArray()) {
@@ -1852,7 +1885,7 @@ public final class EuclidEqs implements TokenRefreshable, SigningSchemeSelectabl
     private static Map<String, Variant> toVariantMap(JsonNode node) {
         Map<String, Variant> map = new LinkedHashMap<>();
         if (node != null && node.isObject()) {
-            node.fields().forEachRemaining(entry -> {
+            node.properties().forEach(entry -> {
                 JsonNode valueNode = entry.getValue();
                 map.put(entry.getKey(), new Variant(textOrNull(valueNode, "type"), textOrNull(valueNode, "value")));
             });
@@ -1891,7 +1924,7 @@ public final class EuclidEqs implements TokenRefreshable, SigningSchemeSelectabl
     private static Map<String, String> toStringMap(JsonNode node) {
         Map<String, String> map = new LinkedHashMap<>();
         if (node != null && node.isObject()) {
-            node.fields().forEachRemaining(entry -> map.put(entry.getKey(), entry.getValue().asText()));
+            node.properties().forEach(entry -> map.put(entry.getKey(), entry.getValue().asText()));
         }
         return map;
     }

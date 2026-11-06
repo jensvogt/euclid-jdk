@@ -1098,7 +1098,7 @@ public final class EuclidEsm implements TokenRefreshable, SigningSchemeSelectabl
      * <p>Discards the parts staged under {@code uploadId} and - for a first upload - the object row
      * that was seeded for bytes which never arrived. A <em>re-upload</em>'s object row is left
      * exactly as it is: that row is the previous version of the object, still published and still
-     * readable, and not this upload's to delete. {@link AbortUploadResponse#objectRemoved} says
+     * readable, and not this upload's to delete. {@link AbortUploadResponse#objectRemoved()} says
      * which happened.
      *
      * <p>{@link #uploadFile} does not need this - it completes or it fails within one call. What
@@ -2776,7 +2776,7 @@ public final class EuclidEsm implements TokenRefreshable, SigningSchemeSelectabl
     private static Map<String, Variant> toVariantMap(JsonNode node) {
         Map<String, Variant> map = new LinkedHashMap<>();
         if (node != null && node.isObject()) {
-            node.fields().forEachRemaining(entry -> {
+            node.properties().forEach(entry -> {
                 JsonNode valueNode = entry.getValue();
                 map.put(entry.getKey(), new Variant(textOrNull(valueNode, "type"), textOrNull(valueNode, "value")));
             });
@@ -2793,7 +2793,7 @@ public final class EuclidEsm implements TokenRefreshable, SigningSchemeSelectabl
     private static Map<String, String> toStringMap(JsonNode node) {
         Map<String, String> map = new LinkedHashMap<>();
         if (node != null && node.isObject()) {
-            node.fields().forEachRemaining(entry -> map.put(entry.getKey(), entry.getValue().asText()));
+            node.properties().forEach(entry -> map.put(entry.getKey(), entry.getValue().asText()));
         }
         return map;
     }
@@ -2835,13 +2835,6 @@ public final class EuclidEsm implements TokenRefreshable, SigningSchemeSelectabl
     }
 
     /**
-     * Extracts and constructs a PurgeBucketResponse object from the provided JSON response body.
-     *
-     * @param responseBody the JSON response body as a string
-     * @return a PurgeBucketResponse object containing the extracted data
-     * @throws IOException if an error occurs during parsing of the JSON response body
-     */
-    /**
      * Extracts a {@code DeleteBucketResponse} from the given JSON response body.
      *
      * @param responseBody the JSON body, which is empty for a deletion that ran inline
@@ -2859,6 +2852,13 @@ public final class EuclidEsm implements TokenRefreshable, SigningSchemeSelectabl
                 .async(root.path("async").asBoolean(false)).build();
     }
 
+    /**
+     * Extracts and constructs a PurgeBucketResponse object from the provided JSON response body.
+     *
+     * @param responseBody the JSON response body as a string
+     * @return a PurgeBucketResponse object containing the extracted data
+     * @throws IOException if an error occurs during parsing of the JSON response body
+     */
     private static PurgeBucketResponse extractPurgeBucketResponse(String responseBody) throws IOException {
         JsonNode root = OBJECT_MAPPER.readTree(responseBody);
         // "count" when the purge ran inline, "objects" when it was taken on: the two answers come
@@ -3178,13 +3178,6 @@ public final class EuclidEsm implements TokenRefreshable, SigningSchemeSelectabl
     }
 
     /**
-     * Retrieves the text value of a specified field from a JsonNode, or returns null if the field is missing or its value is null.
-     *
-     * @param node the JsonNode to extract the field value from
-     * @param field the name of the field to retrieve
-     * @return the text value of the specified field, or null if the field is missing or its value is null
-     */
-    /**
      * Posts one of ESM's actions with a small JSON body and parses the answer.
      *
      * @param action the ESM action to post
@@ -3239,6 +3232,13 @@ public final class EuclidEsm implements TokenRefreshable, SigningSchemeSelectabl
                 textOrNull(node, "key"), node.path("size").asLong(0));
     }
 
+    /**
+     * Retrieves the text value of a specified field from a JsonNode, or returns null if the field is missing or its value is null.
+     *
+     * @param node the JsonNode to extract the field value from
+     * @param field the name of the field to retrieve
+     * @return the text value of the specified field, or null if the field is missing or its value is null
+     */
     private static String textOrNull(JsonNode node, String field) {
         JsonNode value = node.get(field);
         return value == null || value.isNull() ? null : value.asText();

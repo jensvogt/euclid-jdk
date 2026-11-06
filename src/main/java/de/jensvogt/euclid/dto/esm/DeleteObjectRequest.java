@@ -5,7 +5,8 @@ import com.fasterxml.jackson.annotation.JsonInclude;
 /**
  * Request to delete an object.
  *
- * @param ern the ERN (Entity Resource Name) of the object to delete
+ * @param ern       the ERN (Entity Resource Name) of the object to delete
+ * @param versionId the objects version ID
  */
 @JsonInclude(JsonInclude.Include.NON_NULL)
 public record DeleteObjectRequest(String ern, String versionId) {
@@ -48,11 +49,6 @@ public record DeleteObjectRequest(String ern, String versionId) {
         }
 
         /**
-         * Builds and returns a new instance of DeleteObjectRequest using the properties set on the Builder.
-         *
-         * @return a new DeleteObjectRequest instance populated with the ERN value.
-         */
-        /**
          * Sets the one version of the object to delete.
          *
          * @param versionId the version, or {@code null} to delete the object and every version of it
@@ -63,6 +59,11 @@ public record DeleteObjectRequest(String ern, String versionId) {
             return this;
         }
 
+        /**
+         * Builds and returns a new instance of DeleteObjectRequest using the properties set on the Builder.
+         *
+         * @return a new DeleteObjectRequest instance populated with the ERN value.
+         */
         public DeleteObjectRequest build() {
             return new DeleteObjectRequest(ern, versionId);
         }
