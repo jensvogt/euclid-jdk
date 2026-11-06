@@ -16,13 +16,15 @@ package de.jensvogt.euclid.dto.ens;
  * @param retentionPeriod how long a message published to this topic is kept, in seconds. Zero means
  *                  the topic follows the installation default as that changes, rather than having
  *                  frozen a copy of whatever it was on the day the topic was created
+ * @param deleteAfterDelivery whether a message is deleted once it has been handed to every
+ *                  subscription, rather than kept for the retention period
  * @param held      how many messages are waiting to be handed over when the topic is started again.
  *                  Zero while the topic is running - there is nothing being held then, so the count
  *                  is not one the server pays for
  */
 public record GetTopicMetadataResponse(String region, String accountId, String owner, String nameSpace, String name,
                                         String ern, long size, long messages, String status, long retentionPeriod,
-                                        long held) {
+                                        boolean deleteAfterDelivery, long held) {
 
     /**
      * Creates a new instance of the Builder for constructing a GetTopicMetadataResponse object.
@@ -93,6 +95,11 @@ public record GetTopicMetadataResponse(String region, String accountId, String o
          * How long a message published to this topic is kept, in seconds.
          */
         private long retentionPeriod;
+
+        /**
+         * Whether a message is deleted once it has been handed to every subscription.
+         */
+        private boolean deleteAfterDelivery;
 
         /**
          * How many messages are waiting to be handed over when the topic is started again.
@@ -210,6 +217,17 @@ public record GetTopicMetadataResponse(String region, String accountId, String o
         }
 
         /**
+         * Sets whether a message is deleted once it has been handed to every subscription.
+         *
+         * @param deleteAfterDelivery true if the topic deletes what it has delivered
+         * @return the builder instance
+         */
+        public Builder deleteAfterDelivery(boolean deleteAfterDelivery) {
+            this.deleteAfterDelivery = deleteAfterDelivery;
+            return this;
+        }
+
+        /**
          * Sets how many messages are waiting to be handed over when the topic is started again.
          *
          * @param held the number of held messages
@@ -227,7 +245,7 @@ public record GetTopicMetadataResponse(String region, String accountId, String o
          */
         public GetTopicMetadataResponse build() {
             return new GetTopicMetadataResponse(region, accountId, owner, nameSpace, name, ern, size, messages, status,
-                    retentionPeriod, held);
+                    retentionPeriod, deleteAfterDelivery, held);
         }
     }
 }

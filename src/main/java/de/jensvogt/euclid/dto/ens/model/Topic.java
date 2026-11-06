@@ -19,9 +19,13 @@ import java.util.Map;
  *                         means the topic follows the installation default as that changes, rather
  *                         than having frozen a copy of whatever it was on the day the topic was
  *                         created
+ * @param deleteAfterDelivery whether a message is deleted once it has been handed to every
+ *                         subscription, rather than kept for the retention period - see
+ *                         {@link de.jensvogt.euclid.module.ens.EuclidEns#setTopicDeleteAfterDelivery(String, boolean)}
  * @param created          creation timestamp
  * @param modified         last-modified timestamp
  */
 public record Topic(String name, String owner, String ern, Map<String, String> tags, long size, long messages,
-                     long maxMessageLength, String status, long retentionPeriod, String created, String modified) {
+                     long maxMessageLength, String status, long retentionPeriod, boolean deleteAfterDelivery,
+                     String created, String modified) {
 }
