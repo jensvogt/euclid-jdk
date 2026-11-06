@@ -16,6 +16,7 @@ import de.jensvogt.euclid.dto.ens.ListMessagesResponse;
 import de.jensvogt.euclid.dto.ens.ListSubscriptionsResponse;
 import de.jensvogt.euclid.dto.ens.ListTopicsResponse;
 import de.jensvogt.euclid.dto.ens.PublishMessageResponse;
+import de.jensvogt.euclid.dto.ens.SetTopicDeleteAfterDeliveryResponse;
 import de.jensvogt.euclid.dto.ens.SetTopicMaxMessageLengthResponse;
 import de.jensvogt.euclid.dto.ens.SetTopicRetentionResponse;
 import de.jensvogt.euclid.dto.ens.SubscribeResponse;
@@ -38,6 +39,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -861,6 +863,51 @@ class EuclidEnsTest {
         assertEquals(400, exception.statusCode());
     }
 
+    @Test
+    void setTopicDeleteAfterDeliverySendsTheErnAndFlag() throws Exception {
+        AtomicReference<SignableRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(captureRequest(exchange));
+            sendResponse(exchange, 200, "{\"ern\":\"topic-ern\",\"deleteAfterDelivery\":true}");
+        });
+
+        SetTopicDeleteAfterDeliveryResponse response = newClient().setTopicDeleteAfterDelivery("topic-ern", true);
+
+        assertEquals("set-topic-delete-after-delivery", received.get().header("x-euclid-action"));
+        assertBodyContains(received.get().body(), "\"ern\":\"topic-ern\"", "\"deleteAfterDelivery\":true");
+        assertEquals("topic-ern", response.ern());
+        assertTrue(response.deleteAfterDelivery());
+    }
+
+    // Turning it off again is a request of its own, not an absent field: false has to reach the
+    // server explicitly, or a topic once switched on could never go back to keeping its messages.
+    @Test
+    void setTopicDeleteAfterDeliverySendsFalseToKeepMessagesAgain() throws Exception {
+        AtomicReference<SignableRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(captureRequest(exchange));
+            sendResponse(exchange, 200, "{\"ern\":\"topic-ern\",\"deleteAfterDelivery\":false}");
+        });
+
+        assertFalse(newClient().setTopicDeleteAfterDelivery("topic-ern", false).deleteAfterDelivery());
+        assertBodyContains(received.get().body(), "\"deleteAfterDelivery\":false");
+    }
+
+    @Test
+    void setTopicDeleteAfterDeliverySurfacesATopicThatDoesNotExist() throws Exception {
+        server = startServer(exchange -> {
+            exchange.getRequestBody().readAllBytes();
+            sendResponse(exchange, 404, "{\"error\":\"Topic not found, ern: nope\"}");
+        });
+
+        EuclidServiceException exception = assertThrows(EuclidServiceException.class,
+                () -> newClient().setTopicDeleteAfterDelivery("nope", true));
+
+        assertEquals("ens", exception.service());
+        assertEquals("set-topic-delete-after-delivery", exception.action());
+        assertEquals(404, exception.statusCode());
+    }
+
     // New enforcement: the server now measures the published body against the topic's limit.
     @Test
     void publishMessageSurfacesABodyOverTheTopicLimit() throws Exception {
@@ -885,13 +932,15 @@ class EuclidEnsTest {
             exchange.getRequestBody().readAllBytes();
             sendResponse(exchange, 200, "{\"region\":\"eu-central-1\",\"accountId\":\"863459426936\","
                     + "\"owner\":\"alice\",\"nameSpace\":\"prod\",\"name\":\"orders\",\"ern\":\"topic-ern\","
-                    + "\"size\":42,\"messages\":7,\"status\":\"STOPPED\",\"retentionPeriod\":1209600,\"held\":5}");
+                    + "\"size\":42,\"messages\":7,\"status\":\"STOPPED\",\"retentionPeriod\":1209600,"
+                    + "\"deleteAfterDelivery\":true,\"held\":5}");
         });
 
         GetTopicMetadataResponse response = newClient().getTopicMetadata("topic-ern");
 
         assertEquals("STOPPED", response.status());
         assertEquals(1209600, response.retentionPeriod());
+        assertTrue(response.deleteAfterDelivery());
         assertEquals(5, response.held());
     }
 
@@ -902,13 +951,14 @@ class EuclidEnsTest {
             sendResponse(exchange, 200, "{\"topics\":[{\"name\":\"orders\",\"owner\":\"alice\","
                     + "\"ern\":\"topic-ern\",\"tags\":{},\"size\":100,\"messages\":3,"
                     + "\"maxMessageLength\":1048576,\"status\":\"STOPPED\",\"retentionPeriod\":604800,"
-                    + "\"created\":\"2026-01-01\",\"modified\":\"2026-01-02\"}],\"total\":1}");
+                    + "\"deleteAfterDelivery\":true,\"created\":\"2026-01-01\",\"modified\":\"2026-01-02\"}],\"total\":1}");
         });
 
         Topic topic = newClient().listTopics().topics().getFirst();
 
         assertEquals("STOPPED", topic.status());
         assertEquals(604800, topic.retentionPeriod());
+        assertTrue(topic.deleteAfterDelivery());
     }
 
     // A topic written before either field existed answers without them, and has to stay readable:
@@ -924,6 +974,7 @@ class EuclidEnsTest {
 
         assertNull(topic.status());
         assertEquals(0, topic.retentionPeriod());
+        assertFalse(topic.deleteAfterDelivery());
     }
 
     private EuclidEns newClient() {

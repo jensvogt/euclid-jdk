@@ -36,6 +36,8 @@ import de.jensvogt.euclid.dto.ens.PublishMessageResponse;
 import de.jensvogt.euclid.dto.ens.PurgeAllTopicsRequest;
 import de.jensvogt.euclid.dto.ens.PurgeTopicRequest;
 import de.jensvogt.euclid.dto.ens.SetMessageAttributeRequest;
+import de.jensvogt.euclid.dto.ens.SetTopicDeleteAfterDeliveryRequest;
+import de.jensvogt.euclid.dto.ens.SetTopicDeleteAfterDeliveryResponse;
 import de.jensvogt.euclid.dto.ens.SetTopicMaxMessageLengthRequest;
 import de.jensvogt.euclid.dto.ens.SetTopicMaxMessageLengthResponse;
 import de.jensvogt.euclid.dto.ens.SetTopicRetentionRequest;
@@ -945,6 +947,48 @@ public final class EuclidEns implements TokenRefreshable, SigningSchemeSelectabl
     }
 
     /**
+     * Sets whether a topic deletes each message as soon as it has been handed to every
+     * subscription, instead of keeping it for its retention period.
+     * <p>
+     * Off for every topic until it is turned on here, which is how topics have always behaved. A
+     * topic that only fans out - whose subscribers are queues that keep their own copy - holds
+     * every message twice while it is off, and this is what gives that space back.
+     * <p>
+     * "Handed to" means the fan-out: one event per subscription, written to the event bus, which
+     * keeps it until EQS has made it a queue message. A message held while the topic is stopped is
+     * deleted when {@link #startTopic(String)} delivers it. A message on a topic with no
+     * subscription is kept either way, because it has been handed to nobody.
+     * <p>
+     * What a topic deletes is gone for {@link #resendMessages(String)} too - that is the price of
+     * the space it saves. The setting applies to what is published from here on; messages the
+     * topic already holds stay until their retention runs out, since turning this on is not a
+     * purge ({@link #purgeTopic(String)} is).
+     *
+     * @param ern                 the ERN of the topic
+     * @param deleteAfterDelivery true to delete each message once every subscription has it, false
+     *                            to keep it for the retention period
+     * @return the setting the topic now has
+     * @throws EuclidServiceException with HTTP 401 if the request is not authenticated, 400 if the
+     *                                body cannot be parsed, or 404 if no topic has that ERN
+     * @throws IOException            if an I/O error occurs during the operation
+     * @throws InterruptedException   if the operation is interrupted
+     */
+    public SetTopicDeleteAfterDeliveryResponse setTopicDeleteAfterDelivery(String ern, boolean deleteAfterDelivery)
+            throws IOException, InterruptedException {
+        String body = OBJECT_MAPPER.writeValueAsString(SetTopicDeleteAfterDeliveryRequest.builder().ern(ern)
+                .deleteAfterDelivery(deleteAfterDelivery).build());
+        HttpResponse<String> response = httpClient.post(baseUrl + "/", body, "ens", "set-topic-delete-after-delivery",
+                requestHeaders("set-topic-delete-after-delivery", body));
+
+        if (response.statusCode() / 100 != 2) {
+            throw new EuclidServiceException("ens", "set-topic-delete-after-delivery", response.statusCode(),
+                    response.body());
+        }
+
+        return extractSetTopicDeleteAfterDeliveryResponse(response.body());
+    }
+
+    /**
      * Subscribes an EQS queue to a topic using the default "SQS" delivery protocol.
      *
      * @param sourceErn the ERN of the topic messages are published to
@@ -1036,6 +1080,7 @@ public final class EuclidEns implements TokenRefreshable, SigningSchemeSelectabl
                 .owner(textOrNull(root, "owner")).nameSpace(textOrNull(root, "nameSpace")).name(textOrNull(root, "name"))
                 .ern(textOrNull(root, "ern")).size(root.path("size").asLong(0)).messages(root.path("messages").asLong(0))
                 .status(textOrNull(root, "status")).retentionPeriod(root.path("retentionPeriod").asLong(0))
+                .deleteAfterDelivery(root.path("deleteAfterDelivery").asBoolean(false))
                 .held(root.path("held").asLong(0)).build();
     }
 
@@ -1056,6 +1101,13 @@ public final class EuclidEns implements TokenRefreshable, SigningSchemeSelectabl
         JsonNode root = OBJECT_MAPPER.readTree(responseBody);
         return SetTopicMaxMessageLengthResponse.builder().ern(textOrNull(root, "ern"))
                 .maxMessageLength(root.path("maxMessageLength").asLong(0)).build();
+    }
+
+    private static SetTopicDeleteAfterDeliveryResponse extractSetTopicDeleteAfterDeliveryResponse(String responseBody)
+            throws IOException {
+        JsonNode root = OBJECT_MAPPER.readTree(responseBody);
+        return SetTopicDeleteAfterDeliveryResponse.builder().ern(textOrNull(root, "ern"))
+                .deleteAfterDelivery(root.path("deleteAfterDelivery").asBoolean(false)).build();
     }
 
     private static PublishMessageResponse extractPublishMessageResponse(String responseBody) throws IOException {
@@ -1242,6 +1294,7 @@ public final class EuclidEns implements TokenRefreshable, SigningSchemeSelectabl
                 topicNode.path("maxMessageLength").asLong(1024 * 1024),
                 textOrNull(topicNode, "status"),
                 topicNode.path("retentionPeriod").asLong(0),
+                topicNode.path("deleteAfterDelivery").asBoolean(false),
                 textOrNull(topicNode, "created"),
                 textOrNull(topicNode, "modified"));
     }
