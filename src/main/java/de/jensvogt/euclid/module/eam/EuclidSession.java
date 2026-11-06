@@ -1367,7 +1367,7 @@ public record EuclidSession(String token, String userId, String accountId, Strin
      * once. A {@code pageSize} of {@code 0} returns all of them, which is what the three-argument
      * form asks for.
      *
-     * <p>{@link ListGrantsResponse#total} is how many grants match the filter, not how many this
+     * <p>{@link ListGrantsResponse#total()} is how many grants match the filter, not how many this
      * page holds - so it is what says whether there is another page, and it does not change as you
      * page through them.
      *
