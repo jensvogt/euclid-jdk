@@ -21,10 +21,13 @@ import java.util.Map;
  *                         {@link de.jensvogt.euclid.module.esm.EuclidEsm#setBucketPriority}
  * @param stopped          whether the bucket's events are being held rather than delivered - see
  *                         {@link de.jensvogt.euclid.module.esm.EuclidEsm#stopBucket}
+ * @param versioning       whether an upload over an existing key keeps the object it replaces as a
+ *                         non-current version - see
+ *                         {@link de.jensvogt.euclid.module.esm.EuclidEsm#setBucketVersioning}
  * @param created          creation timestamp
  * @param modified         last-modified timestamp
  */
 public record Bucket(String owner, String name, String ern, long size, long objects, long directories,
                      Map<String, String> tags, boolean encrypted, String encryptionKeyErn, boolean internal,
-                     String priority, boolean stopped, String created, String modified) {
+                     String priority, boolean stopped, boolean versioning, String created, String modified) {
 }

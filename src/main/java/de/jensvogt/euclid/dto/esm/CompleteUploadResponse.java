@@ -12,9 +12,14 @@ package de.jensvogt.euclid.dto.esm;
  * @param status      The status of the upload operation (e.g., success or failure).
  * @param contentType The MIME type of the uploaded object.
  * @param md5Sum      The MD5 checksum of the uploaded object for integrity verification.
+ * @param versionId   The version the upload became, in a bucket with versioning on; empty
+ *                    otherwise. For an unchanged upload, the version that already held these bytes.
+ * @param unchanged   True when the bucket has versioning on and the bytes were the ones the key
+ *                    already held: nothing was stored, no event was published, and the answer
+ *                    describes the object that was already there.
  */
 public record CompleteUploadResponse(String ern, String bucketErn, String key, long size, String status,
-                                      String contentType, String md5Sum) {
+                                      String contentType, String md5Sum, String versionId, boolean unchanged) {
 
     /**
      * Creates a new instance of {@code Builder} for constructing {@code CompleteUploadResponse} objects.
@@ -85,6 +90,16 @@ public record CompleteUploadResponse(String ern, String bucketErn, String key, l
          * Represents the MD5 checksum of an object or file, used to verify data integrity.
          */
         private String md5Sum;
+
+        /**
+         * The version the upload became.
+         */
+        private String versionId;
+
+        /**
+         * Whether the upload was ignored as the bytes the key already held.
+         */
+        private boolean unchanged;
 
         /**
          * Sets the ERN (Entity Resource Name) for the current builder instance.
@@ -164,6 +179,28 @@ public record CompleteUploadResponse(String ern, String bucketErn, String key, l
         }
 
         /**
+         * Sets the version the upload became.
+         *
+         * @param versionId the version ID, empty outside a bucket with versioning
+         * @return the current builder instance
+         */
+        public Builder versionId(String versionId) {
+            this.versionId = versionId;
+            return this;
+        }
+
+        /**
+         * Sets whether the upload was ignored as the bytes the key already held.
+         *
+         * @param unchanged true when nothing was stored
+         * @return the current builder instance
+         */
+        public Builder unchanged(boolean unchanged) {
+            this.unchanged = unchanged;
+            return this;
+        }
+
+        /**
          * Builds a new instance of {@code CompleteUploadResponse} using the parameters
          * previously set in the builder.
          *
@@ -171,7 +208,7 @@ public record CompleteUploadResponse(String ern, String bucketErn, String key, l
          *         specified for ERN, bucket ERN, key, size, status, content type, and MD5 checksum.
          */
         public CompleteUploadResponse build() {
-            return new CompleteUploadResponse(ern, bucketErn, key, size, status, contentType, md5Sum);
+            return new CompleteUploadResponse(ern, bucketErn, key, size, status, contentType, md5Sum, versionId, unchanged);
         }
     }
 }

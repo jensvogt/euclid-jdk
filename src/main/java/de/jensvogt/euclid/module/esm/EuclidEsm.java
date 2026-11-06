@@ -9,6 +9,7 @@ import de.jensvogt.euclid.auth.SigningSchemeSelectable;
 import de.jensvogt.euclid.auth.TokenRefreshable;
 import de.jensvogt.euclid.dto.com.Variant;
 import de.jensvogt.euclid.dto.esm.AddBucketTagRequest;
+import de.jensvogt.euclid.dto.esm.BucketLifecycleResponse;
 import de.jensvogt.euclid.dto.esm.BucketStoppedResponse;
 import de.jensvogt.euclid.dto.esm.CompleteDownloadRequest;
 import de.jensvogt.euclid.dto.esm.AbortUploadRequest;
@@ -27,6 +28,7 @@ import de.jensvogt.euclid.dto.esm.DeleteBucketResponse;
 import de.jensvogt.euclid.dto.esm.DeleteBucketTagRequest;
 import de.jensvogt.euclid.dto.esm.DeleteObjectAttributeRequest;
 import de.jensvogt.euclid.dto.esm.DeleteObjectRequest;
+import de.jensvogt.euclid.dto.esm.DeleteObjectVersionResponse;
 import de.jensvogt.euclid.dto.esm.DeleteObjectsRequest;
 import de.jensvogt.euclid.dto.esm.DeleteObjectsResponse;
 import de.jensvogt.euclid.dto.esm.DisableEncryptionRequest;
@@ -48,7 +50,9 @@ import de.jensvogt.euclid.dto.esm.ListBucketsResponse;
 import de.jensvogt.euclid.dto.esm.ListObjectAttributesRequest;
 import de.jensvogt.euclid.dto.esm.ListObjectAttributesResponse;
 import de.jensvogt.euclid.dto.esm.ListObjectsRequest;
+import de.jensvogt.euclid.dto.esm.ListObjectVersionsResponse;
 import de.jensvogt.euclid.dto.esm.ListObjectsResponse;
+import de.jensvogt.euclid.dto.esm.ObjectLifecycleResponse;
 import de.jensvogt.euclid.dto.esm.ListSubscriptionsRequest;
 import de.jensvogt.euclid.dto.esm.ListSubscriptionsResponse;
 import de.jensvogt.euclid.dto.esm.ObjectAttributeRequest;
@@ -62,15 +66,20 @@ import de.jensvogt.euclid.dto.esm.SetBucketInternalRequest;
 import de.jensvogt.euclid.dto.esm.SetBucketPriorityRequest;
 import de.jensvogt.euclid.dto.esm.SetBucketInternalResponse;
 import de.jensvogt.euclid.dto.esm.SetBucketPriorityResponse;
+import de.jensvogt.euclid.dto.esm.SetBucketVersioningResponse;
 import de.jensvogt.euclid.dto.esm.SetBucketTagRequest;
 import de.jensvogt.euclid.dto.esm.SubscribeRequest;
 import de.jensvogt.euclid.dto.esm.SubscribeResponse;
 import de.jensvogt.euclid.dto.esm.TouchObjectRequest;
 import de.jensvogt.euclid.dto.esm.TouchObjectResponse;
 import de.jensvogt.euclid.dto.esm.UnsubscribeRequest;
+import de.jensvogt.euclid.dto.esm.VerifyObjectsResponse;
 import de.jensvogt.euclid.dto.esm.model.Bucket;
 import de.jensvogt.euclid.dto.esm.model.BucketEvent;
 import de.jensvogt.euclid.dto.esm.model.EsmObject;
+import de.jensvogt.euclid.dto.esm.model.LifecycleRule;
+import de.jensvogt.euclid.dto.esm.model.ObjectProblem;
+import de.jensvogt.euclid.dto.esm.model.ObjectVersion;
 import de.jensvogt.euclid.dto.esm.model.Subscription;
 import de.jensvogt.euclid.exception.EuclidServiceException;
 import de.jensvogt.euclid.http.EuclidHttpClient;
@@ -663,6 +672,244 @@ public final class EuclidEsm implements TokenRefreshable, SigningSchemeSelectabl
     }
 
     /**
+     * Turns versioning on or off for a bucket.
+     * <p>
+     * With versioning on, an upload to a key that already holds an object is compared with it by
+     * MD5. Different bytes become the current object, and the one they replace is kept as a
+     * non-current version, file and all. The same bytes are ignored: nothing is stored, no event is
+     * published, and the upload answers with {@link CompleteUploadResponse#unchanged()} true - which
+     * makes re-sending a file that may already be there cheap and quiet.
+     * <p>
+     * {@link #listObjectVersions} shows a key's versions,
+     * {@link #downloadFile(String, String, Path, int, int, String)} reads one and
+     * {@link #deleteObjectVersion} removes one. Turning versioning off makes uploads replace objects
+     * again; the versions already kept stay until they are deleted. The bucket's size and object
+     * counters describe its current objects only.
+     *
+     * @param ern     the bucket's ERN, or its name
+     * @param enabled true to keep replaced objects as versions, false to replace them as before
+     * @return the bucket and the setting it has now
+     * @throws IOException if an I/O error occurs during the HTTP request
+     * @throws InterruptedException if the operation is interrupted while waiting for a response
+     * @throws EuclidServiceException with status 404 if there is no such bucket; with status 403 if
+     * it belongs to another account or the caller is not granted it
+     */
+    public SetBucketVersioningResponse setBucketVersioning(String ern, boolean enabled)
+            throws IOException, InterruptedException {
+        JsonNode node = postJson("set-bucket-versioning", Map.of("ern", ern, "enabled", enabled));
+        return new SetBucketVersioningResponse(textOrNull(node, "ern"), textOrNull(node, "name"),
+                node.path("versioning").asBoolean(false));
+    }
+
+    /**
+     * Lists every version of one object: the current one first, marked
+     * {@link ObjectVersion#latest()}, then the non-current versions a bucket with versioning kept,
+     * newest first.
+     * <p>
+     * An object stored before versioning was turned on has an empty version ID until it is
+     * replaced. A key whose current object was deleted down to its versions is still listed, with
+     * no current entry.
+     *
+     * @param bucketErn the object's bucket; its ERN, or its name
+     * @param key       the object's key within the bucket
+     * @return the key's versions
+     * @throws IOException if an I/O error occurs during the HTTP request
+     * @throws InterruptedException if the operation is interrupted while waiting for a response
+     * @throws EuclidServiceException with status 404 if there is no such bucket, or the key has
+     * neither a current object nor any version
+     */
+    public ListObjectVersionsResponse listObjectVersions(String bucketErn, String key)
+            throws IOException, InterruptedException {
+        JsonNode node = postJson("list-object-versions", Map.of("bucketErn", bucketErn, "key", key));
+        List<ObjectVersion> versions = new ArrayList<>();
+        for (JsonNode entry : node.path("versions")) {
+            versions.add(new ObjectVersion(textOrNull(entry, "versionId"), entry.path("latest").asBoolean(false),
+                    entry.path("size").asLong(0), textOrNull(entry, "md5Sum"), textOrNull(entry, "contentType"),
+                    textOrNull(entry, "status"), textOrNull(entry, "lifecycleState"), textOrNull(entry, "owner"),
+                    textOrNull(entry, "modified")));
+        }
+        return new ListObjectVersionsResponse(textOrNull(node, "bucketErn"), textOrNull(node, "key"),
+                textOrNull(node, "ern"), node.path("versioning").asBoolean(false), versions,
+                node.path("total").asLong(versions.size()));
+    }
+
+    /**
+     * Replaces a bucket's lifecycle rules with the ones given.
+     * <p>
+     * A rule archives every object under its prefix that has not been used for its
+     * {@link LifecycleRule#archiveAfterDays()}. An archived object keeps its key, attributes and
+     * listing entry, but its bytes move into an archive, and it has to be restored with
+     * {@link #restoreObject(String, Long)} before it can be read. The rules are applied by a sweep
+     * in the background, not by this call. They are validated as a whole, so a bucket never ends up
+     * with half of a set.
+     *
+     * @param ern   the bucket's ERN
+     * @param rules the rules the bucket is to have; each ID once
+     * @return the bucket's rules now
+     * @throws IOException if an I/O error occurs during the HTTP request
+     * @throws InterruptedException if the operation is interrupted while waiting for a response
+     * @throws EuclidServiceException with status 400 if a rule is invalid or an ID is given twice;
+     * 404 if there is no such bucket; 409 for one of euclid's internal buckets, which cannot have
+     * rules
+     */
+    public BucketLifecycleResponse setBucketLifecycle(String ern, List<LifecycleRule> rules)
+            throws IOException, InterruptedException {
+        List<Map<String, Object>> entries = new ArrayList<>();
+        for (LifecycleRule rule : rules) {
+            Map<String, Object> entry = new LinkedHashMap<>();
+            entry.put("id", rule.id());
+            entry.put("prefix", rule.prefix() == null ? "" : rule.prefix());
+            entry.put("archiveAfterDays", rule.archiveAfterDays());
+            entry.put("restoreDays", rule.restoreDays());
+            entry.put("enabled", rule.enabled());
+            entries.add(entry);
+        }
+        return toBucketLifecycleResponse(postJson("set-bucket-lifecycle", Map.of("ern", ern, "rules", entries)));
+    }
+
+    /**
+     * Reads a bucket's lifecycle rules.
+     *
+     * @param ern the bucket's ERN
+     * @return the bucket's rules; empty when it has none
+     * @throws IOException if an I/O error occurs during the HTTP request
+     * @throws InterruptedException if the operation is interrupted while waiting for a response
+     * @throws EuclidServiceException with status 404 if there is no such bucket
+     */
+    public BucketLifecycleResponse getBucketLifecycle(String ern) throws IOException, InterruptedException {
+        return toBucketLifecycleResponse(postJson("get-bucket-lifecycle", Map.of("ern", ern)));
+    }
+
+    /**
+     * Removes a bucket's lifecycle rules, so nothing more in it is archived. Objects already
+     * archived stay archived: rules decide what to archive, not what to bring back.
+     *
+     * @param ern the bucket's ERN
+     * @return the bucket, with no rules
+     * @throws IOException if an I/O error occurs during the HTTP request
+     * @throws InterruptedException if the operation is interrupted while waiting for a response
+     * @throws EuclidServiceException with status 404 if there is no such bucket
+     */
+    public BucketLifecycleResponse deleteBucketLifecycle(String ern) throws IOException, InterruptedException {
+        return toBucketLifecycleResponse(postJson("delete-bucket-lifecycle", Map.of("ern", ern)));
+    }
+
+    /**
+     * Archives one object now, whatever the bucket's rules say - what an operator does to something
+     * they know is not wanted online. Archiving an archived object changes nothing.
+     *
+     * @param bucketErn the object's bucket; its ERN, or its name
+     * @param key       the object's key within the bucket
+     * @return where the object stands now
+     * @throws IOException if an I/O error occurs during the HTTP request
+     * @throws InterruptedException if the operation is interrupted while waiting for a response
+     * @throws EuclidServiceException with status 404 if there is no such object; with status 409 if
+     * it is not complete yet, or belongs to an internal bucket
+     */
+    public ObjectLifecycleResponse archiveObject(String bucketErn, String key) throws IOException, InterruptedException {
+        return toObjectLifecycleResponse(postJson("archive-object", Map.of("bucketErn", bucketErn, "key", key)));
+    }
+
+    /**
+     * Archives one object now, naming it by its ERN.
+     *
+     * @param objectErn the object's ERN
+     * @return where the object stands now
+     * @throws IOException if an I/O error occurs during the HTTP request
+     * @throws InterruptedException if the operation is interrupted while waiting for a response
+     * @throws EuclidServiceException with status 404 if there is no such object; with status 409 if
+     * it is not complete yet, or belongs to an internal bucket
+     */
+    public ObjectLifecycleResponse archiveObject(String objectErn) throws IOException, InterruptedException {
+        return toObjectLifecycleResponse(postJson("archive-object", Map.of("ern", objectErn)));
+    }
+
+    /**
+     * Brings an archived object back online. It stays online for {@code days}, or for the restore
+     * days of the rule covering it, and is then archived again. Restoring an object that is online
+     * changes nothing.
+     *
+     * @param bucketErn the object's bucket; its ERN, or its name
+     * @param key       the object's key within the bucket
+     * @param days      days to keep it online, 1 to 36500, or {@code null} for the covering rule's
+     * @return where the object stands now, with {@link ObjectLifecycleResponse#restoredUntil()}
+     * @throws IOException if an I/O error occurs during the HTTP request
+     * @throws InterruptedException if the operation is interrupted while waiting for a response
+     * @throws EuclidServiceException with status 400 for days out of range; 404 if there is no such
+     * object; 409 if it cannot be restored
+     */
+    public ObjectLifecycleResponse restoreObject(String bucketErn, String key, Long days)
+            throws IOException, InterruptedException {
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("bucketErn", bucketErn);
+        body.put("key", key);
+        if (days != null) {
+            body.put("days", days);
+        }
+        return toObjectLifecycleResponse(postJson("restore-object", body));
+    }
+
+    /**
+     * Brings an archived object back online, naming it by its ERN.
+     *
+     * @param objectErn the object's ERN
+     * @param days      days to keep it online, 1 to 36500, or {@code null} for the covering rule's
+     * @return where the object stands now, with {@link ObjectLifecycleResponse#restoredUntil()}
+     * @throws IOException if an I/O error occurs during the HTTP request
+     * @throws InterruptedException if the operation is interrupted while waiting for a response
+     * @throws EuclidServiceException with status 400 for days out of range; 404 if there is no such
+     * object; 409 if it cannot be restored
+     */
+    public ObjectLifecycleResponse restoreObject(String objectErn, Long days) throws IOException, InterruptedException {
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("ern", objectErn);
+        if (days != null) {
+            body.put("days", days);
+        }
+        return toObjectLifecycleResponse(postJson("restore-object", body));
+    }
+
+    /**
+     * Checks one page of a bucket for objects whose file on disk is not the one their record
+     * describes: missing, empty, cut short, too long, or unreadable.
+     * <p>
+     * One page per call, in key order after {@code afterKey}, and the answer says where the next
+     * page starts - a bucket of millions cannot be checked in one request, and a page that carries
+     * its own cursor can be continued from anywhere, by anyone. {@code limit} is how many objects a
+     * page looks at, not how many problems it reports: every problem found is reported. Each object
+     * costs a stat, and a header read for an encrypted one, never its bytes. Objects still being
+     * uploaded, archived ones and directory markers are counted as skipped.
+     * <p>
+     * To check a whole bucket, call again with {@link VerifyObjectsResponse#nextKey()} until it
+     * comes back empty.
+     *
+     * @param bucketErn the bucket's ERN, or its name
+     * @param afterKey  the key to start after; {@code null} or empty from the start
+     * @param limit     how many objects to look at, 1 to 100000
+     * @return the page's counts and problems, and where the next page starts
+     * @throws IOException if an I/O error occurs during the HTTP request
+     * @throws InterruptedException if the operation is interrupted while waiting for a response
+     * @throws EuclidServiceException with status 400 for a limit out of range; 404 if there is no
+     * such bucket
+     */
+    public VerifyObjectsResponse verifyObjects(String bucketErn, String afterKey, long limit)
+            throws IOException, InterruptedException {
+        JsonNode node = postJson("verify-objects", Map.of("bucketErn", bucketErn,
+                "afterKey", afterKey == null ? "" : afterKey, "limit", limit));
+        List<ObjectProblem> problems = new ArrayList<>();
+        for (JsonNode entry : node.path("problems")) {
+            problems.add(new ObjectProblem(textOrNull(entry, "key"), textOrNull(entry, "ern"),
+                    textOrNull(entry, "problem"), entry.path("recordedSize").asLong(0),
+                    entry.path("fileSize").asLong(0), entry.path("expectedFileSize").asLong(0),
+                    textOrNull(entry, "internalName"), textOrNull(entry, "internalDir"),
+                    textOrNull(entry, "created"), textOrNull(entry, "detail")));
+        }
+        return new VerifyObjectsResponse(textOrNull(node, "bucketErn"), textOrNull(node, "afterKey"),
+                node.path("scanned").asLong(0), node.path("checked").asLong(0), node.path("skipped").asLong(0),
+                problems, textOrNull(node, "nextKey"));
+    }
+
+    /**
      * Sets the priority the notifications this bucket sends are given.
      *
      * <p>The bucket does nothing with it. A bucket is not consumed from and has no queue of its own,
@@ -894,6 +1141,37 @@ public final class EuclidEsm implements TokenRefreshable, SigningSchemeSelectabl
         if (response.statusCode() / 100 != 2) {
             throw new EuclidServiceException("esm", "delete-object", response.statusCode(), response.body());
         }
+    }
+
+    /**
+     * Deletes one version of an object, kept by a bucket with versioning on.
+     * <p>
+     * A non-current version is simply removed - its record and its file - and the key reads as it
+     * did. Deleting the current version makes the newest remaining one the current object, so the
+     * key goes on answering with the last thing stored in it before the version that was deleted.
+     * {@link #deleteObject(String)} instead deletes the object and every version of it.
+     *
+     * @param ern       the object's ERN, which every version of the key shares
+     * @param versionId the version to delete, from {@link #listObjectVersions}
+     * @return the version deleted, and the version the key holds now
+     * @throws IOException if an I/O error occurs during the operation
+     * @throws InterruptedException if the operation is interrupted
+     * @throws EuclidServiceException with status 404 if the object has no such version
+     */
+    public DeleteObjectVersionResponse deleteObjectVersion(String ern, String versionId)
+            throws IOException, InterruptedException {
+        Objects.requireNonNull(versionId, "versionId must not be null - deleteObject(ern) deletes every version");
+        String body = OBJECT_MAPPER.writeValueAsString(DeleteObjectRequest.builder().ern(ern).versionId(versionId).build());
+        HttpResponse<String> response = httpClient.post(baseUrl + "/", body, "esm", "delete-object",
+                requestHeaders("delete-object", body));
+
+        if (response.statusCode() / 100 != 2) {
+            throw new EuclidServiceException("esm", "delete-object", response.statusCode(), response.body());
+        }
+
+        JsonNode node = OBJECT_MAPPER.readTree(response.body());
+        return new DeleteObjectVersionResponse(textOrNull(node, "ern"), textOrNull(node, "versionId"),
+                textOrNull(node, "currentVersionId"));
     }
 
     /**
@@ -1616,7 +1894,28 @@ public final class EuclidEsm implements TokenRefreshable, SigningSchemeSelectabl
      * @throws InterruptedException if the operation is interrupted while waiting for a response
      */
     public byte[] getObject(String bucketErn, String key, long maxInlineSize) throws IOException, InterruptedException {
-        HttpResponse<byte[]> response = getObjectResponse(bucketErn, key, maxInlineSize);
+        return getObject(bucketErn, key, maxInlineSize, null);
+    }
+
+    /**
+     * Downloads one version of an object in a single request - in a bucket with versioning, an
+     * earlier version kept when the object was replaced. Bounded by {@code maxInlineSize} exactly
+     * as {@link #getObject(String, String, long)} is.
+     *
+     * @param bucketErn the Euclid Resource Name (ERN) of the bucket holding the object
+     * @param key the key of the object to download
+     * @param maxInlineSize the largest object, in bytes, to accept in one response
+     * @param versionId the version to fetch, from {@link #listObjectVersions}, or {@code null} for
+     *                  the current object
+     * @return the version's bytes
+     * @throws IOException if an I/O error occurs during the HTTP request
+     * @throws InterruptedException if the operation is interrupted while waiting for a response
+     * @throws EuclidServiceException with status 404 if the object has no such version; with status
+     * 413 if it is at or above {@code maxInlineSize}
+     */
+    public byte[] getObject(String bucketErn, String key, long maxInlineSize, String versionId)
+            throws IOException, InterruptedException {
+        HttpResponse<byte[]> response = getObjectResponse(bucketErn, key, maxInlineSize, versionId);
 
         if (response.statusCode() / 100 != 2) {
             throw new EuclidServiceException("esm", "get-object", response.statusCode(),
@@ -1993,12 +2292,33 @@ public final class EuclidEsm implements TokenRefreshable, SigningSchemeSelectabl
      */
     public long downloadFile(String bucketErn, String key, Path file, int partSize, int concurrency)
             throws IOException, InterruptedException {
+        return downloadFile(bucketErn, key, file, partSize, concurrency, null);
+    }
+
+    /**
+     * Downloads one version of an object to a local file - in a bucket with versioning, an earlier
+     * version kept when the object was replaced, named by its ID from {@link #listObjectVersions}.
+     * Fetched the way {@link #downloadFile(String, String, Path, int, int)} fetches the current one.
+     *
+     * @param bucketErn   the Euclid Resource Name (ERN) of the bucket holding the object
+     * @param key         the key of the object to download
+     * @param file        the local path to write the object to; parent directories are created as needed
+     * @param partSize    the size (in bytes) of each part to request
+     * @param concurrency the maximum number of parts to download concurrently, bounded to a minimum of 1
+     * @param versionId   the version to download, or {@code null} for the current object
+     * @return the number of bytes written to {@code file}
+     * @throws IOException if an I/O error occurs during the download
+     * @throws InterruptedException if the operation is interrupted during execution
+     * @throws EuclidServiceException with status 404 if the object has no such version
+     */
+    public long downloadFile(String bucketErn, String key, Path file, int partSize, int concurrency, String versionId)
+            throws IOException, InterruptedException {
         int boundedConcurrency = Math.max(1, concurrency);
         if (file.getParent() != null) {
             Files.createDirectories(file.getParent());
         }
 
-        HttpResponse<byte[]> inline = getObjectResponse(bucketErn, key, partSize);
+        HttpResponse<byte[]> inline = getObjectResponse(bucketErn, key, partSize, versionId);
         if (inline.statusCode() != PAYLOAD_TOO_LARGE) {
             if (inline.statusCode() / 100 != 2) {
                 throw new EuclidServiceException("esm", "get-object", inline.statusCode(),
@@ -2008,7 +2328,7 @@ public final class EuclidEsm implements TokenRefreshable, SigningSchemeSelectabl
             return inline.body().length;
         }
 
-        CreateDownloadResponse created = createDownload(bucketErn, key, boundedConcurrency);
+        CreateDownloadResponse created = createDownload(bucketErn, key, boundedConcurrency, versionId);
         long totalSize = created.size();
 
         // Pre-sizes the destination so the workers below can each write their own byte range at the
@@ -2240,14 +2560,15 @@ public final class EuclidEsm implements TokenRefreshable, SigningSchemeSelectabl
      * @param bucketErn the ERN of the bucket holding the object
      * @param key the key of the object to download
      * @param concurrency the number of concurrent part downloads the caller is about to use
+     * @param versionId a non-current version to download instead, or {@code null} for the current object
      * @return a {@code CreateDownloadResponse} describing the download session and the object
      * @throws IOException if an I/O error occurs during the request
      * @throws InterruptedException if the operation is interrupted while waiting for the response
      */
-    private CreateDownloadResponse createDownload(String bucketErn, String key, int concurrency)
+    private CreateDownloadResponse createDownload(String bucketErn, String key, int concurrency, String versionId)
             throws IOException, InterruptedException {
         String body = OBJECT_MAPPER.writeValueAsString(
-                CreateDownloadRequest.builder().bucketErn(bucketErn).key(key).build());
+                CreateDownloadRequest.builder().bucketErn(bucketErn).key(key).versionId(emptyToNull(versionId)).build());
         // Declares the concurrency the download is about to use so the gateway's autoscaler can ramp
         // storage instances toward it directly - see EsmCli::createDownload()'s doc comment.
         Map<String, String> headers = requestHeaders("create-download", body);
@@ -2345,16 +2666,20 @@ public final class EuclidEsm implements TokenRefreshable, SigningSchemeSelectabl
      * @param bucketErn the ERN of the bucket holding the object
      * @param key the key of the object to fetch
      * @param maxInlineSize the largest object, in bytes, to accept in one response
+     * @param versionId a non-current version to fetch instead, or {@code null} for the current object
      * @return the HTTP response, with the object's bytes - or a JSON error body - as its body
      * @throws IOException if an I/O error occurs during the request
      * @throws InterruptedException if the operation is interrupted while waiting for the response
      */
-    private HttpResponse<byte[]> getObjectResponse(String bucketErn, String key, long maxInlineSize)
+    private HttpResponse<byte[]> getObjectResponse(String bucketErn, String key, long maxInlineSize, String versionId)
             throws IOException, InterruptedException {
         Map<String, String> headers = binaryRequestHeaders();
         headers.put("x-euclid-bucket-ern", bucketErn);
         headers.put("x-euclid-key", key);
         headers.put("x-euclid-part-size", Long.toString(maxInlineSize));
+        if (versionId != null && !versionId.isEmpty()) {
+            headers.put("x-euclid-version-id", versionId);
+        }
         return httpClient.postForBinary(baseUrl + "/", "esm", "get-object", headers);
     }
 
@@ -2663,7 +2988,8 @@ public final class EuclidEsm implements TokenRefreshable, SigningSchemeSelectabl
         JsonNode root = OBJECT_MAPPER.readTree(responseBody);
         return CompleteUploadResponse.builder().ern(textOrNull(root, "ern")).bucketErn(textOrNull(root, "bucketErn"))
                 .key(textOrNull(root, "key")).size(root.path("size").asLong(0)).status(textOrNull(root, "status"))
-                .contentType(textOrNull(root, "contentType")).md5Sum(textOrNull(root, "md5Sum")).build();
+                .contentType(textOrNull(root, "contentType")).md5Sum(textOrNull(root, "md5Sum"))
+                .versionId(textOrNull(root, "versionId")).unchanged(root.path("unchanged").asBoolean(false)).build();
     }
 
     /**
@@ -2711,7 +3037,11 @@ public final class EuclidEsm implements TokenRefreshable, SigningSchemeSelectabl
                 textOrNull(objectNode, "status"),
                 textOrNull(objectNode, "contentType"),
                 textOrNull(objectNode, "md5Sum"),
+                textOrNull(objectNode, "versionId"),
+                objectNode.path("encrypted").asBoolean(false),
                 toVariantMap(objectNode.get("attributes")),
+                textOrNull(objectNode, "lifecycleState"),
+                emptyToNull(textOrNull(objectNode, "restoredUntil")),
                 textOrNull(objectNode, "created"),
                 textOrNull(objectNode, "modified"));
     }
@@ -2758,6 +3088,7 @@ public final class EuclidEsm implements TokenRefreshable, SigningSchemeSelectabl
                 bucketNode.path("internal").asBoolean(false),
                 textOrNull(bucketNode, "priority"),
                 bucketNode.path("stopped").asBoolean(false),
+                bucketNode.path("versioning").asBoolean(false),
                 textOrNull(bucketNode, "created"),
                 textOrNull(bucketNode, "modified"));
     }
@@ -2874,6 +3205,33 @@ public final class EuclidEsm implements TokenRefreshable, SigningSchemeSelectabl
     private static BucketStoppedResponse toBucketStoppedResponse(JsonNode node) {
         return new BucketStoppedResponse(textOrNull(node, "ern"), textOrNull(node, "name"),
                 node.path("stopped").asBoolean(false), node.path("held").asLong(0), node.path("released").asLong(0));
+    }
+
+    private static BucketLifecycleResponse toBucketLifecycleResponse(JsonNode node) {
+        List<LifecycleRule> rules = new ArrayList<>();
+        for (JsonNode entry : node.path("rules")) {
+            rules.add(new LifecycleRule(textOrNull(entry, "id"), textOrNull(entry, "prefix"),
+                    entry.path("archiveAfterDays").asLong(0), entry.path("restoreDays").asLong(0),
+                    entry.path("enabled").asBoolean(true)));
+        }
+        return new BucketLifecycleResponse(textOrNull(node, "ern"), textOrNull(node, "name"), rules);
+    }
+
+    private static ObjectLifecycleResponse toObjectLifecycleResponse(JsonNode node) {
+        return new ObjectLifecycleResponse(textOrNull(node, "ern"), textOrNull(node, "bucketErn"),
+                textOrNull(node, "key"), textOrNull(node, "lifecycleState"), textOrNull(node, "archivedAt"),
+                textOrNull(node, "restoredAt"), textOrNull(node, "restoredUntil"), textOrNull(node, "archiveFile"));
+    }
+
+    /**
+     * Maps an empty string to {@code null}, for the fields the server reports as "" rather than
+     * omitting.
+     *
+     * @param value the value to map
+     * @return the value, or {@code null} if it was null or empty
+     */
+    private static String emptyToNull(String value) {
+        return value == null || value.isEmpty() ? null : value;
     }
 
     private static GetObjectSizeResponse toGetObjectSizeResponse(JsonNode node) {

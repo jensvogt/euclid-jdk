@@ -1,11 +1,14 @@
 package de.jensvogt.euclid.dto.esm;
 
+import com.fasterxml.jackson.annotation.JsonInclude;
+
 /**
  * Request to delete an object.
  *
  * @param ern the ERN (Entity Resource Name) of the object to delete
  */
-public record DeleteObjectRequest(String ern) {
+@JsonInclude(JsonInclude.Include.NON_NULL)
+public record DeleteObjectRequest(String ern, String versionId) {
 
     /**
      * Creates a new instance of the Builder for constructing a DeleteObjectRequest object.
@@ -31,6 +34,8 @@ public record DeleteObjectRequest(String ern) {
          */
         private String ern;
 
+        private String versionId;
+
         /**
          * Sets the ERN of the object to delete.
          *
@@ -47,8 +52,19 @@ public record DeleteObjectRequest(String ern) {
          *
          * @return a new DeleteObjectRequest instance populated with the ERN value.
          */
+        /**
+         * Sets the one version of the object to delete.
+         *
+         * @param versionId the version, or {@code null} to delete the object and every version of it
+         * @return the builder instance
+         */
+        public Builder versionId(String versionId) {
+            this.versionId = versionId;
+            return this;
+        }
+
         public DeleteObjectRequest build() {
-            return new DeleteObjectRequest(ern);
+            return new DeleteObjectRequest(ern, versionId);
         }
     }
 }

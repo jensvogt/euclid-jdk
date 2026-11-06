@@ -1,12 +1,15 @@
 package de.jensvogt.euclid.dto.esm;
 
+import com.fasterxml.jackson.annotation.JsonInclude;
+
 /**
  * Request to start a multipart download, the mirror image of a create-upload.
  *
  * @param bucketErn the ERN of the bucket holding the object
  * @param key       the key of the object to download
  */
-public record CreateDownloadRequest(String bucketErn, String key) {
+@JsonInclude(JsonInclude.Include.NON_NULL)
+public record CreateDownloadRequest(String bucketErn, String key, String versionId) {
 
     /**
      * Creates a new instance of the Builder for constructing a CreateDownloadRequest object.
@@ -38,6 +41,8 @@ public record CreateDownloadRequest(String bucketErn, String key) {
          */
         private String key;
 
+        private String versionId;
+
         /**
          * Sets the ERN of the bucket holding the object.
          *
@@ -65,8 +70,19 @@ public record CreateDownloadRequest(String bucketErn, String key) {
          *
          * @return a new CreateDownloadRequest instance.
          */
+        /**
+         * Sets a non-current version of the object to download instead of the current one.
+         *
+         * @param versionId the version, or {@code null} for the current object
+         * @return the builder instance
+         */
+        public Builder versionId(String versionId) {
+            this.versionId = versionId;
+            return this;
+        }
+
         public CreateDownloadRequest build() {
-            return new CreateDownloadRequest(bucketErn, key);
+            return new CreateDownloadRequest(bucketErn, key, versionId);
         }
     }
 }

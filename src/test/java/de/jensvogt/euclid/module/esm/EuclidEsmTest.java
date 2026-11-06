@@ -8,7 +8,15 @@ import de.jensvogt.euclid.auth.SigV4;
 import de.jensvogt.euclid.auth.SignableRequest;
 import de.jensvogt.euclid.dto.com.Variant;
 import de.jensvogt.euclid.dto.esm.AbortUploadResponse;
+import de.jensvogt.euclid.dto.esm.BucketLifecycleResponse;
 import de.jensvogt.euclid.dto.esm.BucketStoppedResponse;
+import de.jensvogt.euclid.dto.esm.DeleteObjectVersionResponse;
+import de.jensvogt.euclid.dto.esm.ListObjectVersionsResponse;
+import de.jensvogt.euclid.dto.esm.ObjectLifecycleResponse;
+import de.jensvogt.euclid.dto.esm.SetBucketVersioningResponse;
+import de.jensvogt.euclid.dto.esm.VerifyObjectsResponse;
+import de.jensvogt.euclid.dto.esm.model.LifecycleRule;
+import de.jensvogt.euclid.dto.esm.model.ObjectProblem;
 import de.jensvogt.euclid.dto.esm.GetObjectSizeResponse;
 import de.jensvogt.euclid.dto.esm.CompleteUploadResponse;
 import de.jensvogt.euclid.dto.esm.CreateBucketResponse;
@@ -313,6 +321,221 @@ class EuclidEsmTest {
         EuclidServiceException thrown = assertThrows(EuclidServiceException.class, () -> esm.getObjectSize("obj-ern"));
 
         assertEquals(409, thrown.statusCode());
+    }
+
+    @Test
+    void setBucketVersioningSendsTheFlagAndParsesTheAnswer() throws Exception {
+        AtomicReference<SignableRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(captureRequest(exchange));
+            sendResponse(exchange, 200, "{\"ern\":\"bucket-ern\",\"name\":\"photos\",\"versioning\":true}");
+        });
+
+        SetBucketVersioningResponse response = newClient().setBucketVersioning("photos", true);
+
+        assertEquals("set-bucket-versioning", received.get().header("x-euclid-action"));
+        assertBodyContains(received.get().body(), "\"ern\":\"photos\"", "\"enabled\":true");
+        assertTrue(response.versioning());
+        assertEquals("bucket-ern", response.ern());
+    }
+
+    @Test
+    void getBucketParsesWhetherTheBucketKeepsVersions() throws Exception {
+        server = startServer(exchange -> sendResponse(exchange, 200,
+                "{\"bucket\":{\"name\":\"photos\",\"ern\":\"bucket-ern\",\"versioning\":true}}"));
+
+        assertTrue(newClient().getBucket("photos").bucket().versioning());
+    }
+
+    @Test
+    void listObjectVersionsParsesTheCurrentOneFirst() throws Exception {
+        AtomicReference<SignableRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(captureRequest(exchange));
+            sendResponse(exchange, 200, "{\"bucketErn\":\"bucket-ern\",\"key\":\"a.xml\",\"ern\":\"obj-ern\","
+                    + "\"versioning\":true,\"total\":2,\"versions\":["
+                    + "{\"versionId\":\"v2\",\"latest\":true,\"size\":20,\"md5Sum\":\"m2\",\"contentType\":\"text/xml\","
+                    + "\"status\":\"COMPLETED\",\"lifecycleState\":\"STANDARD\",\"owner\":\"jens\",\"modified\":\"2026-11-06T10:00:00Z\"},"
+                    + "{\"versionId\":\"v1\",\"latest\":false,\"size\":10,\"md5Sum\":\"m1\",\"lifecycleState\":\"ARCHIVED\"}]}");
+        });
+
+        ListObjectVersionsResponse response = newClient().listObjectVersions("incoming", "a.xml");
+
+        assertEquals("list-object-versions", received.get().header("x-euclid-action"));
+        assertBodyContains(received.get().body(), "\"bucketErn\":\"incoming\"", "\"key\":\"a.xml\"");
+        assertEquals("obj-ern", response.ern());
+        assertEquals(2, response.total());
+        assertTrue(response.versions().getFirst().latest());
+        assertEquals("v2", response.versions().getFirst().versionId());
+        assertFalse(response.versions().get(1).latest());
+        assertEquals("ARCHIVED", response.versions().get(1).lifecycleState());
+    }
+
+    @Test
+    void deleteObjectVersionSendsTheVersionAndParsesWhatIsCurrentNow() throws Exception {
+        AtomicReference<SignableRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(captureRequest(exchange));
+            sendResponse(exchange, 200, "{\"ern\":\"obj-ern\",\"versionId\":\"v2\",\"currentVersionId\":\"v1\"}");
+        });
+
+        DeleteObjectVersionResponse response = newClient().deleteObjectVersion("obj-ern", "v2");
+
+        assertEquals("delete-object", received.get().header("x-euclid-action"));
+        assertBodyContains(received.get().body(), "\"ern\":\"obj-ern\"", "\"versionId\":\"v2\"");
+        assertEquals("v1", response.currentVersionId());
+    }
+
+    /** Without a version, delete-object deletes every version - so none must be sent, not even null. */
+    @Test
+    void deleteObjectSendsNoVersion() throws Exception {
+        AtomicReference<SignableRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(captureRequest(exchange));
+            sendResponse(exchange, 200, "{}");
+        });
+
+        newClient().deleteObject("obj-ern");
+
+        assertEquals("{\"ern\":\"obj-ern\"}", received.get().body());
+    }
+
+    @Test
+    void anUnchangedUploadIsReportedWithTheVersionAlreadyHeld(@TempDir Path tempDir) throws Exception {
+        Path file = tempDir.resolve("same.bin");
+        Files.writeString(file, "ABC", StandardCharsets.US_ASCII);
+        server = startServer(exchange -> {
+            exchange.getRequestBody().readAllBytes();
+            sendResponse(exchange, 200, "{\"ern\":\"obj-ern\",\"key\":\"same.bin\",\"size\":3,\"status\":\"COMPLETED\","
+                    + "\"versionId\":\"v1\",\"unchanged\":true}");
+        });
+
+        CompleteUploadResponse response = newClient().uploadFile("bucket-ern", "same.bin", file, 1024, 1);
+
+        assertTrue(response.unchanged());
+        assertEquals("v1", response.versionId());
+    }
+
+    @Test
+    void listObjectsParsesVersionAndLifecycle() throws Exception {
+        server = startServer(exchange -> sendResponse(exchange, 200, "{\"objects\":[{\"ern\":\"obj-ern\",\"key\":\"a.xml\","
+                + "\"versionId\":\"v3\",\"encrypted\":true,\"lifecycleState\":\"ARCHIVED\",\"restoredUntil\":\"\"}],\"total\":1}"));
+
+        EsmObject object = newClient().listObjects("bucket-ern").objects().getFirst();
+
+        assertEquals("v3", object.versionId());
+        assertTrue(object.encrypted());
+        assertEquals("ARCHIVED", object.lifecycleState());
+        assertNull(object.restoredUntil(), "an empty restoredUntil means not restored");
+    }
+
+    @Test
+    void setBucketLifecycleSendsEveryRuleAndParsesTheRules() throws Exception {
+        AtomicReference<SignableRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(captureRequest(exchange));
+            sendResponse(exchange, 200, "{\"ern\":\"bucket-ern\",\"name\":\"photos\",\"rules\":["
+                    + "{\"id\":\"cold\",\"prefix\":\"\",\"archiveAfterDays\":90,\"restoreDays\":7,\"enabled\":true},"
+                    + "{\"id\":\"logs\",\"prefix\":\"logs/\",\"archiveAfterDays\":14,\"restoreDays\":2,\"enabled\":false}]}");
+        });
+
+        BucketLifecycleResponse response = newClient().setBucketLifecycle("bucket-ern", List.of(
+                LifecycleRule.of("cold", null, 90, 7),
+                new LifecycleRule("logs", "logs/", 14, 2, false)));
+
+        assertEquals("set-bucket-lifecycle", received.get().header("x-euclid-action"));
+        assertBodyContains(received.get().body(), "\"ern\":\"bucket-ern\"", "\"id\":\"cold\"", "\"prefix\":\"\"",
+                "\"archiveAfterDays\":90", "\"restoreDays\":7", "\"prefix\":\"logs/\"", "\"enabled\":false");
+        assertEquals(2, response.rules().size());
+        assertEquals(new LifecycleRule("logs", "logs/", 14, 2, false), response.rules().get(1));
+    }
+
+    @Test
+    void getAndDeleteBucketLifecycleSendTheirActions() throws Exception {
+        List<String> actions = Collections.synchronizedList(new ArrayList<>());
+        server = startServer(exchange -> {
+            actions.add(exchange.getRequestHeaders().getFirst("x-euclid-action"));
+            exchange.getRequestBody().readAllBytes();
+            sendResponse(exchange, 200, "{\"ern\":\"bucket-ern\",\"name\":\"photos\",\"rules\":[]}");
+        });
+
+        EuclidEsm esm = newClient();
+        assertTrue(esm.getBucketLifecycle("bucket-ern").rules().isEmpty());
+        esm.deleteBucketLifecycle("bucket-ern");
+
+        assertEquals(List.of("get-bucket-lifecycle", "delete-bucket-lifecycle"), actions);
+    }
+
+    @Test
+    void anInternalBucketCannotHaveLifecycleRules() throws Exception {
+        server = startServer(exchange -> sendResponse(exchange, 409, "{\"message\":\"Internal buckets cannot have lifecycle rules\"}"));
+
+        EuclidEsm esm = newClient();
+        EuclidServiceException thrown = assertThrows(EuclidServiceException.class,
+                () -> esm.setBucketLifecycle("bucket-ern", List.of(LifecycleRule.of("cold", "", 90, 7))));
+
+        assertEquals(409, thrown.statusCode());
+    }
+
+    @Test
+    void archiveObjectByBucketAndKeyParsesTheLifecycle() throws Exception {
+        AtomicReference<SignableRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(captureRequest(exchange));
+            sendResponse(exchange, 200, "{\"ern\":\"obj-ern\",\"bucketErn\":\"bucket-ern\",\"key\":\"a.xml\","
+                    + "\"lifecycleState\":\"ARCHIVED\",\"archivedAt\":\"2026-11-06T10:00:00Z\",\"archiveFile\":\"2026-11.zip\"}");
+        });
+
+        ObjectLifecycleResponse response = newClient().archiveObject("incoming", "a.xml");
+
+        assertEquals("archive-object", received.get().header("x-euclid-action"));
+        assertBodyContains(received.get().body(), "\"bucketErn\":\"incoming\"", "\"key\":\"a.xml\"");
+        assertEquals("ARCHIVED", response.lifecycleState());
+        assertEquals("2026-11.zip", response.archiveFile());
+        assertNull(response.restoredUntil());
+    }
+
+    @Test
+    void restoreObjectSendsDaysOnlyWhenGiven() throws Exception {
+        List<String> bodies = Collections.synchronizedList(new ArrayList<>());
+        server = startServer(exchange -> {
+            bodies.add(new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8));
+            sendResponse(exchange, 200, "{\"ern\":\"obj-ern\",\"lifecycleState\":\"STANDARD\","
+                    + "\"restoredUntil\":\"2026-11-13T10:00:00Z\"}");
+        });
+
+        EuclidEsm esm = newClient();
+        ObjectLifecycleResponse response = esm.restoreObject("obj-ern", 7L);
+        esm.restoreObject("incoming", "a.xml", null);
+
+        assertEquals("{\"ern\":\"obj-ern\",\"days\":7}", bodies.get(0));
+        // Left out rather than sent as null: the server falls back to the covering rule's days.
+        assertFalse(bodies.get(1).contains("days"));
+        assertEquals("2026-11-13T10:00:00Z", response.restoredUntil());
+    }
+
+    @Test
+    void verifyObjectsParsesThePageAndWhereTheNextStarts() throws Exception {
+        AtomicReference<SignableRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(captureRequest(exchange));
+            sendResponse(exchange, 200, "{\"bucketErn\":\"bucket-ern\",\"afterKey\":\"\",\"scanned\":3,\"checked\":2,"
+                    + "\"skipped\":1,\"nextKey\":\"c.xml\",\"problems\":[{\"key\":\"b.xml\",\"ern\":\"obj-b\","
+                    + "\"problem\":\"short\",\"recordedSize\":100,\"fileSize\":40,\"expectedFileSize\":100,"
+                    + "\"internalName\":\"abc\",\"internalDir\":\"/data/1\",\"created\":\"2026-11-01T00:00:00Z\"}]}");
+        });
+
+        VerifyObjectsResponse page = newClient().verifyObjects("bucket-ern", null, 3);
+
+        assertEquals("verify-objects", received.get().header("x-euclid-action"));
+        assertBodyContains(received.get().body(), "\"bucketErn\":\"bucket-ern\"", "\"afterKey\":\"\"", "\"limit\":3");
+        assertEquals(2, page.checked());
+        assertEquals(1, page.skipped());
+        assertEquals("c.xml", page.nextKey());
+        ObjectProblem problem = page.problems().getFirst();
+        assertEquals("short", problem.problem());
+        assertEquals(40, problem.fileSize());
+        assertNull(problem.detail());
     }
 
     @Test
@@ -1333,6 +1556,67 @@ class EuclidEsmTest {
         // is reached.
         assertThrows(IOException.class, () -> esm.downloadBucket("bucket-ern", target, "", true));
         assertFalse(Files.exists(tempDir.resolve("evil.txt")));
+    }
+
+    @Test
+    void downloadFileOfAVersionNamesItOnGetObject(@TempDir Path tempDir) throws Exception {
+        AtomicReference<String> versionHeader = new AtomicReference<>();
+        server = startServer(exchange -> {
+            versionHeader.set(exchange.getRequestHeaders().getFirst("x-euclid-version-id"));
+            exchange.getRequestBody().readAllBytes();
+            sendBinaryResponse(exchange, 200, "OLD".getBytes(StandardCharsets.US_ASCII));
+        });
+
+        Path file = tempDir.resolve("old.bin");
+        newClient().downloadFile("bucket-ern", "data.bin", file, 1024, 1, "v1");
+
+        assertEquals("v1", versionHeader.get());
+        assertEquals("OLD", Files.readString(file));
+    }
+
+    @Test
+    void downloadFileOfTheCurrentObjectSendsNoVersion(@TempDir Path tempDir) throws Exception {
+        AtomicReference<Boolean> hadVersion = new AtomicReference<>();
+        server = startServer(exchange -> {
+            hadVersion.set(exchange.getRequestHeaders().containsKey("x-euclid-version-id"));
+            exchange.getRequestBody().readAllBytes();
+            sendBinaryResponse(exchange, 200, "NEW".getBytes(StandardCharsets.US_ASCII));
+        });
+
+        newClient().downloadFile("bucket-ern", "data.bin", tempDir.resolve("new.bin"));
+
+        assertFalse(hadVersion.get());
+    }
+
+    /** Too large for one request, a version is downloaded in parts - and create-download carries it. */
+    @Test
+    void downloadFileOfALargeVersionNamesItOnCreateDownload(@TempDir Path tempDir) throws Exception {
+        byte[] content = "ABCDEFGHIJ".getBytes(StandardCharsets.US_ASCII);
+        AtomicReference<String> createBody = new AtomicReference<>();
+        server = startServer(exchange -> {
+            String action = exchange.getRequestHeaders().getFirst("x-euclid-action");
+            String body = new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
+            switch (action) {
+                case "get-object" -> sendResponse(exchange, 413, "{\"error\":\"object too large\"}");
+                case "create-download" -> {
+                    createBody.set(body);
+                    sendResponse(exchange, 200, "{\"downloadId\":\"download-1\",\"size\":10}");
+                }
+                case "download-part" -> {
+                    int partNumber = Integer.parseInt(exchange.getRequestHeaders().getFirst("x-euclid-part-number"));
+                    int partSize = Integer.parseInt(exchange.getRequestHeaders().getFirst("x-euclid-part-size"));
+                    int from = (partNumber - 1) * partSize;
+                    sendBinaryResponse(exchange, 200, Arrays.copyOfRange(content, from, Math.min(from + partSize, content.length)));
+                }
+                default -> sendResponse(exchange, 200, "{}");
+            }
+        });
+
+        Path file = tempDir.resolve("v1.bin");
+        newClient().downloadFile("bucket-ern", "data.bin", file, 4, 2, "v1");
+
+        assertBodyContains(createBody.get(), "\"versionId\":\"v1\"");
+        assertArrayEquals(content, Files.readAllBytes(file));
     }
 
     // A download's size isn't known until asked, so the single-request path is always tried first
