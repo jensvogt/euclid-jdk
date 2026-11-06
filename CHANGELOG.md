@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.1.60](https://github.com/jensvogt/euclid-jdk/compare/euclid-jdk-v0.1.59...euclid-jdk-v0.1.60) (2026-11-06)
+
+
+### Features
+
+* add EQS maxRetries ([dde2ff8](https://github.com/jensvogt/euclid-jdk/commit/dde2ff88ae8dfab127ded71523bd4fe942c4e08b))
+* change session handling ([2b2fcb6](https://github.com/jensvogt/euclid-jdk/commit/2b2fcb6369310da8cd87606c3a6927de7a62d094))
+
 ## [0.1.59](https://github.com/jensvogt/euclid-jdk/compare/euclid-jdk-v0.1.58...euclid-jdk-v0.1.59) (2026-11-06)
 
 
