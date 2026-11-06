@@ -290,6 +290,28 @@ class EuclidSessionTest {
     }
 
     @Test
+    void eadAndEmmAreBuiltFromTheSession() throws Exception {
+        // ead() and emm() thread the session's identity, token and namespace through exactly as
+        // the other accessors do - each request lands on its own target carrying all of it.
+        java.util.Map<String, CapturedRequest> byTarget = new java.util.concurrent.ConcurrentHashMap<>();
+        server = startServer(exchange -> {
+            CapturedRequest request = capture(exchange);
+            byTarget.put(request.header("x-euclid-target"), request);
+            sendResponse(exchange, 200, "{\"count\":0,\"modules\":[],\"total\":0}");
+        });
+
+        EuclidSession session = newSessionWithNamespace("prod");
+        session.ead().countEvents();
+        session.emm().listModules();
+
+        assertEquals("count-events", byTarget.get("ead").header("x-euclid-action"));
+        assertEquals("list-modules", byTarget.get("emm").header("x-euclid-action"));
+        for (CapturedRequest request : byTarget.values()) {
+            assertEquals("prod", request.header("x-euclid-namespace"));
+        }
+    }
+
+    @Test
     void createAccessKeyParsesResponse() throws Exception {
         AtomicReference<CapturedRequest> received = new AtomicReference<>();
         server = startServer(exchange -> {
