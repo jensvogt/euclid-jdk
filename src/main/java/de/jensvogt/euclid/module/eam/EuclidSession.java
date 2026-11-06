@@ -49,11 +49,13 @@ import de.jensvogt.euclid.dto.eam.model.Grant;
 import de.jensvogt.euclid.dto.eam.model.Role;
 import de.jensvogt.euclid.dto.eam.model.User;
 import de.jensvogt.euclid.dto.eam.model.UserGroup;
+import de.jensvogt.euclid.module.ead.EuclidEad;
 import de.jensvogt.euclid.module.eag.EuclidEag;
 import de.jensvogt.euclid.module.eap.EuclidEap;
 import de.jensvogt.euclid.module.ees.EuclidEes;
 import de.jensvogt.euclid.module.ekm.EuclidEkm;
 import de.jensvogt.euclid.module.ekv.EuclidEkv;
+import de.jensvogt.euclid.module.emm.EuclidEmm;
 import de.jensvogt.euclid.module.ens.EuclidEns;
 import de.jensvogt.euclid.module.eqs.EuclidEqs;
 import de.jensvogt.euclid.module.esm.EuclidEsm;
@@ -258,6 +260,38 @@ public record EuclidSession(String token, String userId, String accountId, Strin
      */
     public EuclidEag eag() {
         return new EuclidEag(baseUrl, token, region, accountId, userId, accessKeyId, secretAccessKey, caCertPath, nameSpace);
+    }
+
+    /**
+     * EAD (audit) operations for this session - the trail of what was run, by whom, in which
+     * account and namespace, and the status it was answered with. Requests are signed with SigV4
+     * using {@link #accessKeyId()}/{@link #secretAccessKey()} when both are present, falling back to
+     * the bearer token otherwise - mirroring how euclid-cli authenticates service calls.
+     * <p>
+     * Reads are confined to the session's own account whatever a filter says. EAD is role-gated, so
+     * each action needs the matching {@code ead:*} permission and is answered with HTTP 403 without
+     * it.
+     *
+     * @return EuclidEad instance
+     */
+    public EuclidEad ead() {
+        return new EuclidEad(baseUrl, token, region, accountId, userId, accessKeyId, secretAccessKey, caCertPath, nameSpace);
+    }
+
+    /**
+     * EMM (module manager) operations for this session - every module's process pool, limits and
+     * desired state, and the backup, export and import of the installation's data. Requests are
+     * signed with SigV4 using {@link #accessKeyId()}/{@link #secretAccessKey()} when both are
+     * present, falling back to the bearer token otherwise - mirroring how euclid-cli authenticates
+     * service calls.
+     * <p>
+     * Every EMM action is administrator-only server-side, and no role can grant one, so a session
+     * whose {@link #isAdmin()} is false gets HTTP 403 from all of them.
+     *
+     * @return EuclidEmm instance
+     */
+    public EuclidEmm emm() {
+        return new EuclidEmm(baseUrl, token, region, accountId, userId, accessKeyId, secretAccessKey, caCertPath, nameSpace);
     }
 
     /**
