@@ -12,6 +12,7 @@ import de.jensvogt.euclid.dto.eam.RoleRequest;
 import de.jensvogt.euclid.dto.eam.PermissionCheckResponse;
 import de.jensvogt.euclid.dto.eam.CreateAccessKeyResponse;
 import de.jensvogt.euclid.dto.eam.ListAccountsResponse;
+import de.jensvogt.euclid.dto.eam.ListMyAccountsResponse;
 import de.jensvogt.euclid.dto.eam.ListNamespacesResponse;
 import de.jensvogt.euclid.dto.eam.ListUserGroupsResponse;
 import de.jensvogt.euclid.dto.eam.ListUserResponse;
@@ -225,6 +226,68 @@ class EuclidSessionTest {
 
         assertThrows(IllegalArgumentException.class, () -> session.resetPassword(session.userId(), "new-one"));
         assertNull(received.get(), "nothing may have reached the server");
+    }
+
+    @Test
+    void changeUserIdSendsBothIdsAndParsesTheRenamedUser() throws Exception {
+        AtomicReference<CapturedRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(capture(exchange));
+            sendResponse(exchange, 200, "{\"user\":" + userJson("robert") + "}");
+        });
+
+        User user = newSession().changeUserId("bob", "robert").user();
+
+        assertEquals("change-userid", received.get().header("x-euclid-action"));
+        assertBodyContains(received.get().body(), "\"userId\":\"bob\"", "\"newUserId\":\"robert\"");
+        assertEquals("robert", user.userId());
+        assertEquals("user-ern", user.ern());
+    }
+
+    @Test
+    void changeUserIdSurfacesAnApplicationRunningAsTheUser() throws Exception {
+        server = startServer(exchange -> {
+            exchange.getRequestBody().readAllBytes();
+            sendResponse(exchange, 409, "{\"error\":\"User 'bob' is the identity application 'billing' runs as.\"}");
+        });
+
+        EuclidServiceException exception = assertThrows(EuclidServiceException.class,
+                () -> newSession().changeUserId("bob", "robert"));
+
+        assertEquals("eam", exception.service());
+        assertEquals("change-userid", exception.action());
+        assertEquals(409, exception.statusCode());
+    }
+
+    @Test
+    void changeEmailSendsUserAndAddressAndParsesTheUser() throws Exception {
+        AtomicReference<CapturedRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(capture(exchange));
+            sendResponse(exchange, 200, "{\"user\":" + userJson("bob") + "}");
+        });
+
+        User user = newSession().changeEmail("bob", "bob@example.com").user();
+
+        assertEquals("change-email", received.get().header("x-euclid-action"));
+        assertBodyContains(received.get().body(), "\"userId\":\"bob\"", "\"email\":\"bob@example.com\"");
+        assertEquals("bob", user.userId());
+        assertEquals("bob@example.com", user.email());
+    }
+
+    @Test
+    void changeEmailSurfacesAnAddressSomebodyElseHolds() throws Exception {
+        server = startServer(exchange -> {
+            exchange.getRequestBody().readAllBytes();
+            sendResponse(exchange, 409, "{\"error\":\"Email address already in use by user: alice\"}");
+        });
+
+        EuclidServiceException exception = assertThrows(EuclidServiceException.class,
+                () -> newSession().changeEmail("bob", "alice@example.com"));
+
+        assertEquals("eam", exception.service());
+        assertEquals("change-email", exception.action());
+        assertEquals(409, exception.statusCode());
     }
 
     @Test
@@ -608,6 +671,45 @@ class EuclidSessionTest {
 
         assertBodyContains(received.get().body(), "\"prefix\":\"86\"", "\"pageSize\":25", "\"pageIndex\":2",
                 "\"sortColumn\":\"name\"");
+    }
+
+    @Test
+    void listMyAccountsParsesTheAccountsAndTheHomeAccount() throws Exception {
+        AtomicReference<CapturedRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(capture(exchange));
+            // The second is an account named by a grant but missing from the accounts collection,
+            // which the server lists under its id with nothing else.
+            sendResponse(exchange, 200, "{\"accounts\":[" + accountJson("863459426936")
+                    + ",{\"accountId\":\"111111111111\",\"name\":\"111111111111\"}],"
+                    + "\"total\":2,\"homeAccountId\":\"863459426936\"}");
+        });
+
+        ListMyAccountsResponse response = newSession().listMyAccounts();
+
+        assertEquals("list-my-accounts", received.get().header("x-euclid-action"));
+        assertEquals("{}", received.get().body());
+        assertEquals(2, response.total());
+        assertEquals("863459426936", response.homeAccountId());
+        assertEquals(2, response.accounts().size());
+        assertEquals("Acme", response.accounts().get(0).name());
+        assertEquals("111111111111", response.accounts().get(1).accountId());
+        assertNull(response.accounts().get(1).ern());
+    }
+
+    @Test
+    void listMyAccountsSurfacesAnUnauthenticatedSession() throws Exception {
+        server = startServer(exchange -> {
+            exchange.getRequestBody().readAllBytes();
+            sendResponse(exchange, 401, "{\"error\":\"Unauthorized\"}");
+        });
+
+        EuclidServiceException exception = assertThrows(EuclidServiceException.class,
+                () -> newSession().listMyAccounts());
+
+        assertEquals("eam", exception.service());
+        assertEquals("list-my-accounts", exception.action());
+        assertEquals(401, exception.statusCode());
     }
 
     @Test

@@ -15,6 +15,7 @@ import de.jensvogt.euclid.dto.eap.RebalanceApplicationResponse;
 import de.jensvogt.euclid.dto.eap.ScaleApplicationRequest;
 import de.jensvogt.euclid.dto.eap.RedeployApplicationRequest;
 import de.jensvogt.euclid.dto.eap.RestartApplicationResponse;
+import de.jensvogt.euclid.dto.eap.SetApplicationLimitsRequest;
 import de.jensvogt.euclid.dto.eap.SetLogLevelResponse;
 import de.jensvogt.euclid.dto.eap.UpdateApplicationRequest;
 import de.jensvogt.euclid.dto.eap.ListNodesResponse;
@@ -207,6 +208,59 @@ class EuclidEapTest {
                 .applicationId("billing").instances(3).build());
 
         assertBodyContains(received.get().body(), "\"minInstances\":3", "\"maxInstances\":3");
+    }
+
+    @Test
+    void setApplicationLimitsSendsBothLimitsAndParsesThem() throws Exception {
+        AtomicReference<SignableRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(captureRequest(exchange));
+            sendResponse(exchange, 200, applicationJson());
+        });
+
+        Application application = newClient().setApplicationLimits(SetApplicationLimitsRequest.builder()
+                .applicationId("billing").memoryLimitMb(512L).cpuLimit(0.5).build());
+
+        assertEquals("set-application-limits", received.get().header("x-euclid-action"));
+        assertBodyContains(received.get().body(), "\"applicationId\":\"billing\"", "\"memoryLimitMb\":512",
+                "\"cpuLimit\":0.5");
+        assertEquals("billing", application.applicationId());
+        assertEquals(512, application.memoryLimitMb());
+        assertEquals(0.5, application.cpuLimit());
+    }
+
+    // The server reads any limit present in the body - even as null - as one being set, and would
+    // refuse a null one; a limit not given has to stay out of the body to be left alone.
+    @Test
+    void setApplicationLimitsSendsOnlyTheLimitItWasGiven() throws Exception {
+        AtomicReference<SignableRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(captureRequest(exchange));
+            sendResponse(exchange, 200, applicationJson());
+        });
+
+        newClient().setApplicationLimits(SetApplicationLimitsRequest.builder()
+                .applicationId("billing").cpuLimit(2.0).build());
+
+        String body = received.get().body();
+        assertBodyContains(body, "\"applicationId\":\"billing\"", "\"cpuLimit\":2.0");
+        assertFalse(body.contains("memoryLimitMb"), "an unset memoryLimitMb must not be sent, was " + body);
+    }
+
+    @Test
+    void setApplicationLimitsSurfacesARefusedAdmission() throws Exception {
+        server = startServer(exchange -> {
+            exchange.getRequestBody().readAllBytes();
+            sendResponse(exchange, 409, "{\"error\":\"the account's nodes cannot hold 2 instances of 64000 MiB\"}");
+        });
+
+        EuclidServiceException exception = assertThrows(EuclidServiceException.class,
+                () -> newClient().setApplicationLimits(SetApplicationLimitsRequest.builder()
+                        .applicationId("billing").memoryLimitMb(64000L).build()));
+
+        assertEquals("eap", exception.service());
+        assertEquals("set-application-limits", exception.action());
+        assertEquals(409, exception.statusCode());
     }
 
     // update-application only touches the fields it receives, so anything the caller did not set
@@ -1152,6 +1206,7 @@ class EuclidEapTest {
                 + "\"resources\":[\"ern:esm:eu-central-1:863459426936:bucket/invoices\"],"
                 + "\"userId\":\"eap-billing\",\"userExists\":true,\"logLevel\":\"info\","
                 + "\"minInstances\":2,\"maxInstances\":5,\"readyTimeoutMs\":60000,"
+                + "\"memoryLimitMb\":512,\"cpuLimit\":0.5,"
                 + "\"nodeLabels\":{\"os\":\"linux\"},\"type\":\"PROCESS\","
                 + "\"schedule\":\"\",\"nextRunAt\":\"\","
                 + "\"desiredState\":\"" + desiredState + "\",\"state\":\"" + state + "\",\"instances\":" + instances

@@ -56,6 +56,10 @@ import java.util.Map;
  * @param readyTimeoutMs milliseconds a process is given to report ready. Kept on the definition
  *                       but no longer decides readiness - an application counts as started by
  *                       surviving its own startup rather than by creating a socket
+ * @param memoryLimitMb  memory each instance may use, in MiB; 0 is no limit. Instances get the
+ *                       limit they start under, so running ones may still hold an older one - see
+ *                       {@link de.jensvogt.euclid.module.eap.EuclidEap#setApplicationLimits}
+ * @param cpuLimit       CPU each instance may use, in cores; 0 is no limit
  * @param nodeLabels     labels a worker node has to carry to be allowed to run this, e.g.
  *                       {@code os=windows}. Empty means any node will do
  * @param type           whether this stays up ({@link ApplicationType#PROCESS}) or runs once and
@@ -84,7 +88,8 @@ public record Application(String applicationId, String runtimeName, String ern, 
                           Map<String, String> environment, List<String> resources, String userId,
                           boolean userExists, String logLevel,
                           long minInstances,
-                          long maxInstances, long readyTimeoutMs, Map<String, String> nodeLabels,
+                          long maxInstances, long readyTimeoutMs, long memoryLimitMb, double cpuLimit,
+                          Map<String, String> nodeLabels,
                           ApplicationType type, String schedule, String nextRunAt,
                           String desiredState, String state, long instances,
                           List<ApplicationEndpoint> endpoints,
