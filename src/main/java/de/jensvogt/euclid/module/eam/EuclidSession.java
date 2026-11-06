@@ -3,8 +3,10 @@ package de.jensvogt.euclid.module.eam;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import de.jensvogt.euclid.dto.Metadata;
+import de.jensvogt.euclid.dto.eam.ChangeEmailRequest;
 import de.jensvogt.euclid.dto.eam.ChangeNamespaceRequest;
 import de.jensvogt.euclid.dto.eam.ChangePasswordRequest;
+import de.jensvogt.euclid.dto.eam.ChangeUserIdRequest;
 import de.jensvogt.euclid.dto.eam.CreateAccessKeyResponse;
 import de.jensvogt.euclid.dto.eam.CreateAccountRequest;
 import de.jensvogt.euclid.dto.eam.CreateNamespaceRequest;
@@ -23,6 +25,7 @@ import de.jensvogt.euclid.dto.eam.GetUserResponse;
 import de.jensvogt.euclid.dto.eam.GrantRoleRequest;
 import de.jensvogt.euclid.dto.eam.ListAccountsRequest;
 import de.jensvogt.euclid.dto.eam.ListAccountsResponse;
+import de.jensvogt.euclid.dto.eam.ListMyAccountsResponse;
 import de.jensvogt.euclid.dto.eam.ListNamespacesRequest;
 import de.jensvogt.euclid.dto.eam.ListNamespacesResponse;
 import de.jensvogt.euclid.dto.eam.ListUserGroupsRequest;
@@ -464,6 +467,93 @@ public record EuclidSession(String token, String userId, String accountId, Strin
     }
 
     /**
+     * Gives a user a different user ID. Administrator only.
+     *
+     * <p>Both ids are named outright, even when renaming yourself: unlike
+     * {@link #changePassword(String, String)}, which means "mine" by naming nobody, a rename that
+     * could mean the caller by saying nothing is one keystroke from renaming the wrong account.
+     *
+     * <p>What moves with the name: the user's ERN, every grant written to it, and their membership of
+     * any user group - a group's membership is a list of user ids. Without that the user would
+     * authenticate perfectly and hold nothing. What does not move is the history: an audit record
+     * says who did something under the name they did it under, and the owner recorded on a bucket,
+     * a queue or an object names who made it. Access keys travel with the user and keep their ids,
+     * so anything signing with one goes on working.
+     *
+     * <p>A session already open is not ended: its bearer token names the old id and stays valid
+     * until it expires, and cannot be refreshed after that. That includes this one when it renames
+     * itself - every call made through it afterwards is refused once the token runs out, so log in
+     * again under the new id rather than keep using it.
+     *
+     * @param userId    the user to rename
+     * @param newUserId the id they should have from now on
+     * @return the renamed user, as {@link #getUser(String)} would report them - so the new ERN can be
+     *         read from the answer rather than built
+     * @throws EuclidServiceException if either id is missing or both are the same (400), the caller
+     *                                is not an administrator (403), the user does not exist (404),
+     *                                or another user already holds the new id, an application runs
+     *                                as this user, or the user was renamed or deleted concurrently
+     *                                (409) - point such an application at another user with
+     *                                {@code updateApplication} first
+     * @throws IOException            if an I/O error occurs during the operation
+     * @throws InterruptedException   if the operation is interrupted while waiting for a response
+     */
+    public GetUserResponse changeUserId(String userId, String newUserId) throws IOException, InterruptedException {
+        String body = OBJECT_MAPPER.writeValueAsString(ChangeUserIdRequest.builder().userId(userId).newUserId(newUserId).build());
+        HttpResponse<String> response = new EuclidHttpClient(caCertPath).post(baseUrl + "/", body, "eam", "change-userid",
+                requestHeaders(Map.of("Content-Type", "application/json", "Authorization", "Bearer " + token)));
+
+        if (response.statusCode() / 100 != 2) {
+            throw new EuclidServiceException("eam", "change-userid", response.statusCode(), response.body());
+        }
+
+        return GetUserResponse.builder().user(toUser(OBJECT_MAPPER.readTree(response.body()).path("user"))).build();
+    }
+
+    /**
+     * Gives a user a different email address. Administrator only.
+     *
+     * <p>An address is a way in and not merely a detail recorded about a user: login accepts one in
+     * place of a user id. Which is why this names the user outright rather than meaning "me" when it
+     * names nobody, and why it asks for the privilege the other ways of changing who a user is ask
+     * for.
+     *
+     * <p>Nothing else about the user changes: the user id, the ERN built from it, their grants, their
+     * group memberships and their access keys all stay as they were. A session already open keeps
+     * working, and the next login has to use the new address - or the user id, which never stopped
+     * working.
+     *
+     * <p>There is no way to clear an address here. An empty one is refused rather than stored,
+     * because an account with no address and an account stored with an empty one are not the same
+     * thing to the index that keeps addresses unique. The server checks only that the value is
+     * plainly an address - a name, an {@code @}, a domain with a dot, no whitespace - and leaves the
+     * rest to whoever delivers mail to it.
+     *
+     * @param userId the user whose address is changing
+     * @param email  the address they should have from now on
+     * @return the user as {@link #getUser(String)} would report them, so what was stored can be read
+     *         back rather than assumed
+     * @throws EuclidServiceException if either value is missing, the address is not one, or it is
+     *                                the address the user already has (400), the caller is not an
+     *                                administrator (403), the user does not exist (404), or another
+     *                                user already holds the address - including one who took it a
+     *                                moment before this write (409)
+     * @throws IOException            if an I/O error occurs during the operation
+     * @throws InterruptedException   if the operation is interrupted while waiting for a response
+     */
+    public GetUserResponse changeEmail(String userId, String email) throws IOException, InterruptedException {
+        String body = OBJECT_MAPPER.writeValueAsString(ChangeEmailRequest.builder().userId(userId).email(email).build());
+        HttpResponse<String> response = new EuclidHttpClient(caCertPath).post(baseUrl + "/", body, "eam", "change-email",
+                requestHeaders(Map.of("Content-Type", "application/json", "Authorization", "Bearer " + token)));
+
+        if (response.statusCode() / 100 != 2) {
+            throw new EuclidServiceException("eam", "change-email", response.statusCode(), response.body());
+        }
+
+        return GetUserResponse.builder().user(toUser(OBJECT_MAPPER.readTree(response.body()).path("user"))).build();
+    }
+
+    /**
      * Switches the active namespace for this session: validated by the server against the
      * current account (and the caller's namespace grants, unless an account administrator) and,
      * on success, persisted to the local credentials cache alongside the returned session -
@@ -850,6 +940,54 @@ public record EuclidSession(String token, String userId, String accountId, Strin
             }
         }
         return ListAccountsResponse.builder().accounts(accounts).total(root.path("total").asLong(0)).build();
+    }
+
+    /**
+     * Lists the accounts this session's user may work in.
+     *
+     * <p>The one listing of accounts that is not administrator-only, because it is not a listing of
+     * the installation: it is the answer to "where may I work", and the caller is entitled to know
+     * that about themselves. {@link #listAccounts()} stays what it was - every account there is, for
+     * whoever runs the place.
+     *
+     * <p>What is in it: the home account, always - that is where the caller's own things live - and
+     * then one per account named by a grant they hold, their own and their groups' alike. That is
+     * the same set the server consults when they actually try something there, so the list cannot
+     * offer an account that then refuses them outright. An administrator gets every account, because
+     * being an administrator is permission everywhere rather than a grant anywhere.
+     *
+     * <p>An account named by a grant but missing from the installation's accounts is still listed,
+     * under its id and with its id as its name: the grant is what authorization reads, so hiding it
+     * would hide an account the caller can nonetheless work in. Such an entry has no ERN,
+     * description or dates.
+     *
+     * <p>Not paginated: the list is bounded by the caller's own grants, and euclid-cli reads it whole
+     * to check an account named at login before storing a session that would be refused everywhere.
+     *
+     * @return the accounts, ordered by account id, their total, and the caller's home account - the
+     *         one to select when the user has not said otherwise
+     * @throws EuclidServiceException if the session is not authenticated (401)
+     * @throws IOException            if an I/O error occurs during the operation
+     * @throws InterruptedException   if the operation is interrupted while waiting for a response
+     */
+    public ListMyAccountsResponse listMyAccounts() throws IOException, InterruptedException {
+        HttpResponse<String> response = new EuclidHttpClient(caCertPath).post(baseUrl + "/", "{}", "eam", "list-my-accounts",
+                requestHeaders(Map.of("Content-Type", "application/json", "Authorization", "Bearer " + token)));
+
+        if (response.statusCode() / 100 != 2) {
+            throw new EuclidServiceException("eam", "list-my-accounts", response.statusCode(), response.body());
+        }
+
+        List<Account> accounts = new ArrayList<>();
+        JsonNode root = OBJECT_MAPPER.readTree(response.body());
+        JsonNode node = root.get("accounts");
+        if (node != null && node.isArray()) {
+            for (JsonNode accountNode : node) {
+                accounts.add(toAccount(accountNode));
+            }
+        }
+        return ListMyAccountsResponse.builder().accounts(accounts).total(root.path("total").asLong(0))
+                .homeAccountId(textOrNull(root, "homeAccountId")).build();
     }
 
     /**

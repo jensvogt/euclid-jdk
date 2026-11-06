@@ -17,6 +17,7 @@ import de.jensvogt.euclid.dto.eap.ListNodesResponse;
 import de.jensvogt.euclid.dto.eap.RedeployApplicationRequest;
 import de.jensvogt.euclid.dto.eap.ScaleApplicationRequest;
 import de.jensvogt.euclid.dto.eap.RestartApplicationResponse;
+import de.jensvogt.euclid.dto.eap.SetApplicationLimitsRequest;
 import de.jensvogt.euclid.dto.eap.SetLogLevelRequest;
 import de.jensvogt.euclid.dto.eap.EgressLimitResponse;
 import de.jensvogt.euclid.dto.eap.EgressPermitResponse;
@@ -296,6 +297,49 @@ public final class EuclidEap implements TokenRefreshable, SigningSchemeSelectabl
     public Application scaleApplication(ScaleApplicationRequest request)
             throws IOException, InterruptedException {
         return toApplication(post("scale-application", OBJECT_MAPPER.writeValueAsString(request)));
+    }
+
+    /**
+     * Sets an application's per-instance memory and CPU limits, without restarting the instances it
+     * has.
+     * <p>
+     * {@link #updateApplication(UpdateApplicationRequest)} writes the whole definition and stamps
+     * the modification date, and the manager restarts a pool whose application changed since it
+     * started it - the same reason {@link #scaleApplication(ScaleApplicationRequest)} exists. This
+     * writes the two limits and nothing else.
+     * <p>
+     * The limits reach instances as they start: a new one, a replacement, a restart. Running
+     * instances keep the ones they started under, because a JVM sizes its heap once from the limit
+     * it starts with and a lower ceiling than it planned for is an OOM kill waiting for the next
+     * busy minute. {@link #restartApplication(String)} is how running instances are given the new
+     * limits.
+     * <p>
+     * Both limits are per instance. Over its memory limit an instance is killed by the kernel and
+     * reported as {@code OOM_KILLED}; after three in a row the worker stops restarting it until the
+     * limit or the application changes. Over its CPU limit an instance is throttled - slowed until
+     * the next 100 ms period - and never stopped. A node whose worker unit does not delegate its
+     * cgroup runs the instance unlimited and says so in its log.
+     * <p>
+     * The bounds are not checked here, so that what is refused is refused with the server's own
+     * words: a memory limit is 0 (none) or at least 64 MiB, a CPU limit 0 (none) or at least 0.01
+     * cores.
+     *
+     * @param request the application and the limits to set; a limit left null is left alone, and
+     *                0 removes one
+     * @return the stored definition after the change, with the limits as they now stand
+     * @throws IOException if an I/O error occurs during the operation
+     * @throws InterruptedException if the operation is interrupted
+     * @throws de.jensvogt.euclid.exception.EuclidServiceException with status 400 if no
+     * applicationId or neither limit was given, or a limit is negative or below its minimum; with
+     * status 403 if the caller is not an administrator; with status 404 if the application does not
+     * exist; with status 409 if the account's nodes cannot hold the application's floor of
+     * instances at the new memory limit
+     */
+    public Application setApplicationLimits(SetApplicationLimitsRequest request)
+            throws IOException, InterruptedException {
+        // NON_NULL serialization is what makes a limit left null mean "leave it": the server reads
+        // a field that is present, even as null, as a limit being set - and would refuse it.
+        return toApplication(post("set-application-limits", OBJECT_MAPPER.writeValueAsString(request)));
     }
 
     /**
@@ -1179,6 +1223,8 @@ public final class EuclidEap implements TokenRefreshable, SigningSchemeSelectabl
                 node.path("minInstances").asLong(0),
                 node.path("maxInstances").asLong(0),
                 node.path("readyTimeoutMs").asLong(0),
+                node.path("memoryLimitMb").asLong(0),
+                node.path("cpuLimit").asDouble(0.0),
                 toStringMap(node.get("nodeLabels")),
                 ApplicationType.fromWireValue(textOrNull(node, "type")),
                 textOrNull(node, "schedule"),
