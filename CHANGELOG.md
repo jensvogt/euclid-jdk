@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.1.59](https://github.com/jensvogt/euclid-jdk/compare/euclid-jdk-v0.1.58...euclid-jdk-v0.1.59) (2026-11-06)
+
+
+### Features
+
+* add EAD and EMM clients ([786985c](https://github.com/jensvogt/euclid-jdk/commit/786985c7bf42fc86fdff9620dac88da988e4bc38))
+* add ESM versioning, lifecycle, archive/restore and verify-objects ([27bc73c](https://github.com/jensvogt/euclid-jdk/commit/27bc73c5efd274167bbf69f2ad88698440a3a51e))
+* change gitignore ([3501b01](https://github.com/jensvogt/euclid-jdk/commit/3501b01f4882dc6f85b39ae92968ed65cabb3101))
+* sync EAM and EAP with euclid-cli ([295f678](https://github.com/jensvogt/euclid-jdk/commit/295f678064521c6616d2e00ec18cbb8687b3bf68))
+* sync EMO with euclid-cli ([bb75efd](https://github.com/jensvogt/euclid-jdk/commit/bb75efdff236cb1456e03388f5fe46637f5b0f55))
+* sync ENS, EQS, EKM, EKV and ESS with euclid-cli ([61a365a](https://github.com/jensvogt/euclid-jdk/commit/61a365a4949e84c3ed17a41db23db61bb4db420c))
+
 ## [0.1.58](https://github.com/jensvogt/euclid-jdk/compare/euclid-jdk-v0.1.57...euclid-jdk-v0.1.58) (2026-10-25)
 
 
