@@ -34,6 +34,45 @@ automatically while still valid, so subsequent calls can skip straight to:
 EuclidSqs sqs = Euclid.forServer("https://euclid.example.com").sqs();
 ```
 
+The cache is the same file euclid-cli uses, so a session established by either client is picked up
+by the other.
+
+### Signing in through an identity provider
+
+An installation that federates its logins to OpenID Connect or SAML is signed into in a browser, as
+`euclid-cli eam login --oidc` / `--saml` do. No password is asked for or sent - the provider says who
+is signing in:
+
+```java
+EuclidSession session = EuclidEam.forServer("https://euclid.example.com")
+        .loginWithOidc();          // or .loginWithSaml()
+```
+
+A listener is bound on a loopback port for the length of the login, the system browser is opened at
+the provider (the URL is printed to stderr too, for machines without one), and the session the
+browser brings back is cached like a password login's. Pass `.browser(url -> ...)` to show the URL
+yourself, and `.callbackTimeout(...)` to wait longer than three minutes. An assertion fetched some
+other way - from the provider's API - is turned into a session with
+`loginWithSamlAssertion(SamlAcsRequest...)`, and a web application that runs the browser leg itself
+has `oidcAuthorize`/`oidcLogin` and `samlAuthorize` as building blocks.
+
+Every login takes `.account("staging")` (by ID or name, checked against `listMyAccounts()`) and
+`.namespace("prod")`, applied in that order, as `eam login --account --namespace` does.
+
+A token lasts an hour. A long-running process renews it before then rather than logging in again:
+
+```java
+session = session.refreshSession();   // new token, same access key, account and namespace
+```
+
+Listings (`listUsers`, `listUserGroups`, `listAccounts`, `listNamespaces`, `listRoles`) also take
+their request object, whose `matchType` turns the prefix filter into `endsWith`, `contains` or
+`regex`:
+
+```java
+session.listUsers(ListUserRequest.builder().prefix("-svc").matchType("endsWith").build());
+```
+
 ### Roles and grants
 
 What a user may do is the union of the roles granted to them and to the groups they belong to.
@@ -72,9 +111,9 @@ if (!check.allowed()) {
 ```
 
 `listPermissions()` returns everything that can be granted, as `<module>:<action>`. It is generated
-from what the modules actually dispatch, so it is the vocabulary itself rather than a copy of it -
-and the two modules that are never grantable, `emd` and `emm`, are named separately rather than
-being silently missing.
+from what the modules actually dispatch, so it is the vocabulary itself rather than a copy of it.
+`describePermissions()` returns the same list together with the modules it comes from - and the two
+modules that are never grantable, `emd` and `emm`, named separately rather than silently missing.
 
 ### SQS operations
 
@@ -100,6 +139,15 @@ service and put back with `stopQueue`/`startQueue`, have its default visibility
 timeout changed with `setQueueVisibility`, and a dead letter queue drained back
 onto the queues its messages came from with `redriveDlq`.
 
+`deleteQueue(ern, true)` removes a queue only if nothing is using it - the server
+answers HTTP 409 while messages remain or deliveries are still on their way in.
+`purgeQueue(ern, true)` empties a large queue in the background and answers at once
+with how many messages it found. `listQueues(ListQueueRequest)` reaches every listing
+option, including how the name filter matches (`prefix`, `endsWith`, `contains` or
+`regex`). A service answering a message passes its envelope on with
+`sendMessage(ern, body, attributes, message.systemAttributes(), priority)`, so a
+correlation id survives the hop.
+
 ### ENS topics
 
 ENS fans a published message out to everything subscribed to the topic, at publish
@@ -117,7 +165,15 @@ ens.publishMessage(ern, "{\"orderId\":\"4711\"}");
 
 `createTopic(name, maxMessageLength)` caps how large a single message may be; the
 default is 1 MiB. `deleteTopic(ern)` removes the topic, `purgeTopic(ern)` only what
-is stored on it.
+is stored on it. A topic holding a long retention period's worth of messages can take
+longer to empty than the gateway waits, so `purgeTopic(ern, true)` has the server
+answer as soon as it has taken the purge on - the response's `messages` is what the
+topic held at that moment.
+
+`listTopics(prefix, matchType, pageSize, pageIndex, sortColumn, sortDirection)`
+matches names by `"prefix"` (the default), `"endsWith"`, `"contains"` or `"regex"`.
+Each topic carries `send` and `resend` beside `messages`: lifetime totals that a
+purge does not reset, so a topic that holds nothing can still show it has been busy.
 
 #### Publishing messages
 
@@ -219,6 +275,44 @@ One stream can carry several listeners, and the same connection also still serve
 `stream.awaitEvent(topic, filter, timeoutMillis)` for the simple "wait for the
 next one" case.
 
+### Monitoring
+
+EMO records what euclid measures about itself and whatever an application pushes.
+An application reports its own Micrometer meters through `EuclidMeterRegistry`,
+which pushes one batch per step:
+
+```java
+EuclidEmo emo = session.emo();
+
+EuclidMeterRegistry registry = new EuclidMeterRegistry(
+        EuclidMeterRegistryConfig.of(Duration.ofMinutes(1)), Clock.SYSTEM, emo, "parser-dev");
+```
+
+Reading the rows back is an administrator's, since it reads the whole
+installation. `listMetrics()` says what there is, `listMetricData` reads a series
+bucket by bucket (newest first, 100 rows unless a limit is given), and
+`averageMetric` lets the database compute a sample-weighted mean instead of
+fetching the rows:
+
+```java
+double load = emo.averageMetric(MetricQueryRequest.builder()
+        .name("system-load-per-core")
+        .resolution("HOUR")
+        .from("2026-11-06T00:00:00Z")
+        .build());
+```
+
+Threshold rules (`createAlertRule`, `updateAlertRule`, ...) are judged every
+period; `listAlerts` shows where each series stands and `listAlertHistory` how it
+got there, and every change is also published as `emo.alert.raised` or
+`emo.alert.cleared` for a listener to act on.
+
+Dashboards are the caller's own saved layouts, open to any authenticated user:
+`saveDashboard(name, layout)` stores any JSON object under a name, `getDashboard`
+returns it as saved, `listDashboards` names them, `deleteDashboard` removes one.
+EMO files each under the user it authenticated, so there is no way to read or
+overwrite somebody else's.
+
 ### Secrets
 
 ESS stores named secrets, encrypted under an EKM key - the namespace's own unless
@@ -239,6 +333,15 @@ ess.rotateSecret("db-password", "hunter3");
 takes a request rather than positional arguments because it distinguishes an
 absent field from an empty one: leaving the description null leaves the stored
 description alone, while passing `""` clears it.
+
+A listing matches names by prefix unless told otherwise. `ListSecretsRequest` takes a
+`matchType` of `"prefix"`, `"endsWith"`, `"contains"` or `"regex"` - the same four that EKM's
+`listKeys`/`listCertificates` and EKV's `listTables` requests take:
+
+```java
+ListSecretsResponse passwords = ess.listSecrets(
+        ListSecretsRequest.builder().prefix("password").matchType("contains").build());
+```
 
 ### The key/value store
 
@@ -288,7 +391,22 @@ Four things are worth knowing before you model against it:
   tell them apart.
 
 `listTables`, `getTable`, `deleteTable`, `deleteItem` and `scan` round it out. Paging is by
-page size and index, as everywhere else in euclid, rather than by cursor.
+page size and index, as everywhere else in euclid, rather than by cursor; a query's `total()` says
+how many items it matches across every page.
+
+A scan can be ordered and narrowed for the questions a query cannot answer because they name no
+partition - what changed since a date, which items have a given attribute value:
+
+```java
+ScanResponse open = ekv.scan(ScanRequest.builder().table("suppliers")
+        .modifiedFrom("2026-09-01T00:00:00Z")
+        .where("status", SortOperator.EQ, "OPEN")
+        .sortColumn("modified").sortDirection("desc")
+        .pageSize(100).build());
+```
+
+It is still a scan - the server reads the table either way - and its `total()` still counts the
+whole table rather than what the narrowing let through.
 
 ### The API gateway
 
@@ -329,6 +447,23 @@ eag.createRoute(CreateRouteRequest.builder().routeId("suppliers-write").path("/s
         .authentication(RouteAuthentication.EUCLID).build());
 ```
 
+An upload route forwards nowhere: the gateway is the endpoint, and it streams each request body
+into a bucket in parts, under the key given by the rest of the path, without ever holding it whole.
+It names a bucket by ERN instead of an application, and has to require a credential - one that did
+not would be a public write endpoint into somebody's bucket:
+
+```java
+eag.createRoute(CreateRouteRequest.builder().routeId("deliveries").path("/upload")
+        .type(RouteType.UPLOAD).bucket(bucketErn).keyPrefix("incoming/")
+        .maxBytes(12L * 1024 * 1024 * 1024).contentTypes(List.of("application/xml"))
+        .authentication(RouteAuthentication.BASIC).build());
+```
+
+Any route can also be given its own `timeout` in seconds (up to 3600, 0 for the gateway's default),
+since a search answering in milliseconds and a bulk export taking minutes share one gateway.
+`listRoutes(ListRoutesRequest)` matches paths by `"prefix"`, `"endsWith"`, `"contains"` or
+`"regex"` rather than only by prefix.
+
 `setRouteActive(routeId, false)` takes a route out of service without deleting it, so it comes back
 exactly as it was; `updateRoute` changes only the fields it names, leaving the rest alone.
 `listListeners()` reports which port speaks what, and for an HTTPS listener the certificate it
@@ -337,6 +472,36 @@ for a caller who has not been given it.
 
 Every EAG action decides what is exposed to the outside world and on what terms, so all of them are
 administrator-only: an ordinary principal gets HTTP 403.
+
+### DNS zones
+
+EDS is euclid's name server. It answers authoritatively for the zones stored in it, names every
+application, worker node and the manager under `euclid.internal`, and forwards everything else when
+forwarders are configured. This client manages the zones and records; the DNS queries themselves
+are served on UDP and TCP port 1053 to anybody who can reach it:
+
+```java
+EuclidEds eds = session.eds();
+
+eds.createZone("corp.example");
+eds.putRecord("corp.example", "api", "A", "10.1.2.3", "10.1.2.4");
+eds.putRecord("corp.example", "www", "CNAME", "api.corp.example");
+eds.putRecord("corp.example", "@", "MX", "10 mail.corp.example");
+
+Answer answer = eds.getAnswer("www.corp.example", "A");
+System.out.println(answer.rcode() + " " + answer.answers());
+```
+
+A record set is every value of one type at one name, and `putRecord` replaces the whole set, so
+there is never a moment when half the old addresses and half the new ones are served. Names may be
+relative (`api`), fully qualified, `@` for the apex, or a wildcard (`*.dev`); values are written as
+in a zone file and checked when they are written, so one the server could not serve is refused with
+HTTP 400. A CNAME must be the only set at its name and can never be at the apex.
+
+A zone's name is unique across the installation, not just the account, because a DNS question
+carries no account - creating one another account holds is a 409, and asking for another account's
+zone is a 404, the same as one that does not exist. `getAnswer` shows what the name server would
+reply without needing a DNS client; a name in none of its zones comes back `REFUSED`.
 
 ### Tokens in a deployed application
 

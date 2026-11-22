@@ -26,8 +26,12 @@ import java.util.List;
  * @param path          the path prefix this route answers for. Matched as a prefix on whole
  *                      segments, so {@code /resource} carries everything beneath it but never
  *                      claims {@code /resource-intern}; where two routes match, the longer wins
+ * @param type          what the gateway does with a request this route matches: forward it, or
+ *                      write its body into a bucket
+ * @param upload        where an {@link RouteType#UPLOAD} route writes and what it accepts. Reported
+ *                      on every route, and empty on a proxy route, which never reads it
  * @param applicationId the application that serves this path, as EAP knows it, or empty for a
- *                      module route
+ *                      module route or an upload route
  * @param moduleTarget  the euclid module this route reaches instead of an application, e.g.
  *                      {@code "eam"}, or empty for an ordinary route
  * @param moduleAction  the one action {@code moduleTarget} answers for on this route, e.g.
@@ -38,6 +42,14 @@ import java.util.List;
  *                      them - and keeps meaning all, so a route written before PATCH existed does
  *                      not quietly refuse it
  * @param authentication what a caller must present before a request is forwarded
+ * @param timeout       seconds the backend has to answer a request on this route, or 0 for the
+ *                      gateway's default ({@code euclid.gateway.http.backend-timeout}). Per route
+ *                      because it describes what is behind the path rather than the gateway: a
+ *                      search that answers in milliseconds and a bulk republish that takes minutes
+ *                      share one gateway, and one setting either cuts off the second or lets a hung
+ *                      instance of the first hold its caller as long as the second needs. 0 rather
+ *                      than the default written in, so a route that never chose follows the
+ *                      installation's setting when it changes
  * @param active        whether the gateway serves this route at all. A route can be taken out of
  *                      service without being deleted, and put back knowing it returns exactly as
  *                      it was
@@ -45,8 +57,9 @@ import java.util.List;
  * @param modified      last-modified timestamp
  */
 public record Route(String routeId, String ern, String accountId, String region, String namespace, String path,
-                    String applicationId, String moduleTarget, String moduleAction, List<String> methods,
-                    RouteAuthentication authentication, boolean active, String created, String modified) {
+                    RouteType type, RouteUpload upload, String applicationId, String moduleTarget,
+                    String moduleAction, List<String> methods, RouteAuthentication authentication, long timeout,
+                    boolean active, String created, String modified) {
 
     /**
      * Whether this route reaches a euclid module rather than an application euclid runs. The two
@@ -56,5 +69,15 @@ public record Route(String routeId, String ern, String accountId, String region,
      */
     public boolean isModuleRoute() {
         return moduleTarget != null && !moduleTarget.isEmpty();
+    }
+
+    /**
+     * Whether this route terminates requests at the gateway and writes their bodies into a bucket,
+     * rather than forwarding them anywhere.
+     *
+     * @return {@code true} if the route is of type {@link RouteType#UPLOAD}
+     */
+    public boolean isUploadRoute() {
+        return type == RouteType.UPLOAD;
     }
 }

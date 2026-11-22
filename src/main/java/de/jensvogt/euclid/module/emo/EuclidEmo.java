@@ -1,6 +1,7 @@
 package de.jensvogt.euclid.module.emo;
 
 import com.fasterxml.jackson.annotation.JsonInclude;
+import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
@@ -12,11 +13,17 @@ import de.jensvogt.euclid.auth.TokenRefreshable;
 import de.jensvogt.euclid.dto.emo.CreateAlertRuleRequest;
 import de.jensvogt.euclid.dto.emo.ListAlertHistoryRequest;
 import de.jensvogt.euclid.dto.emo.ListAlertsRequest;
+import de.jensvogt.euclid.dto.emo.ListDashboardsResponse;
 import de.jensvogt.euclid.dto.emo.Metric;
+import de.jensvogt.euclid.dto.emo.MetricQueryRequest;
+import de.jensvogt.euclid.dto.emo.SaveDashboardResponse;
 import de.jensvogt.euclid.dto.emo.UpdateAlertRuleRequest;
 import de.jensvogt.euclid.dto.emo.model.Alert;
 import de.jensvogt.euclid.dto.emo.model.AlertRule;
 import de.jensvogt.euclid.dto.emo.model.AlertTransition;
+import de.jensvogt.euclid.dto.emo.model.Dashboard;
+import de.jensvogt.euclid.dto.emo.model.DashboardSummary;
+import de.jensvogt.euclid.dto.emo.model.MetricDataPoint;
 import de.jensvogt.euclid.dto.emo.model.MetricInfo;
 import de.jensvogt.euclid.exception.EuclidServiceException;
 import de.jensvogt.euclid.http.EuclidHttpClient;
@@ -35,7 +42,7 @@ import java.util.function.Supplier;
  * EMO (monitoring) operations for an authenticated
  * {@link de.jensvogt.euclid.module.eam.EuclidSession}.
  * <p>
- * Two halves. The first is pushing metrics an application has measured about itself. Everything
+ * Three parts. The first is pushing metrics an application has measured about itself. Everything
  * euclid knows about a process from the outside - is it running, is it answering - the manager
  * already sees; what it cannot see is how hard the process is working, and for an application that
  * consumes messages rather than serving requests that is the only signal there is. So the
@@ -46,10 +53,15 @@ import java.util.function.Supplier;
  * is therefore cheap and expected to be periodic: one call carrying every metric of one tick,
  * rather than a call per measurement.
  * <p>
- * The second is alerting on those rows: listing what metrics there are, drawing threshold rules on
- * them, and reading back where every judged series stands and how it got there. These actions, like
- * {@code list-metrics}, read the whole installation's metrics and so are an administrator's: a
- * caller without administrator privileges gets HTTP 403 from every one of them.
+ * The second is reading those rows back and alerting on them: listing what metrics there are,
+ * reading a series' rows or averaging them, drawing threshold rules on them, and reading back where
+ * every judged series stands and how it got there. These actions read the whole installation's
+ * metrics and so are an administrator's: a caller without administrator privileges gets HTTP 403
+ * from every one of them.
+ * <p>
+ * The third is the caller's own saved dashboard layouts. Those are not the installation's business
+ * but one user's, so any authenticated caller may use them - and only on their own, since EMO files
+ * every dashboard under the user it authenticated rather than under anything the request names.
  */
 public final class EuclidEmo implements TokenRefreshable, SigningSchemeSelectable {
 
@@ -59,7 +71,20 @@ public final class EuclidEmo implements TokenRefreshable, SigningSchemeSelectabl
      * server apply its defaults on create and leave a field alone on update.
      */
     private static final ObjectMapper OBJECT_MAPPER =
-            new ObjectMapper().setSerializationInclusion(JsonInclude.Include.NON_NULL);
+            new ObjectMapper().setDefaultPropertyInclusion(JsonInclude.Include.NON_NULL);
+
+    /**
+     * Jackson mapper used only to write a dashboard layout. Unlike {@link #OBJECT_MAPPER} it keeps
+     * nulls: a layout is the caller's own JSON, stored as given, and a null inside it is part of
+     * what was given rather than an unset request field.
+     */
+    private static final ObjectMapper LAYOUT_MAPPER = new ObjectMapper();
+
+    /**
+     * The type a dashboard layout is read back as: a JSON object in its plain Java form.
+     */
+    private static final TypeReference<Map<String, Object>> LAYOUT_TYPE = new TypeReference<>() {
+    };
 
     /**
      * The Euclid service every request from this class is addressed to, sent as the
@@ -128,7 +153,7 @@ public final class EuclidEmo implements TokenRefreshable, SigningSchemeSelectabl
     private final EuclidHttpClient httpClient;
 
     /**
-     * Constructs an ETS client. Normally obtained from
+     * Constructs an EMO client. Normally obtained from
      * {@link de.jensvogt.euclid.module.eam.EuclidSession#emo()} rather than built directly.
      *
      * @param baseUrl         the base URL of the Euclid server
@@ -171,6 +196,7 @@ public final class EuclidEmo implements TokenRefreshable, SigningSchemeSelectabl
     public void signingScheme(SigningScheme signingScheme) {
         this.signingScheme = Objects.requireNonNull(signingScheme, "signing scheme must not be null");
     }
+
     /**
      * Pushes one tick's worth of measurements.
      *
@@ -255,6 +281,74 @@ public final class EuclidEmo implements TokenRefreshable, SigningSchemeSelectabl
                     textOrNull(item, "lastSeen")));
         }
         return metrics;
+    }
+
+    /**
+     * Reads EMO's stored rows - the series themselves, as a graph draws them - newest first.
+     * <p>
+     * This is action {@code list}, the read side of everything EMO writes: its own collectors, every
+     * module's pushed samples and {@link #pushMetrics(String, List)}. Each row is one bucket of one
+     * series at the requested resolution; see {@link MetricDataPoint} for what a bucket holds. The
+     * server caps the answer at 100 rows unless {@link MetricQueryRequest#limit()} says otherwise,
+     * and since a busy installation writes many series per period, narrowing by name and time is
+     * what makes that cap irrelevant rather than raising it.
+     * <p>
+     * Like {@link #listMetrics()}, this reads the whole installation's metrics and so is an
+     * administrator's.
+     *
+     * @param request the filters; unset ones read the 100 newest {@code RAW} rows of every metric
+     * @return the matching rows, newest first
+     * @throws EuclidServiceException with HTTP 401 if the caller is not authenticated, or 403 if it
+     *                                is not an administrator
+     * @throws IOException if the request could not be sent
+     * @throws InterruptedException if the calling thread was interrupted while waiting
+     */
+    public List<MetricDataPoint> listMetricData(MetricQueryRequest request) throws IOException, InterruptedException {
+        Objects.requireNonNull(request, "request must not be null");
+        JsonNode root = post("list", OBJECT_MAPPER.writeValueAsString(request));
+
+        List<MetricDataPoint> points = new ArrayList<>();
+        for (JsonNode item : root.path("items")) {
+            points.add(new MetricDataPoint(
+                    textOrNull(item, "name"),
+                    toStringMap(item.get("labels")),
+                    textOrNull(item, "labelName"),
+                    textOrNull(item, "labelValue"),
+                    item.path("value").asDouble(0),
+                    item.path("minValue").asDouble(0),
+                    item.path("maxValue").asDouble(0),
+                    item.path("samples").asLong(0),
+                    textOrNull(item, "type"),
+                    textOrNull(item, "resolution"),
+                    textOrNull(item, "timestamp")));
+        }
+        return points;
+    }
+
+    /**
+     * Averages every stored row matching the request into one figure - the "what was it over the
+     * last day" question, answered by the database rather than by fetching the rows.
+     * <p>
+     * This is action {@code average}. The mean is sample-weighted, as EMO's rollups are: buckets do
+     * not all hold the same number of samples, and a plain mean of bucket means would let a quiet
+     * bucket count as much as a busy one. Every matching row counts, whatever its dimensions, unless
+     * the request narrows them - an average of a metric over all of its series is what an unnarrowed
+     * request asks for. {@link MetricQueryRequest#limit()} is ignored.
+     * <p>
+     * No matching rows is {@code 0}, not an error, and so is an installation without MongoDB, which
+     * cannot aggregate; a zero is therefore worth checking against {@link #listMetricData} before it
+     * is believed. Administrator-only, like {@code list}.
+     *
+     * @param request the filters; usually at least a metric name and a time range
+     * @return the sample-weighted mean of the matching rows, or {@code 0} if there are none
+     * @throws EuclidServiceException with HTTP 401 if the caller is not authenticated, or 403 if it
+     *                                is not an administrator
+     * @throws IOException if the request could not be sent
+     * @throws InterruptedException if the calling thread was interrupted while waiting
+     */
+    public double averageMetric(MetricQueryRequest request) throws IOException, InterruptedException {
+        Objects.requireNonNull(request, "request must not be null");
+        return post("average", OBJECT_MAPPER.writeValueAsString(request)).path("average").asDouble(0);
     }
 
     /**
@@ -456,6 +550,105 @@ public final class EuclidEmo implements TokenRefreshable, SigningSchemeSelectabl
                     textOrNull(item, "namespace")));
         }
         return transitions;
+    }
+
+    /**
+     * Saves one of the caller's dashboard layouts under a name, replacing any already saved under
+     * it.
+     * <p>
+     * EMO stores the layout as the JSON object it is given and does not look inside, so its shape is
+     * the caller's own. The owner is never part of the request: EMO files the dashboard under the
+     * user it authenticated, which is the whole of the access control on dashboards - there is no
+     * way to name another user, so no way to overwrite theirs - and why, unlike everything else in
+     * this class but {@link #pushMetrics}, these actions need no administrator. Re-saving keeps the
+     * original creation time.
+     *
+     * @param name      the dashboard's name, unique among the caller's own dashboards
+     * @param dashboard the layout; serialised with Jackson, so any value Jackson writes as a JSON
+     *                  object - nested maps, lists, numbers, strings - will do
+     * @return the name, the user it was saved for and when
+     * @throws EuclidServiceException with HTTP 400 if {@code name} is empty, or 401 if the caller is
+     *                                not authenticated
+     * @throws IOException if the request could not be sent
+     * @throws InterruptedException if the calling thread was interrupted while waiting
+     */
+    public SaveDashboardResponse saveDashboard(String name, Map<String, ?> dashboard)
+            throws IOException, InterruptedException {
+        Objects.requireNonNull(name, "name must not be null");
+        Objects.requireNonNull(dashboard, "dashboard must not be null");
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("name", name);
+        payload.put("dashboard", dashboard);
+        // Written with a mapper that keeps nulls: NON_NULL would quietly drop a null the layout
+        // itself holds, and what is stored should be what was given.
+        JsonNode root = post("save-dashboard", LAYOUT_MAPPER.writeValueAsString(payload));
+        return new SaveDashboardResponse(
+                textOrNull(root, "name"),
+                textOrNull(root, "userId"),
+                textOrNull(root, "modified"));
+    }
+
+    /**
+     * Reads one of the caller's saved dashboards, layout included, exactly as it was saved.
+     *
+     * @param name the dashboard's name
+     * @return the dashboard, its layout and when it was created and last saved
+     * @throws EuclidServiceException with HTTP 400 if {@code name} is empty, 401 if the caller is not
+     *                                authenticated, 404 if the caller has no dashboard of that name,
+     *                                or 500 if the stored layout is no longer readable JSON
+     * @throws IOException if the request could not be sent
+     * @throws InterruptedException if the calling thread was interrupted while waiting
+     */
+    public Dashboard getDashboard(String name) throws IOException, InterruptedException {
+        Objects.requireNonNull(name, "name must not be null");
+        JsonNode root = post("get-dashboard", OBJECT_MAPPER.writeValueAsString(Map.of("name", name)));
+        JsonNode layout = root.get("dashboard");
+        Map<String, Object> dashboard = layout != null && layout.isObject()
+                ? OBJECT_MAPPER.convertValue(layout, LAYOUT_TYPE)
+                : null;
+        return new Dashboard(
+                textOrNull(root, "name"),
+                dashboard,
+                textOrNull(root, "created"),
+                textOrNull(root, "modified"));
+    }
+
+    /**
+     * Lists the caller's saved dashboards by name, without their layouts - what a chooser needs,
+     * and nothing a chooser does not.
+     *
+     * @return whose dashboards they are, which is always the caller, and the dashboards
+     * @throws EuclidServiceException with HTTP 401 if the caller is not authenticated
+     * @throws IOException if the request could not be sent
+     * @throws InterruptedException if the calling thread was interrupted while waiting
+     */
+    public ListDashboardsResponse listDashboards() throws IOException, InterruptedException {
+        JsonNode root = post("list-dashboards", "{}");
+
+        List<DashboardSummary> dashboards = new ArrayList<>();
+        for (JsonNode item : root.path("items")) {
+            dashboards.add(new DashboardSummary(
+                    textOrNull(item, "name"),
+                    textOrNull(item, "created"),
+                    textOrNull(item, "modified")));
+        }
+        return new ListDashboardsResponse(textOrNull(root, "userId"), dashboards);
+    }
+
+    /**
+     * Deletes one of the caller's saved dashboards. Only the layout goes; the metrics it showed are
+     * not touched.
+     *
+     * @param name the dashboard's name
+     * @throws EuclidServiceException with HTTP 400 if {@code name} is empty, 401 if the caller is not
+     *                                authenticated, or 404 if the caller has no dashboard of that
+     *                                name
+     * @throws IOException if the request could not be sent
+     * @throws InterruptedException if the calling thread was interrupted while waiting
+     */
+    public void deleteDashboard(String name) throws IOException, InterruptedException {
+        Objects.requireNonNull(name, "name must not be null");
+        post("delete-dashboard", OBJECT_MAPPER.writeValueAsString(Map.of("name", name)));
     }
 
     /**

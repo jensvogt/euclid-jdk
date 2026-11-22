@@ -35,6 +35,7 @@ import de.jensvogt.euclid.dto.ens.PublishMessageRequest;
 import de.jensvogt.euclid.dto.ens.PublishMessageResponse;
 import de.jensvogt.euclid.dto.ens.PurgeAllTopicsRequest;
 import de.jensvogt.euclid.dto.ens.PurgeTopicRequest;
+import de.jensvogt.euclid.dto.ens.PurgeTopicResponse;
 import de.jensvogt.euclid.dto.ens.SetMessageAttributeRequest;
 import de.jensvogt.euclid.dto.ens.SetTopicDeleteAfterDeliveryRequest;
 import de.jensvogt.euclid.dto.ens.SetTopicDeleteAfterDeliveryResponse;
@@ -239,9 +240,37 @@ public final class EuclidEns implements TokenRefreshable, SigningSchemeSelectabl
      */
     public ListTopicsResponse listTopics(String prefix, long pageSize, long pageIndex, String sortColumn,
                                   String sortDirection) throws IOException, InterruptedException {
+        return listTopics(prefix, "", pageSize, pageIndex, sortColumn, sortDirection);
+    }
+
+    /**
+     * Lists topics whose name matches {@code prefix} the way {@code matchType} says, paginated and
+     * in a chosen sort direction.
+     * <p>
+     * The text is passed as it is and compared by the server, so {@code "prefix"},
+     * {@code "endsWith"} and {@code "contains"} take it literally - a dot in a topic name is a dot,
+     * with nothing to escape - and only {@code "regex"} reads it as a pattern. An invalid regular
+     * expression, or a match type the server does not know, is refused with HTTP 400 rather than
+     * matching nothing, so a mistake cannot pass for an account without topics. {@code total} counts
+     * every match, not just this page, under the same filter.
+     *
+     * @param prefix        the text topic names are matched against; empty matches every topic
+     * @param matchType     {@code "prefix"}, {@code "endsWith"}, {@code "contains"} or
+     *                      {@code "regex"}; empty means {@code "prefix"}
+     * @param pageSize      the maximum number of topics to return in a single page
+     * @param pageIndex     the zero-based index of the page to return
+     * @param sortColumn    the column results are sorted by
+     * @param sortDirection the direction to sort in, {@code "asc"} or {@code "desc"}
+     * @return the matching topics
+     * @throws IOException if an I/O error occurs during the operation
+     * @throws InterruptedException if the operation is interrupted
+     */
+    public ListTopicsResponse listTopics(String prefix, String matchType, long pageSize, long pageIndex,
+                                         String sortColumn, String sortDirection)
+            throws IOException, InterruptedException {
         String body = OBJECT_MAPPER.writeValueAsString(
-                ListTopicsRequest.builder().prefix(prefix).pageSize(pageSize).pageIndex(pageIndex)
-                        .sortColumn(sortColumn).sortDirection(sortDirection).build());
+                ListTopicsRequest.builder().prefix(prefix).matchType(matchType).pageSize(pageSize)
+                        .pageIndex(pageIndex).sortColumn(sortColumn).sortDirection(sortDirection).build());
         HttpResponse<String> response = httpClient.post(baseUrl + "/", body, "ens", "list-topics",
                 requestHeaders("list-topics", body));
 
@@ -399,20 +428,44 @@ public final class EuclidEns implements TokenRefreshable, SigningSchemeSelectabl
     }
 
     /**
-     * Deletes all messages from a topic identified by its ERN.
+     * Deletes all messages from a topic identified by its ERN, answering once they are gone.
      *
      * @param ern the ERN of the topic to purge
+     * @return the topic's ERN, with {@code async} false
      * @throws IOException if an I/O error occurs during the operation
      * @throws InterruptedException if the operation is interrupted
      */
-    public void purgeTopic(String ern) throws IOException, InterruptedException {
-        String body = OBJECT_MAPPER.writeValueAsString(PurgeTopicRequest.builder().ern(ern).build());
+    public PurgeTopicResponse purgeTopic(String ern) throws IOException, InterruptedException {
+        return purgeTopic(ern, false);
+    }
+
+    /**
+     * Deletes all messages from a topic, optionally leaving the server to it.
+     * <p>
+     * Asked to run in the background, the server answers HTTP 202 as soon as it has taken the purge
+     * on, and the response's {@code messages} is how many the topic held at that moment rather than
+     * how many have gone. That is what a large topic wants: one holding a retention period's worth
+     * of messages can take longer to empty than the gateway waits, and a purge done inline then
+     * reaches the caller as a timeout while it carries on regardless. Nothing tracks the background
+     * work - there is nothing to resume, since a purge interrupted halfway has removed part of the
+     * topic and calling this again removes the rest.
+     *
+     * @param ern   the ERN of the topic to purge
+     * @param async whether the server answers before it has finished removing the messages
+     * @return the topic's ERN, whether the purge is still running, and what it took on if so
+     * @throws IOException if an I/O error occurs during the operation
+     * @throws InterruptedException if the operation is interrupted
+     */
+    public PurgeTopicResponse purgeTopic(String ern, boolean async) throws IOException, InterruptedException {
+        String body = OBJECT_MAPPER.writeValueAsString(PurgeTopicRequest.builder().ern(ern).async(async).build());
         HttpResponse<String> response = httpClient.post(baseUrl + "/", body, "ens", "purge-topic",
                 requestHeaders("purge-topic", body));
 
         if (response.statusCode() / 100 != 2) {
             throw new EuclidServiceException("ens", "purge-topic", response.statusCode(), response.body());
         }
+
+        return extractPurgeTopicResponse(response.body(), ern);
     }
 
     /**
@@ -1262,6 +1315,32 @@ public final class EuclidEns implements TokenRefreshable, SigningSchemeSelectabl
         return map;
     }
 
+    /**
+     * Reads a purge-topic answer.
+     * <p>
+     * An older server answered with an empty body, and one that does still means the purge is
+     * done - so an empty or non-object body is read as a finished, inline purge of the topic that
+     * was asked for rather than as an error.
+     *
+     * @param responseBody the response body
+     * @param ern          the ERN that was purged, used when the body does not name it
+     * @return the purge's outcome
+     * @throws IOException if the body is not JSON
+     */
+    private static PurgeTopicResponse extractPurgeTopicResponse(String responseBody, String ern) throws IOException {
+        if (responseBody == null || responseBody.isBlank()) {
+            return PurgeTopicResponse.builder().ern(ern).build();
+        }
+        JsonNode root = OBJECT_MAPPER.readTree(responseBody);
+        if (root == null || !root.isObject()) {
+            return PurgeTopicResponse.builder().ern(ern).build();
+        }
+        String answeredErn = textOrNull(root, "ern");
+        return PurgeTopicResponse.builder().ern(answeredErn == null ? ern : answeredErn)
+                .async(root.path("async").asBoolean(false))
+                .messages(root.path("messages").asLong(0)).build();
+    }
+
     private static ListTopicsResponse extractListTopicsResponse(String responseBody) throws IOException {
         JsonNode root = OBJECT_MAPPER.readTree(responseBody);
         JsonNode topicsNode = root.get("topics");
@@ -1292,6 +1371,8 @@ public final class EuclidEns implements TokenRefreshable, SigningSchemeSelectabl
                 topicNode.path("size").asLong(0),
                 topicNode.path("messages").asLong(0),
                 topicNode.path("maxMessageLength").asLong(1024 * 1024),
+                topicNode.path("send").asLong(0),
+                topicNode.path("resend").asLong(0),
                 textOrNull(topicNode, "status"),
                 topicNode.path("retentionPeriod").asLong(0),
                 topicNode.path("deleteAfterDelivery").asBoolean(false),

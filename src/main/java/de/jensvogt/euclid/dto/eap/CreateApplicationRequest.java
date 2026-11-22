@@ -13,7 +13,7 @@ import java.util.Map;
  * its own default for them - which is why the optional numbers are boxed types.
  *
  * @param applicationId  name identifying the application, unique within its account and namespace
- * @param runtime        how the artifact is executed: {@code "JAVA"}, {@code "JAVA21"}, {@code "JAVA25"}, {@code "PYTHON"}, {@code "NODEJS"} or {@code "BINARY"}
+ * @param runtime        how the artifact is executed: {@code "JAVA"}, {@code "JAVA21"}, {@code "JAVA25"}, {@code "PYTHON"}, {@code "NODEJS"}, {@code "BINARY"} or {@code "RUST"}
  * @param bucket         name of the ESM bucket holding the artifact
  * @param artifact       key of the artifact object within that bucket
  * @param version        version this build is, e.g. {@code "1.4.0"}; left unset, EAP reads it out of the
@@ -23,10 +23,22 @@ import java.util.Map;
  * @param environment    environment variables the processes are started with
  * @param buckets        names of the ESM buckets the application is granted access to
  * @param queues         names of the EQS queues the application is granted access to
+ * @param topics         names of the ENS topics the application is granted access to - without
+ *                       them, an application that publishes has nothing to name in its grant
+ * @param secrets        names of the ESS secrets the application is granted access to. Resolved
+ *                       now, so a missing secret is a refused deployment naming it rather than a
+ *                       crash somewhere in the application's startup
  * @param user           existing user the application acts as; left unset, EAP mints a technical principal of its own
  * @param minInstances   smallest number of processes to keep running; the server floors this at 1
  * @param maxInstances   largest number of processes to run; the server raises it to minInstances if lower
  * @param readyTimeoutMs milliseconds to wait for a process to report ready; the server floors this at 1000
+ * @param memoryLimitMb  memory each instance may use, in MiB; 0 or unset is no limit, anything else
+ *                       has to be at least 64. Checked against what the account's nodes can hold
+ *                       for {@code minInstances} instances - HTTP 409 if they cannot - even though
+ *                       the application is created stopped, since finding out at start would be
+ *                       finding out late
+ * @param cpuLimit       CPU each instance may use, in cores; 0 or unset is no limit, anything else
+ *                       has to be at least 0.01. Over it an instance is slowed, never stopped
  * @param nodeLabels     key/value labels a worker node has to carry to run this, e.g.
  *                       {@code os=windows}; empty or unset means any node will do
  * @param type           {@code "PROCESS"} (the server's default) for something that stays up, or
@@ -40,9 +52,10 @@ import java.util.Map;
  */
 public record CreateApplicationRequest(String applicationId, String runtime, String bucket, String artifact, String version,
                                        String command, List<String> arguments, Map<String, String> environment,
-                                       List<String> buckets, List<String> queues, String user, Long minInstances,
-                                       Long maxInstances, Long readyTimeoutMs, Map<String, String> nodeLabels,
-                                       String type, String schedule) {
+                                       List<String> buckets, List<String> queues, List<String> topics,
+                                       List<String> secrets, String user, Long minInstances,
+                                       Long maxInstances, Long readyTimeoutMs, Long memoryLimitMb, Double cpuLimit,
+                                       Map<String, String> nodeLabels, String type, String schedule) {
 
     /**
      * Creates a new instance of the Builder for constructing a CreateApplicationRequest object.
@@ -70,7 +83,7 @@ public record CreateApplicationRequest(String applicationId, String runtime, Str
         private String applicationId;
 
         /**
-         * How the artifact is executed: {@code "JAVA"}, {@code "JAVA21"}, {@code "JAVA25"}, {@code "PYTHON"}, {@code "NODEJS"} or {@code "BINARY"}.
+         * How the artifact is executed: {@code "JAVA"}, {@code "JAVA21"}, {@code "JAVA25"}, {@code "PYTHON"}, {@code "NODEJS"}, {@code "BINARY"} or {@code "RUST"}.
          */
         private String runtime;
 
@@ -113,6 +126,26 @@ public record CreateApplicationRequest(String applicationId, String runtime, Str
          * Names of the EQS queues the application is granted access to.
          */
         private List<String> queues;
+
+        /**
+         * Names of the ENS topics the application is granted access to.
+         */
+        private List<String> topics;
+
+        /**
+         * Names of the ESS secrets the application is granted access to.
+         */
+        private List<String> secrets;
+
+        /**
+         * Memory each instance may use, in MiB; null leaves it to the server, which means no limit.
+         */
+        private Long memoryLimitMb;
+
+        /**
+         * CPU each instance may use, in cores; null leaves it to the server, which means no limit.
+         */
+        private Double cpuLimit;
 
         /**
          * Existing user the application acts as; left unset, EAP mints a technical principal of its own.
@@ -161,9 +194,9 @@ public record CreateApplicationRequest(String applicationId, String runtime, Str
         }
 
         /**
-         * Sets how the artifact is executed: {@code "JAVA"}, {@code "JAVA21"}, {@code "JAVA25"}, {@code "PYTHON"}, {@code "NODEJS"} or {@code "BINARY"}.
+         * Sets how the artifact is executed: {@code "JAVA"}, {@code "JAVA21"}, {@code "JAVA25"}, {@code "PYTHON"}, {@code "NODEJS"}, {@code "BINARY"} or {@code "RUST"}.
          *
-         * @param runtime how the artifact is executed: {@code "JAVA"}, {@code "JAVA21"}, {@code "JAVA25"}, {@code "PYTHON"}, {@code "NODEJS"} or {@code "BINARY"}
+         * @param runtime how the artifact is executed: {@code "JAVA"}, {@code "JAVA21"}, {@code "JAVA25"}, {@code "PYTHON"}, {@code "NODEJS"}, {@code "BINARY"} or {@code "RUST"}
          * @return the builder instance
          */
         public Builder runtime(String runtime) {
@@ -266,6 +299,68 @@ public record CreateApplicationRequest(String applicationId, String runtime, Str
         }
 
         /**
+         * Sets the names of the ENS topics the application is granted access to.
+         * <p>
+         * Resolved to ERNs now, in the namespace being deployed into, like buckets and queues: a
+         * topic that does not exist is HTTP 404 here rather than an application that publishes and
+         * is refused.
+         *
+         * @param topics names of the ENS topics the application is granted access to
+         * @return the builder instance
+         */
+        public Builder topics(List<String> topics) {
+            this.topics = topics;
+            return this;
+        }
+
+        /**
+         * Sets the names of the ESS secrets the application is granted access to.
+         * <p>
+         * The application reads a secret by name, but ESS checks the read against the ERN that name
+         * resolves to, so the grant has to carry it - and resolving it now is what turns "the
+         * database credentials are not there" from a crash in the application's startup into a
+         * deployment refused with HTTP 404 that says which secret is missing.
+         *
+         * @param secrets names of the ESS secrets the application is granted access to
+         * @return the builder instance
+         */
+        public Builder secrets(List<String> secrets) {
+            this.secrets = secrets;
+            return this;
+        }
+
+        /**
+         * Sets how much memory each instance may use, in MiB.
+         * <p>
+         * 0 is no limit; anything else has to be at least 64. Over it an instance is killed by the
+         * kernel and reported as {@code OOM_KILLED}. The account's nodes have to be able to hold
+         * {@code minInstances} instances at this limit, or the deployment is refused with HTTP 409
+         * - checked now, though the application is created stopped, because it is created to be
+         * run.
+         *
+         * @param memoryLimitMb memory each instance may use, in MiB; 0 for no limit
+         * @return the builder instance
+         */
+        public Builder memoryLimitMb(Long memoryLimitMb) {
+            this.memoryLimitMb = memoryLimitMb;
+            return this;
+        }
+
+        /**
+         * Sets how much CPU each instance may use, in cores - 1.5 is one and a half.
+         * <p>
+         * 0 is no limit; anything else has to be at least 0.01. Over it an instance is throttled
+         * until the next 100 ms period, never stopped.
+         *
+         * @param cpuLimit CPU each instance may use, in cores; 0 for no limit
+         * @return the builder instance
+         */
+        public Builder cpuLimit(Double cpuLimit) {
+            this.cpuLimit = cpuLimit;
+            return this;
+        }
+
+        /**
          * Sets existing user the application acts as; left unset, EAP mints a technical principal of its own.
          *
          * @param user existing user the application acts as; left unset, EAP mints a technical principal of its own
@@ -352,8 +447,8 @@ public record CreateApplicationRequest(String applicationId, String runtime, Str
          */
         public CreateApplicationRequest build() {
             return new CreateApplicationRequest(applicationId, runtime, bucket, artifact, version, command,
-                    arguments, environment, buckets, queues, user, minInstances, maxInstances, readyTimeoutMs,
-                    nodeLabels, type, schedule);
+                    arguments, environment, buckets, queues, topics, secrets, user, minInstances, maxInstances,
+                    readyTimeoutMs, memoryLimitMb, cpuLimit, nodeLabels, type, schedule);
         }
     }
 }

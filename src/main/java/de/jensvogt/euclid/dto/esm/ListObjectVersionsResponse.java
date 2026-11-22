@@ -11,11 +11,13 @@ import java.util.List;
  * @param key        the object's key
  * @param ern        the object's ERN, which every version of the key shares
  * @param versioning whether the bucket has versioning on now
+ * @param maxVersions the most non-current versions the bucket lets one key keep, 0 for every one -
+ *                   which is why a key may show fewer versions than it was uploaded
  * @param versions   the current object first, marked {@link ObjectVersion#latest()}, then the
  *                   non-current versions, newest first. No current one when it was deleted down to
  *                   its versions
  * @param total      how many versions there are, the current one included
  */
-public record ListObjectVersionsResponse(String bucketErn, String key, String ern, boolean versioning,
+public record ListObjectVersionsResponse(String bucketErn, String key, String ern, boolean versioning, long maxVersions,
                                          List<ObjectVersion> versions, long total) {
 }

@@ -9,6 +9,7 @@ import de.jensvogt.euclid.auth.SigV4;
 import de.jensvogt.euclid.auth.SignableRequest;
 import de.jensvogt.euclid.auth.SigningScheme;
 import de.jensvogt.euclid.dto.ets.CreateServerRequest;
+import de.jensvogt.euclid.dto.ets.ListServersRequest;
 import de.jensvogt.euclid.dto.ets.UpdateServerRequest;
 import de.jensvogt.euclid.dto.ets.model.TransferServer;
 import de.jensvogt.euclid.exception.EuclidServiceException;
@@ -356,6 +357,53 @@ class EuclidEtsTest {
         assertBodyContains(received.get().body(), "\"prefix\":\"sftp\"");
     }
 
+    // Every type but regex is matched literally server-side, so the match type has to travel with
+    // the text; a listing that dropped it would quietly fall back to a prefix match.
+    @Test
+    void listServersSendsTheMatchType() throws Exception {
+        AtomicReference<SignableRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(captureRequest(exchange));
+            sendResponse(exchange, 200, "{\"servers\":[" + serverJson() + "]}");
+        });
+
+        List<TransferServer> servers = newClient().listServers(
+                ListServersRequest.builder().prefix("inbound").matchType("contains").build());
+
+        assertBodyContains(received.get().body(), "\"prefix\":\"inbound\"", "\"matchType\":\"contains\"");
+        assertEquals(1, servers.size());
+    }
+
+    // Without a match type the server's own default applies, which is what every listing did before
+    // the field existed - so it has to stay off the wire rather than arrive as an empty string.
+    @Test
+    void listServersOmitsAnUnsetMatchType() throws Exception {
+        AtomicReference<SignableRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(captureRequest(exchange));
+            sendResponse(exchange, 200, "{\"servers\":[]}");
+        });
+
+        newClient().listServers("sftp");
+
+        assertFalse(received.get().body().contains("matchType"), received.get().body());
+    }
+
+    // userIds and userGroups are a union, so how many people may log in is neither list's length;
+    // the server resolves the groups and reports the count.
+    @Test
+    void aServerCarriesHowManyPeopleItLetsIn() throws Exception {
+        server = startServer(exchange -> {
+            exchange.getRequestBody().readAllBytes();
+            sendResponse(exchange, 200, serverJson());
+        });
+
+        TransferServer found = newClient().getServer("sftp-1");
+
+        assertEquals(4, found.userCount());
+        assertEquals(2, found.userIds().size());
+    }
+
     @Test
     void getServerSendsTheServerId() throws Exception {
         AtomicReference<SignableRequest> received = new AtomicReference<>();
@@ -505,7 +553,7 @@ class EuclidEtsTest {
                 + "\"address\":\"0.0.0.0\",\"port\":2222,\"bucketName\":\"transfer\","
                 + "\"bucketErn\":\"ern:esm:eu-central-1:863459426936:development:bucket:transfer\","
                 + "\"homeDirectory\":\"{user}\","
-                + "\"userIds\":[\"alice\",\"bob\"],\"userGroups\":[\"admins\"],"
+                + "\"userIds\":[\"alice\",\"bob\"],\"userGroups\":[\"admins\"],\"userCount\":4,"
                 + "\"directories\":[\"incoming/mix\",\"outgoing\"],"
                 + "\"desiredState\":\"" + desiredState + "\",\"state\":\"" + state + "\",\"hostKey\":\"\","
                 + "\"pasvMin\":6000,\"pasvMax\":6100,\"created\":\"2026-01-01\",\"modified\":\"2026-01-02\"}";

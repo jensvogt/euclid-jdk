@@ -58,7 +58,7 @@ public final class EuclidEss implements TokenRefreshable, SigningSchemeSelectabl
      * sending an empty one is the difference between leaving it alone and clearing it.
      */
     private static final ObjectMapper OBJECT_MAPPER =
-            new ObjectMapper().setSerializationInclusion(JsonInclude.Include.NON_NULL);
+            new ObjectMapper().setDefaultPropertyInclusion(JsonInclude.Include.NON_NULL);
 
     /**
      * The Euclid service every request from this class is addressed to, sent as the
@@ -251,10 +251,24 @@ public final class EuclidEss implements TokenRefreshable, SigningSchemeSelectabl
      */
     public ListSecretsResponse listSecrets(String prefix, long pageSize, long pageIndex, String sortColumn,
                                            String sortDirection) throws IOException, InterruptedException {
-        String body = OBJECT_MAPPER.writeValueAsString(
-                ListSecretsRequest.builder().prefix(prefix).pageSize(pageSize).pageIndex(pageIndex)
-                        .sortColumn(sortColumn).sortDirection(sortDirection).build());
-        JsonNode root = post("list-secrets", body);
+        return listSecrets(ListSecretsRequest.builder().prefix(prefix).pageSize(pageSize).pageIndex(pageIndex)
+                .sortColumn(sortColumn).sortDirection(sortDirection).build());
+    }
+
+    /**
+     * Lists secrets with every option of the request spelled out - including
+     * {@link ListSecretsRequest#matchType()}, which is how to find a name that ends with, contains or
+     * matches a pattern rather than one that starts with the given text. No values come back, and a
+     * principal restricted to particular secrets sees only those - see
+     * {@link #listSecrets(String, long, long, String, String)}.
+     *
+     * @param request what to list
+     * @return a {@code ListSecretsResponse} carrying the secrets and their total
+     * @throws IOException if an I/O error occurs during the operation
+     * @throws InterruptedException if the operation is interrupted
+     */
+    public ListSecretsResponse listSecrets(ListSecretsRequest request) throws IOException, InterruptedException {
+        JsonNode root = post("list-secrets", OBJECT_MAPPER.writeValueAsString(request));
         return ListSecretsResponse.builder().secrets(toSecretList(root.get("secrets")))
                 .total(root.path("total").asLong(0)).build();
     }

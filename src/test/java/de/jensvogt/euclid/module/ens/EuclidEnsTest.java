@@ -16,6 +16,7 @@ import de.jensvogt.euclid.dto.ens.ListMessagesResponse;
 import de.jensvogt.euclid.dto.ens.ListSubscriptionsResponse;
 import de.jensvogt.euclid.dto.ens.ListTopicsResponse;
 import de.jensvogt.euclid.dto.ens.PublishMessageResponse;
+import de.jensvogt.euclid.dto.ens.PurgeTopicResponse;
 import de.jensvogt.euclid.dto.ens.SetTopicDeleteAfterDeliveryResponse;
 import de.jensvogt.euclid.dto.ens.SetTopicMaxMessageLengthResponse;
 import de.jensvogt.euclid.dto.ens.SetTopicRetentionResponse;
@@ -975,6 +976,99 @@ class EuclidEnsTest {
         assertNull(topic.status());
         assertEquals(0, topic.retentionPeriod());
         assertFalse(topic.deleteAfterDelivery());
+    }
+
+    // Lifetime totals, next to the current count they are easy to confuse with: a purged topic
+    // holds nothing and has still had everything published to it.
+    @Test
+    void aTopicCarriesItsLifetimeSendAndResendTotals() throws Exception {
+        server = startServer(exchange -> {
+            exchange.getRequestBody().readAllBytes();
+            sendResponse(exchange, 200, "{\"topic\":{\"name\":\"orders\",\"ern\":\"topic-ern\","
+                    + "\"messages\":0,\"send\":1200,\"resend\":35}}");
+        });
+
+        Topic topic = newClient().getTopic("orders").topic();
+
+        assertEquals(0, topic.messages());
+        assertEquals(1200, topic.send());
+        assertEquals(35, topic.resend());
+    }
+
+    @Test
+    void listTopicsSendsTheMatchTypeWithTheText() throws Exception {
+        AtomicReference<SignableRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(captureRequest(exchange));
+            sendResponse(exchange, 200, "{\"topics\":[],\"total\":0}");
+        });
+
+        newClient().listTopics(".v1", "endsWith", 10, 0, "name", "asc");
+
+        assertBodyContains(received.get().body(), "\"prefix\":\".v1\"", "\"matchType\":\"endsWith\"");
+    }
+
+    // Left empty rather than spelled out, so the server's own default decides what an unqualified
+    // prefix means - which is what every caller that predates the field was getting.
+    @Test
+    void listTopicsWithoutAMatchTypeLeavesItToTheServer() throws Exception {
+        AtomicReference<SignableRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(captureRequest(exchange));
+            sendResponse(exchange, 200, "{\"topics\":[],\"total\":0}");
+        });
+
+        newClient().listTopics("ord", 25, 2, "created");
+
+        assertBodyContains(received.get().body(), "\"matchType\":\"\"");
+    }
+
+    @Test
+    void purgeTopicInlineAsksForNoBackgroundWork() throws Exception {
+        AtomicReference<SignableRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(captureRequest(exchange));
+            sendResponse(exchange, 200, "{\"ern\":\"topic-ern\",\"async\":false}");
+        });
+
+        PurgeTopicResponse response = newClient().purgeTopic("topic-ern");
+
+        assertBodyContains(received.get().body(), "\"async\":false");
+        assertEquals("topic-ern", response.ern());
+        assertFalse(response.async());
+        assertEquals(0, response.messages());
+    }
+
+    // 202 with what the topic held when the purge was taken on - the one figure that still means
+    // something once the background thread has started removing messages.
+    @Test
+    void purgeTopicInTheBackgroundReportsWhatItTookOn() throws Exception {
+        AtomicReference<SignableRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(captureRequest(exchange));
+            sendResponse(exchange, 202, "{\"ern\":\"topic-ern\",\"async\":true,\"messages\":5000}");
+        });
+
+        PurgeTopicResponse response = newClient().purgeTopic("topic-ern", true);
+
+        assertEquals("purge-topic", received.get().header("x-euclid-action"));
+        assertBodyContains(received.get().body(), "\"ern\":\"topic-ern\"", "\"async\":true");
+        assertTrue(response.async());
+        assertEquals(5000, response.messages());
+    }
+
+    // An older server answered a purge with no body at all; that still means it is done.
+    @Test
+    void purgeTopicAnsweredWithAnEmptyBodyIsAFinishedPurge() throws Exception {
+        server = startServer(exchange -> {
+            exchange.getRequestBody().readAllBytes();
+            sendResponse(exchange, 200, "");
+        });
+
+        PurgeTopicResponse response = newClient().purgeTopic("topic-ern");
+
+        assertEquals("topic-ern", response.ern());
+        assertFalse(response.async());
     }
 
     private EuclidEns newClient() {

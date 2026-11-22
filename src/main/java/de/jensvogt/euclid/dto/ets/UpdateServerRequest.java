@@ -13,10 +13,14 @@ import java.util.List;
  * @param address       address to bind to
  * @param port          TCP port to listen on
  * @param bucket        name of the ESM bucket this server fronts
- * @param homeDirectory users home directory
+ * @param homeDirectory the new key prefix template each client's session is rooted at, with
+ *                      {@code {user}} standing for the EAM user ID that logged in, or {@code null}
+ *                      to leave it alone. Empty moves the server back to one shared key space at
+ *                      the bucket root
  * @param userIds       EAM user IDs allowed to log in, replacing the current list
  * @param userGroups    EAM user groups whose members may log in, replacing the current list
- * @param directories   default directory layout
+ * @param directories   directories every session should find under its home, created at login,
+ *                      replacing the current list, or {@code null} to leave it alone
  * @param hostKey       SFTP only: private SSH host key file
  * @param pasvMin       FTP only: lowest passive data port
  * @param pasvMax       FTP only: highest passive data port

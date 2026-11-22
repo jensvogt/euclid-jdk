@@ -351,10 +351,22 @@ public final class EuclidEkv implements TokenRefreshable, SigningSchemeSelectabl
      */
     public ListTablesResponse listTables(String prefix, long pageSize, long pageIndex, String sortColumn,
                                          String sortDirection) throws IOException, InterruptedException {
-        String body = OBJECT_MAPPER.writeValueAsString(
-                ListTablesRequest.builder().prefix(prefix).pageSize(pageSize).pageIndex(pageIndex)
-                        .sortColumn(sortColumn).sortDirection(sortDirection).build());
-        JsonNode root = post("list-tables", body);
+        return listTables(ListTablesRequest.builder().prefix(prefix).pageSize(pageSize).pageIndex(pageIndex)
+                .sortColumn(sortColumn).sortDirection(sortDirection).build());
+    }
+
+    /**
+     * Lists tables with every option of the request spelled out - including
+     * {@link ListTablesRequest#matchType()}, which is how to find a name that ends with, contains or
+     * matches a pattern rather than one that starts with the given text.
+     *
+     * @param request what to list
+     * @return a {@code ListTablesResponse} carrying the tables and their total
+     * @throws IOException if an I/O error occurs during the operation
+     * @throws InterruptedException if the operation is interrupted
+     */
+    public ListTablesResponse listTables(ListTablesRequest request) throws IOException, InterruptedException {
+        JsonNode root = post("list-tables", OBJECT_MAPPER.writeValueAsString(request));
         return ListTablesResponse.builder().tables(toTableDescriptionList(root.get("tables")))
                 .total(root.path("total").asLong(0)).build();
     }
@@ -472,7 +484,8 @@ public final class EuclidEkv implements TokenRefreshable, SigningSchemeSelectabl
     public QueryResponse query(QueryRequest request) throws IOException, InterruptedException {
         JsonNode root = post("query", OBJECT_MAPPER.writeValueAsString(request));
         List<Item> items = toItemList(root.get("items"));
-        return QueryResponse.builder().items(items).count(root.path("count").asLong(items.size())).build();
+        return QueryResponse.builder().items(items).count(root.path("count").asLong(items.size()))
+                .total(root.path("total").asLong(0)).build();
     }
 
     /**
@@ -502,9 +515,29 @@ public final class EuclidEkv implements TokenRefreshable, SigningSchemeSelectabl
      * @throws InterruptedException if the operation is interrupted
      */
     public ScanResponse scan(String table, long pageSize, long pageIndex) throws IOException, InterruptedException {
-        String body = OBJECT_MAPPER.writeValueAsString(
-                ScanRequest.builder().table(table).pageSize(pageSize).pageIndex(pageIndex).build());
-        JsonNode root = post("scan", body);
+        return scan(ScanRequest.builder().table(table).pageSize(pageSize).pageIndex(pageIndex).build());
+    }
+
+    /**
+     * Reads a page of a table's items, with the ordering, the narrowing and the paging spelled out.
+     * <p>
+     * Narrowing - by modification time, or by comparing any attribute against a value - is done by
+     * the server rather than by the caller, which saves the wire and the sifting but not the read:
+     * this is still a scan. {@link ScanResponse#total()} keeps counting the whole table, not what
+     * the narrowing let through, so it says how large the table is rather than how many pages this
+     * request has; page until fewer items come back than were asked for.
+     * <p>
+     * Refused with HTTP 400 for a timestamp that is not ISO-8601, a {@code modifiedTo} before
+     * {@code modifiedFrom}, an attribute named without an operator or an operator without an
+     * attribute, and {@link SortOperator#BEGINS_WITH} against anything but a string.
+     *
+     * @param request what to read
+     * @return the items on that page and how many the table holds
+     * @throws IOException          if an I/O error occurs during the operation
+     * @throws InterruptedException if the operation is interrupted
+     */
+    public ScanResponse scan(ScanRequest request) throws IOException, InterruptedException {
+        JsonNode root = post("scan", OBJECT_MAPPER.writeValueAsString(request));
         List<Item> items = toItemList(root.get("items"));
         return ScanResponse.builder().items(items).count(root.path("count").asLong(items.size()))
                 .total(root.path("total").asLong(0)).build();

@@ -6,7 +6,13 @@ import com.sun.net.httpserver.HttpHandler;
 import com.sun.net.httpserver.HttpServer;
 import de.jensvogt.euclid.dto.eam.GrantRoleRequest;
 import de.jensvogt.euclid.dto.eam.ListGrantsResponse;
+import de.jensvogt.euclid.dto.eam.ListAccountsRequest;
+import de.jensvogt.euclid.dto.eam.ListNamespacesRequest;
+import de.jensvogt.euclid.dto.eam.ListPermissionsResponse;
 import de.jensvogt.euclid.dto.eam.ListRolesRequest;
+import de.jensvogt.euclid.dto.eam.ListUserGroupsRequest;
+import de.jensvogt.euclid.dto.eam.ListUserRequest;
+import de.jensvogt.euclid.dto.eam.RegisterResponse;
 import de.jensvogt.euclid.dto.eam.ListRolesResponse;
 import de.jensvogt.euclid.dto.eam.RoleRequest;
 import de.jensvogt.euclid.dto.eam.PermissionCheckResponse;
@@ -353,22 +359,24 @@ class EuclidSessionTest {
     }
 
     @Test
-    void eadAndEmmAreBuiltFromTheSession() throws Exception {
-        // ead() and emm() thread the session's identity, token and namespace through exactly as
+    void eadEmmAndEdsAreBuiltFromTheSession() throws Exception {
+        // ead(), emm() and eds() thread the session's identity, token and namespace through exactly as
         // the other accessors do - each request lands on its own target carrying all of it.
         java.util.Map<String, CapturedRequest> byTarget = new java.util.concurrent.ConcurrentHashMap<>();
         server = startServer(exchange -> {
             CapturedRequest request = capture(exchange);
             byTarget.put(request.header("x-euclid-target"), request);
-            sendResponse(exchange, 200, "{\"count\":0,\"modules\":[],\"total\":0}");
+            sendResponse(exchange, 200, "{\"count\":0,\"modules\":[],\"zones\":[],\"total\":0}");
         });
 
         EuclidSession session = newSessionWithNamespace("prod");
         session.ead().countEvents();
         session.emm().listModules();
+        session.eds().listZones();
 
         assertEquals("count-events", byTarget.get("ead").header("x-euclid-action"));
         assertEquals("list-modules", byTarget.get("emm").header("x-euclid-action"));
+        assertEquals("list-zones", byTarget.get("eds").header("x-euclid-action"));
         for (CapturedRequest request : byTarget.values()) {
             assertEquals("prod", request.header("x-euclid-namespace"));
         }
@@ -949,6 +957,103 @@ class EuclidSessionTest {
         assertEquals("delete-user", exception.action());
         assertEquals(500, exception.statusCode());
         assertTrue(exception.responseBody().contains("boom"));
+    }
+
+    // ── Match types, and the fields added alongside them ────────────────
+
+    // Absent or empty is "prefix" server-side, so the positional forms keep meaning what they did.
+    @Test
+    void positionalListingsSendAnEmptyMatchType() throws Exception {
+        AtomicReference<CapturedRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(capture(exchange));
+            sendResponse(exchange, 200, "{\"users\":[],\"total\":0}");
+        });
+
+        newSession().listUsers("bo", 25, 2, "email");
+
+        assertBodyContains(received.get().body(), "\"matchType\":\"\"");
+    }
+
+    @Test
+    void everyListingCarriesTheMatchTypeItWasGiven() throws Exception {
+        Map<String, String> bodies = new ConcurrentHashMap<>();
+        server = startServer(exchange -> {
+            CapturedRequest request = capture(exchange);
+            bodies.put(request.header("x-euclid-action"), request.body());
+            sendResponse(exchange, 200, "{\"total\":0}");
+        });
+        EuclidSession session = newSession();
+
+        session.listUsers(ListUserRequest.builder().prefix("ob").matchType("endsWith").build());
+        session.listUserGroups(ListUserGroupsRequest.builder().prefix("ops").matchType("contains").build());
+        session.listAccounts(ListAccountsRequest.builder().prefix("^86").matchType("regex").build());
+        session.listNamespaces(ListNamespacesRequest.builder().accountId("863459426936").prefix("pro")
+                .matchType("prefix").pageSize(0).build());
+        session.listRoles(ListRolesRequest.builder().prefix("read").matchType("contains").build());
+
+        assertBodyContains(bodies.get("list-users"), "\"prefix\":\"ob\"", "\"matchType\":\"endsWith\"");
+        assertBodyContains(bodies.get("list-user-groups"), "\"prefix\":\"ops\"", "\"matchType\":\"contains\"");
+        assertBodyContains(bodies.get("list-accounts"), "\"prefix\":\"^86\"", "\"matchType\":\"regex\"");
+        assertBodyContains(bodies.get("list-namespaces"), "\"accountId\":\"863459426936\"",
+                "\"matchType\":\"prefix\"", "\"pageSize\":0");
+        assertBodyContains(bodies.get("list-roles"), "\"prefix\":\"read\"", "\"matchType\":\"contains\"");
+    }
+
+    @Test
+    void aMatchTypeTheServerCannotUseIsSurfaced() throws Exception {
+        server = startServer(exchange -> {
+            exchange.getRequestBody().readAllBytes();
+            sendResponse(exchange, 400, "{\"error\":\"Unknown match type: fuzzy\"}");
+        });
+
+        EuclidServiceException exception = assertThrows(EuclidServiceException.class,
+                () -> newSession().listUsers(ListUserRequest.builder().matchType("fuzzy").build()));
+
+        assertEquals("list-users", exception.action());
+        assertEquals(400, exception.statusCode());
+    }
+
+    // The compatibility constructors exist so code written before matchType keeps compiling; what
+    // they build has to mean what it meant then.
+    @Test
+    void theConstructorsWithoutAMatchTypeMatchAsAPrefix() {
+        assertEquals("", new ListUserRequest("a", 1, 0, "userId", "asc").matchType());
+        assertEquals("", new ListRolesRequest("a", 1, 0, "name", "asc", true).matchType());
+        assertEquals("", new ListNamespacesRequest("acc", "a", 1, 0, "name", "asc").matchType());
+    }
+
+    @Test
+    void registerReturnsTheUserAsStored() throws Exception {
+        server = startServer(exchange -> {
+            exchange.getRequestBody().readAllBytes();
+            sendResponse(exchange, 201, "{\"user\":" + userJson("bob") + ",\"metadata\":{\"region\":\"eu-central-1\","
+                    + "\"accountId\":\"863459426936\",\"user\":\"alice\"}}");
+        });
+
+        RegisterResponse response = newSession().register("eu-central-1", "863459426936", "bob", "s3cret",
+                "bob@example.com", false);
+
+        assertEquals("bob", response.user().userId());
+        assertEquals("user-ern", response.user().ern(), "the ERN is built server-side and only known from here");
+        assertEquals("alice", response.metadata().user());
+    }
+
+    @Test
+    void describePermissionsKeepsTheModulesAListOfNamesDrops() throws Exception {
+        AtomicReference<CapturedRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(capture(exchange));
+            sendResponse(exchange, 200, "{\"permissions\":[\"eqs:send-message\",\"ens:publish-message\"],"
+                    + "\"modules\":[\"ens\",\"eqs\"],\"unbindableModules\":[\"emd\",\"emm\"],\"metadata\":{}}");
+        });
+
+        ListPermissionsResponse response = newSession().describePermissions();
+
+        assertEquals("list-permissions", received.get().header("x-euclid-action"));
+        assertEquals(List.of("eqs:send-message", "ens:publish-message"), response.permissions());
+        assertEquals(List.of("ens", "eqs"), response.modules());
+        assertEquals(List.of("emd", "emm"), response.unbindableModules());
     }
 
     private EuclidSession newSession() {

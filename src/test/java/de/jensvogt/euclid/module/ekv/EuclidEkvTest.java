@@ -7,9 +7,11 @@ import com.sun.net.httpserver.HttpServer;
 import de.jensvogt.euclid.auth.SigV4;
 import de.jensvogt.euclid.auth.SignableRequest;
 import de.jensvogt.euclid.dto.ekv.CreateTableRequest;
+import de.jensvogt.euclid.dto.ekv.ListTablesRequest;
 import de.jensvogt.euclid.dto.ekv.ListTablesResponse;
 import de.jensvogt.euclid.dto.ekv.QueryRequest;
 import de.jensvogt.euclid.dto.ekv.QueryResponse;
+import de.jensvogt.euclid.dto.ekv.ScanRequest;
 import de.jensvogt.euclid.dto.ekv.ScanResponse;
 import de.jensvogt.euclid.dto.ekv.model.Item;
 import de.jensvogt.euclid.dto.ekv.model.KeyType;
@@ -426,6 +428,32 @@ class EuclidEkvTest {
         assertTrue(newClient().query("deliveries", "4711").items().isEmpty());
     }
 
+    // The total counts what the query matches across every page, not the page and not the table.
+    @Test
+    void queryParsesTheTotalItMatches() throws Exception {
+        server = startServer(exchange -> {
+            exchange.getRequestBody().readAllBytes();
+            sendResponse(exchange, 200, "{\"items\":[" + itemJson() + "],\"count\":1,\"total\":12}");
+        });
+
+        QueryResponse response = newClient().query(QueryRequest.builder().table("deliveries").partitionKey("4711")
+                .pageSize(1).build());
+
+        assertEquals(1, response.count());
+        assertEquals(12, response.total());
+    }
+
+    // An older server sends no total; that must read as zero rather than fail the call.
+    @Test
+    void queryToleratesAMissingTotal() throws Exception {
+        server = startServer(exchange -> {
+            exchange.getRequestBody().readAllBytes();
+            sendResponse(exchange, 200, "{\"items\":[],\"count\":0}");
+        });
+
+        assertEquals(0, newClient().query("deliveries", "4711").total());
+    }
+
     @Test
     void scanParsesThePageAndTheTotal() throws Exception {
         AtomicReference<SignableRequest> received = new AtomicReference<>();
@@ -454,6 +482,79 @@ class EuclidEkvTest {
         newClient().scan("suppliers");
 
         assertBodyContains(received.get().body(), "\"pageSize\":0", "\"pageIndex\":0");
+    }
+
+    // An unnarrowed scan has to say so explicitly: no attribute, no operator, no time window, key
+    // order - which is what the server reads as "the whole table".
+    @Test
+    void scanIsUnnarrowedByDefault() throws Exception {
+        AtomicReference<SignableRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(captureRequest(exchange));
+            sendResponse(exchange, 200, "{\"items\":[],\"count\":0,\"total\":0}");
+        });
+
+        newClient().scan("suppliers", 25, 3);
+
+        assertBodyContains(received.get().body(), "\"sortColumn\":\"\"", "\"sortDirection\":\"\"",
+                "\"modifiedFrom\":\"\"", "\"modifiedTo\":\"\"", "\"attributeName\":\"\"",
+                "\"attributeOperator\":\"\"");
+    }
+
+    @Test
+    void scanSendsTheOrderingAndTheNarrowing() throws Exception {
+        AtomicReference<SignableRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(captureRequest(exchange));
+            sendResponse(exchange, 200, "{\"items\":[" + itemJson() + "],\"count\":1,\"total\":98}");
+        });
+
+        ScanResponse response = newClient().scan(ScanRequest.builder().table("suppliers").pageSize(10)
+                .sortColumn("modified").sortDirection("desc")
+                .modifiedFrom("2026-09-01T00:00:00Z").modifiedTo("2026-09-30T23:59:59Z")
+                .where("status", SortOperator.EQ, "OPEN").build());
+
+        assertEquals("scan", received.get().header("x-euclid-action"));
+        assertBodyContains(received.get().body(), "\"table\":\"suppliers\"", "\"pageSize\":10",
+                "\"sortColumn\":\"modified\"", "\"sortDirection\":\"desc\"",
+                "\"modifiedFrom\":\"2026-09-01T00:00:00Z\"", "\"modifiedTo\":\"2026-09-30T23:59:59Z\"",
+                "\"attributeName\":\"status\"", "\"attributeOperator\":\"eq\"", "\"attributeValue\":\"OPEN\"");
+        assertEquals(1, response.count());
+        // The total is the table's, not what the narrowing let through.
+        assertEquals(98, response.total());
+    }
+
+    // A numeric bound has to stay a number, or the comparison would be a string comparison.
+    @Test
+    void scanKeepsANumericRangeNumeric() throws Exception {
+        AtomicReference<SignableRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(captureRequest(exchange));
+            sendResponse(exchange, 200, "{\"items\":[],\"count\":0,\"total\":0}");
+        });
+
+        newClient().scan(ScanRequest.builder().table("deliveries").attributeName("quantity")
+                .attributeOperator(SortOperator.BETWEEN).attributeValue(10).attributeUpper(20).build());
+
+        assertBodyContains(received.get().body(), "\"attributeOperator\":\"between\"", "\"attributeValue\":10",
+                "\"attributeUpper\":20");
+    }
+
+    @Test
+    void listTablesSendsTheMatchTypeOfARequest() throws Exception {
+        AtomicReference<SignableRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(captureRequest(exchange));
+            sendResponse(exchange, 200, "{\"tables\":[" + tableJson(3) + "],\"total\":1}");
+        });
+
+        ListTablesResponse response = newClient().listTables(ListTablesRequest.builder().prefix("pliers")
+                .matchType("endsWith").build());
+
+        assertEquals("list-tables", received.get().header("x-euclid-action"));
+        assertBodyContains(received.get().body(), "\"prefix\":\"pliers\"", "\"matchType\":\"endsWith\"");
+        assertEquals("suppliers", response.tables().getFirst().name());
+        assertEquals(1, response.total());
     }
 
     @Test

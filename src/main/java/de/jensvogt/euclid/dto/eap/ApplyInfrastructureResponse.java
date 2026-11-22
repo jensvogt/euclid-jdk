@@ -37,11 +37,18 @@ import java.util.List;
  * @param granted       the {@code access-} roles the declaration's {@code uses} entries asked for
  *                      and did not already have, each as {@code "<role> on <ern>"}
  * @param revoked       the {@code access-} roles that are no longer asked for and were dropped
+ * @param error         why the declaration could not be read or applied, or {@code null} if it was.
+ *                      Only ever set on the report embedded in
+ *                      {@link de.jensvogt.euclid.dto.eap.model.Application#infrastructure()} by
+ *                      create-application: a deployment is never refused over its declaration, so
+ *                      the failure travels in the answer instead. The four infrastructure and
+ *                      platform actions are asked for the apply directly and refuse with HTTP 400
+ *                      instead, so their answers never carry one
  */
 public record ApplyInfrastructureResponse(String applicationId, String platform, boolean declared, boolean dryRun,
                                           List<String> created, List<String> adopted, List<UpdatedResource> updated,
                                           List<String> deleted, List<KeptResource> kept, List<String> granted,
-                                          List<String> revoked) {
+                                          List<String> revoked, String error) {
 
     /**
      * Creates a new instance of the Builder for constructing an ApplyInfrastructureResponse object.
@@ -117,6 +124,11 @@ public record ApplyInfrastructureResponse(String applicationId, String platform,
          * The roles that were dropped.
          */
         private List<String> revoked = List.of();
+
+        /**
+         * Why the declaration could not be read or applied.
+         */
+        private String error;
 
         /**
          * Sets the ID of the application.
@@ -240,13 +252,24 @@ public record ApplyInfrastructureResponse(String applicationId, String platform,
         }
 
         /**
+         * Sets why the declaration could not be read or applied.
+         *
+         * @param error the server's explanation, or {@code null} if it was applied
+         * @return the builder instance
+         */
+        public Builder error(String error) {
+            this.error = error;
+            return this;
+        }
+
+        /**
          * Builds and returns a new instance of ApplyInfrastructureResponse using the properties set on the Builder.
          *
          * @return a new ApplyInfrastructureResponse instance.
          */
         public ApplyInfrastructureResponse build() {
             return new ApplyInfrastructureResponse(applicationId, platform, declared, dryRun, created, adopted, updated,
-                    deleted, kept, granted, revoked);
+                    deleted, kept, granted, revoked, error);
         }
     }
 }

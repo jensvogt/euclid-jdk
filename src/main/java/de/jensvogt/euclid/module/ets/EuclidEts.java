@@ -53,7 +53,7 @@ public final class EuclidEts implements TokenRefreshable, SigningSchemeSelectabl
      * empty list and silently clear the server's access list rather than leave it alone.
      */
     private static final ObjectMapper OBJECT_MAPPER =
-            new ObjectMapper().setSerializationInclusion(JsonInclude.Include.NON_NULL);
+            new ObjectMapper().setDefaultPropertyInclusion(JsonInclude.Include.NON_NULL);
 
     /**
      * The Euclid service every request from this class is addressed to, sent as the
@@ -209,7 +209,11 @@ public final class EuclidEts implements TokenRefreshable, SigningSchemeSelectabl
     }
 
     /**
-     * Lists every transfer server.
+     * Lists every transfer server in this client's account and namespace.
+     * <p>
+     * Not every server on the host: every other action here resolves a server ID in the namespace
+     * the request is made in, so a listing that crossed namespaces would show servers this client
+     * cannot address.
      *
      * @return the defined transfer servers
      * @throws IOException if an I/O error occurs during the operation
@@ -228,8 +232,23 @@ public final class EuclidEts implements TokenRefreshable, SigningSchemeSelectabl
      * @throws InterruptedException if the operation is interrupted
      */
     public List<TransferServer> listServers(String prefix) throws IOException, InterruptedException {
-        String body = OBJECT_MAPPER.writeValueAsString(ListServersRequest.builder().prefix(prefix).build());
-        JsonNode root = post("list-servers", body);
+        return listServers(ListServersRequest.builder().prefix(prefix).build());
+    }
+
+    /**
+     * Lists the transfer servers whose ID matches a search text the way the request says - as a
+     * prefix, a suffix, a substring or a regular expression.
+     * <p>
+     * A match type the server does not know, or a regular expression that does not compile, is
+     * refused with HTTP 400 rather than being passed to the database to fail there.
+     *
+     * @param request the search text and how to match it
+     * @return the matching transfer servers
+     * @throws IOException if an I/O error occurs during the operation
+     * @throws InterruptedException if the operation is interrupted
+     */
+    public List<TransferServer> listServers(ListServersRequest request) throws IOException, InterruptedException {
+        JsonNode root = post("list-servers", OBJECT_MAPPER.writeValueAsString(request));
 
         List<TransferServer> servers = new ArrayList<>();
         JsonNode serversNode = root.get("servers");
@@ -360,6 +379,7 @@ public final class EuclidEts implements TokenRefreshable, SigningSchemeSelectabl
                 textOrNull(node, "homeDirectory"),
                 toStringList(node.get("userIds")),
                 toStringList(node.get("userGroups")),
+                node.path("userCount").asLong(0),
                 toStringList(node.get("directories")),
                 textOrNull(node, "desiredState"),
                 textOrNull(node, "state"),

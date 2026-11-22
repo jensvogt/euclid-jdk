@@ -13,10 +13,18 @@ import java.util.List;
  * @param port          TCP port to listen on; must be 1-65535 and not used by another transfer server
  * @param bucket        name of the ESM bucket this server's clients read and write
  * @param address       address to bind to
- * @param homeDirectory users home directory
+ * @param homeDirectory key prefix template each client's session is rooted at, with {@code {user}}
+ *                      standing for the EAM user ID that logged in, or {@code null} for the
+ *                      server's default {@code "{user}"} - a home of each client's own, the way an
+ *                      FTP server's per-user home always has been. Empty is not the same as
+ *                      {@code null}: it deliberately puts every client in one shared key space at
+ *                      the bucket root
  * @param userIds       EAM user IDs allowed to log in
  * @param userGroups    EAM user groups whose members may log in
- * @param directories   default directory layout
+ * @param directories   directories every session should find under its home, relative to the home
+ *                      prefix and created at login, intermediate levels included. A transfer
+ *                      workflow expects a shape - an inbox to deliver into - and a client cannot be
+ *                      asked to create the folder it delivers into
  * @param hostKey       SFTP only: private SSH host key file, generated on first start if absent
  * @param pasvMin       FTP only: lowest passive data port; the server defaults to 6000
  * @param pasvMax       FTP only: highest passive data port; the server defaults to 6100

@@ -1,15 +1,22 @@
 package de.jensvogt.euclid.dto.ens;
 
 /**
- * Request to list topics, optionally filtered by name prefix and paginated.
+ * Request to list topics, optionally filtered by name and paginated.
+ * <p>
+ * The name filter is {@code prefix}, and {@code matchType} says how it is compared. Both are carried
+ * as the server reads them rather than folded into one pattern, so a literal {@code "orders.v1"}
+ * means exactly that for every type but {@code "regex"} - there is nothing to escape.
  *
- * @param prefix        only topics whose name starts with this prefix are returned
+ * @param prefix        the text topic names are matched against; empty matches every topic
+ * @param matchType     how {@code prefix} is matched: {@code "prefix"}, {@code "endsWith"},
+ *                      {@code "contains"} or {@code "regex"}; empty means {@code "prefix"}
  * @param pageSize      the maximum number of topics to return in a single page
  * @param pageIndex     the zero-based index of the page to return
  * @param sortColumn    the name of the column results are sorted by
  * @param sortDirection the sort direction, {@code "asc"} or {@code "desc"}
  */
-public record ListTopicsRequest(String prefix, long pageSize, long pageIndex, String sortColumn, String sortDirection) {
+public record ListTopicsRequest(String prefix, String matchType, long pageSize, long pageIndex, String sortColumn,
+                                String sortDirection) {
 
     /**
      * Creates a new instance of the Builder for constructing a ListTopicsRequest object.
@@ -32,9 +39,14 @@ public record ListTopicsRequest(String prefix, long pageSize, long pageIndex, St
         }
 
         /**
-         * Only topics whose name starts with this prefix are returned.
+         * The text topic names are matched against.
          */
         private String prefix = "";
+
+        /**
+         * How the prefix is matched; empty leaves it to the server, which reads it as a prefix.
+         */
+        private String matchType = "";
 
         /**
          * The maximum number of topics to return in a single page.
@@ -57,13 +69,31 @@ public record ListTopicsRequest(String prefix, long pageSize, long pageIndex, St
         private String sortDirection = "asc";
 
         /**
-         * Sets only topics whose name starts with this prefix are returned.
+         * Sets the text topic names are matched against - see {@link #matchType(String)}.
          *
-         * @param prefix only topics whose name starts with this prefix are returned
+         * @param prefix the text topic names are matched against; empty matches every topic
          * @return the builder instance
          */
         public Builder prefix(String prefix) {
             this.prefix = prefix;
+            return this;
+        }
+
+        /**
+         * Sets how {@code prefix} is matched against topic names.
+         * <p>
+         * {@code "prefix"}, {@code "endsWith"} and {@code "contains"} take the text literally;
+         * {@code "regex"} reads it as an ECMAScript regular expression, which the server compiles
+         * before it queries anything - an invalid one is refused with HTTP 400 rather than
+         * matching nothing, so a typo cannot pass for an empty account. Anything else is refused
+         * the same way.
+         *
+         * @param matchType {@code "prefix"}, {@code "endsWith"}, {@code "contains"} or {@code "regex"};
+         *                  empty means {@code "prefix"}
+         * @return the builder instance
+         */
+        public Builder matchType(String matchType) {
+            this.matchType = matchType;
             return this;
         }
 
@@ -117,7 +147,7 @@ public record ListTopicsRequest(String prefix, long pageSize, long pageIndex, St
          * @return a new ListTopicsRequest instance.
          */
         public ListTopicsRequest build() {
-            return new ListTopicsRequest(prefix, pageSize, pageIndex, sortColumn, sortDirection);
+            return new ListTopicsRequest(prefix, matchType, pageSize, pageIndex, sortColumn, sortDirection);
         }
     }
 }

@@ -8,11 +8,13 @@ import de.jensvogt.euclid.auth.SigV4;
 import de.jensvogt.euclid.auth.SignableRequest;
 import de.jensvogt.euclid.dto.eag.CreateRouteRequest;
 import de.jensvogt.euclid.dto.eag.ListListenersResponse;
+import de.jensvogt.euclid.dto.eag.ListRoutesRequest;
 import de.jensvogt.euclid.dto.eag.UpdateRouteRequest;
 import de.jensvogt.euclid.dto.eag.model.Listener;
 import de.jensvogt.euclid.dto.eag.model.Protocol;
 import de.jensvogt.euclid.dto.eag.model.Route;
 import de.jensvogt.euclid.dto.eag.model.RouteAuthentication;
+import de.jensvogt.euclid.dto.eag.model.RouteType;
 import de.jensvogt.euclid.exception.EuclidServiceException;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
@@ -303,6 +305,96 @@ class EuclidEagTest {
     }
 
     @Test
+    void listRoutesSendsTheMatchType() throws Exception {
+        AtomicReference<SignableRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(captureRequest(exchange));
+            sendResponse(exchange, 200, "{\"routes\":[" + routeJson() + "]}");
+        });
+
+        List<Route> routes = newClient().listRoutes(
+                ListRoutesRequest.builder().prefix("/export").matchType("endsWith").build());
+
+        assertBodyContains(received.get().body(), "\"prefix\":\"/export\"", "\"matchType\":\"endsWith\"");
+        assertEquals(1, routes.size());
+    }
+
+    // Without a match type the server's prefix default applies, so it has to stay off the wire.
+    @Test
+    void listRoutesOmitsAnUnsetMatchType() throws Exception {
+        AtomicReference<SignableRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(captureRequest(exchange));
+            sendResponse(exchange, 200, "{\"routes\":[]}");
+        });
+
+        newClient().listRoutes("/supp");
+
+        assertFalse(received.get().body().contains("matchType"), received.get().body());
+    }
+
+    @Test
+    void createUploadRouteNamesTheBucketAndTheCredential() throws Exception {
+        AtomicReference<SignableRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(captureRequest(exchange));
+            sendResponse(exchange, 200, uploadRouteJson());
+        });
+
+        Route route = newClient().createUploadRoute("deliveries", "/upload", "ern:esm:bucket/inbox",
+                RouteAuthentication.BASIC);
+
+        String body = received.get().body();
+        assertBodyContains(body, "\"type\":\"UPLOAD\"", "\"bucket\":\"ern:esm:bucket/inbox\"",
+                "\"authentication\":\"BASIC\"");
+        assertFalse(body.contains("applicationId"), "an upload route must not name an application: " + body);
+        assertFalse(body.contains("partSize"), "an unset part size must be left to the server: " + body);
+        assertTrue(route.isUploadRoute());
+        assertEquals(RouteType.UPLOAD, route.type());
+        assertEquals("ern:esm:bucket/inbox", route.upload().bucket());
+        assertEquals("incoming/", route.upload().keyPrefix());
+        assertEquals(12884901888L, route.upload().maxBytes(), "a size past 32 bits must survive parsing");
+        assertEquals(5242880L, route.upload().partSize());
+        assertEquals(List.of("application/xml"), route.upload().contentTypes());
+    }
+
+    @Test
+    void createRouteCanSpellOutUploadLimitsAndTimeout() throws Exception {
+        AtomicReference<SignableRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(captureRequest(exchange));
+            sendResponse(exchange, 200, uploadRouteJson());
+        });
+
+        newClient().createRoute(CreateRouteRequest.builder().routeId("deliveries").path("/upload")
+                .type(RouteType.UPLOAD).bucket("ern:esm:bucket/inbox").keyPrefix("incoming/")
+                .maxBytes(12884901888L).partSize(8388608L).contentTypes(List.of("application/xml"))
+                .authentication(RouteAuthentication.EUCLID).timeout(600).build());
+
+        assertBodyContains(received.get().body(), "\"keyPrefix\":\"incoming/\"", "\"maxBytes\":12884901888",
+                "\"partSize\":8388608", "\"contentTypes\":[\"application/xml\"]", "\"timeout\":600");
+    }
+
+    @Test
+    void updateRouteCanChangeTheTimeoutAlone() throws Exception {
+        AtomicReference<SignableRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(captureRequest(exchange));
+            sendResponse(exchange, 200, routeJson());
+        });
+
+        Route route = newClient().updateRoute(UpdateRouteRequest.builder().routeId("suppliers").timeout(300).build());
+
+        String body = received.get().body();
+        assertBodyContains(body, "\"timeout\":300");
+        assertFalse(body.contains("type"), "an unset type must be left alone: " + body);
+        assertFalse(body.contains("bucket"), "an unset bucket must be left alone: " + body);
+        assertEquals(300, route.timeout());
+        assertEquals(RouteType.PROXY, route.type());
+        assertFalse(route.isUploadRoute());
+    }
+
+    @Test
     void listRoutesToleratesAnEmptyResult() throws Exception {
         server = startServer(exchange -> {
             exchange.getRequestBody().readAllBytes();
@@ -488,14 +580,30 @@ class EuclidEagTest {
         assertTrue(route.methods().isEmpty());
         assertTrue(route.active(), "a route says nothing about being inactive unless it is");
         assertEquals(RouteAuthentication.UNKNOWN, route.authentication());
+        assertEquals(RouteType.PROXY, route.type(), "a route stored before uploads existed is a proxy route");
+        assertNotNull(route.upload());
+        assertTrue(route.upload().contentTypes().isEmpty());
+        assertEquals(0, route.timeout(), "no timeout means the gateway's default");
     }
 
     private static String routeJson() {
         return "{\"routeId\":\"suppliers\",\"ern\":\"ern:eag:route/suppliers\",\"accountId\":\"863459426936\","
                 + "\"region\":\"eu-central-1\",\"namespace\":\"development\",\"path\":\"/suppliers\","
                 + "\"applicationId\":\"supplier-api\",\"moduleTarget\":\"\",\"moduleAction\":\"\","
+                + "\"type\":\"PROXY\",\"upload\":{\"bucket\":\"\",\"keyPrefix\":\"\",\"maxBytes\":0,\"partSize\":0,"
+                + "\"contentTypes\":[]},\"timeout\":300,"
                 + "\"methods\":[\"GET\",\"POST\"],\"authentication\":\"EUCLID\",\"active\":true,"
                 + "\"created\":\"2026-01-01\",\"modified\":\"2026-01-02\"}";
+    }
+
+    private static String uploadRouteJson() {
+        return "{\"routeId\":\"deliveries\",\"ern\":\"ern:eag:route/deliveries\","
+                + "\"accountId\":\"863459426936\",\"region\":\"eu-central-1\",\"namespace\":\"development\","
+                + "\"path\":\"/upload\",\"type\":\"UPLOAD\",\"upload\":{\"bucket\":\"ern:esm:bucket/inbox\","
+                + "\"keyPrefix\":\"incoming/\",\"maxBytes\":12884901888,\"partSize\":5242880,"
+                + "\"contentTypes\":[\"application/xml\"]},\"applicationId\":\"\",\"moduleTarget\":\"\","
+                + "\"moduleAction\":\"\",\"methods\":[\"PUT\"],\"authentication\":\"BASIC\",\"timeout\":0,"
+                + "\"active\":true,\"created\":\"2026-01-01\",\"modified\":\"2026-01-02\"}";
     }
 
     private static String moduleRouteJson() {

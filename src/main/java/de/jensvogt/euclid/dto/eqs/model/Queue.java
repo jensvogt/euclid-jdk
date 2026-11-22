@@ -19,11 +19,17 @@ import java.util.Map;
  * @param maxReceiveCount    maximum number of receives before a message moves to the dead-letter queue
  * @param deadLetterQueueArn ERN of the dead-letter queue, or {@code null} if none is configured
  * @param priority           default priority applied to the queue's messages
+ * @param status             whether the queue may be received from, {@code "AVAILABLE"} or {@code "STOPPED"};
+ *                           sending is unaffected either way - see
+ *                           {@link de.jensvogt.euclid.module.eqs.EuclidEqs#stopQueue(String)}
+ * @param internal           whether this is one of euclid's own queues rather than the caller's; such a
+ *                           queue only appears in a listing an administrator asked to include them in,
+ *                           and this says which rows they are
  * @param created            creation timestamp
  * @param modified           last-modified timestamp
  */
 public record Queue(String name, String owner, String ern, Map<String, String> tags, long size, long delay,
                     long available, long delayed, long invisible, long visibility, long maxMessageLength,
-                    long maxReceiveCount, String deadLetterQueueArn, String priority, String created,
-                    String modified) {
+                    long maxReceiveCount, String deadLetterQueueArn, String priority, String status,
+                    boolean internal, String created, String modified) {
 }

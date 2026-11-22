@@ -266,10 +266,22 @@ public final class EuclidEkm implements TokenRefreshable, SigningSchemeSelectabl
      */
     public ListKeysResponse listKeys(String prefix, long pageSize, long pageIndex, String sortColumn,
                                      String sortDirection) throws IOException, InterruptedException {
-        String body = OBJECT_MAPPER.writeValueAsString(
-                ListKeysRequest.builder().prefix(prefix).pageSize(pageSize).pageIndex(pageIndex)
-                        .sortColumn(sortColumn).sortDirection(sortDirection).build());
-        JsonNode root = post("list-keys", body);
+        return listKeys(ListKeysRequest.builder().prefix(prefix).pageSize(pageSize).pageIndex(pageIndex)
+                .sortColumn(sortColumn).sortDirection(sortDirection).build());
+    }
+
+    /**
+     * Lists keys with every option of the request spelled out - including
+     * {@link ListKeysRequest#matchType()}, which is how to find a name that ends with, contains or
+     * matches a pattern rather than one that starts with the given text.
+     *
+     * @param request what to list
+     * @return a {@code ListKeysResponse} carrying the keys and their total
+     * @throws IOException if an I/O error occurs during the operation
+     * @throws InterruptedException if the operation is interrupted
+     */
+    public ListKeysResponse listKeys(ListKeysRequest request) throws IOException, InterruptedException {
+        JsonNode root = post("list-keys", OBJECT_MAPPER.writeValueAsString(request));
         return ListKeysResponse.builder().keys(toKeyList(root.get("keys")))
                 .total(root.path("total").asLong(0)).build();
     }
@@ -560,10 +572,22 @@ public final class EuclidEkm implements TokenRefreshable, SigningSchemeSelectabl
      */
     public ListCertificatesResponse listCertificates(String prefix, long pageSize, long pageIndex, String sortColumn,
                                                      String sortDirection) throws IOException, InterruptedException {
-        String body = OBJECT_MAPPER.writeValueAsString(
-                ListCertificatesRequest.builder().prefix(prefix).pageSize(pageSize).pageIndex(pageIndex)
-                        .sortColumn(sortColumn).sortDirection(sortDirection).build());
-        JsonNode root = post("list-certificates", body);
+        return listCertificates(ListCertificatesRequest.builder().prefix(prefix).pageSize(pageSize).pageIndex(pageIndex)
+                .sortColumn(sortColumn).sortDirection(sortDirection).build());
+    }
+
+    /**
+     * Lists certificates with every option of the request spelled out - including
+     * {@link ListCertificatesRequest#matchType()}, which is how to find a name that ends with, contains or
+     * matches a pattern rather than one that starts with the given text.
+     *
+     * @param request what to list
+     * @return a {@code ListCertificatesResponse} carrying the certificates and their total
+     * @throws IOException if an I/O error occurs during the operation
+     * @throws InterruptedException if the operation is interrupted
+     */
+    public ListCertificatesResponse listCertificates(ListCertificatesRequest request) throws IOException, InterruptedException {
+        JsonNode root = post("list-certificates", OBJECT_MAPPER.writeValueAsString(request));
         return ListCertificatesResponse.builder().certificates(toCertificateList(root.get("certificates")))
                 .total(root.path("total").asLong(0)).build();
     }

@@ -27,8 +27,10 @@ import de.jensvogt.euclid.dto.esm.GetBucketErnResponse;
 import de.jensvogt.euclid.dto.esm.GetBucketSizeResponse;
 import de.jensvogt.euclid.dto.esm.CountObjectsResponse;
 import de.jensvogt.euclid.dto.esm.GetObjectCountResponse;
+import de.jensvogt.euclid.dto.esm.ListBucketsRequest;
 import de.jensvogt.euclid.dto.esm.ListBucketsResponse;
 import de.jensvogt.euclid.dto.esm.ListObjectAttributesResponse;
+import de.jensvogt.euclid.dto.esm.ListObjectsRequest;
 import de.jensvogt.euclid.dto.esm.ListObjectsResponse;
 import de.jensvogt.euclid.dto.esm.ListSubscriptionsResponse;
 import de.jensvogt.euclid.dto.esm.ObjectAttributeResponse;
@@ -2063,6 +2065,223 @@ class EuclidEsmTest {
 
         newClient().createBucket("inbox", "HIGH");
         assertBodyContains(received.get().body(), "\"priority\":\"HIGH\"");
+    }
+
+    // Absent unless asked for, like priority: an ordinary create says exactly what it always said.
+    @Test
+    void createBucketOnlyCarriesTheInternalFlagWhenItIsSet() throws Exception {
+        AtomicReference<SignableRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(captureRequest(exchange));
+            sendResponse(exchange, 200, "{\"name\":\"artifacts\",\"ern\":\"bucket-ern\"}");
+        });
+
+        newClient().createBucket("artifacts", "");
+        assertFalse(received.get().body().contains("internal"));
+
+        newClient().createBucket("artifacts", "", true);
+        assertBodyContains(received.get().body(), "\"name\":\"artifacts\"", "\"internal\":true");
+        assertFalse(received.get().body().contains("priority"));
+    }
+
+    @Test
+    void deleteBucketIfEmptySendsTheFlagAndSurfacesTheConflict() throws Exception {
+        AtomicReference<SignableRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(captureRequest(exchange));
+            sendResponse(exchange, 409, "{\"error\":\"Bucket is not empty: 3 object(s) remain.\"}");
+        });
+
+        EuclidServiceException e = assertThrows(EuclidServiceException.class,
+                () -> newClient().deleteBucket("bucket-ern", false, true));
+
+        assertEquals(409, e.statusCode());
+        assertBodyContains(received.get().body(), "\"ern\":\"bucket-ern\"", "\"ifEmpty\":true");
+    }
+
+    @Test
+    void deleteBucketWithoutIfEmptySaysSo() throws Exception {
+        AtomicReference<SignableRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(captureRequest(exchange));
+            sendResponse(exchange, 200, "");
+        });
+
+        newClient().deleteBucket("bucket-ern");
+
+        assertBodyContains(received.get().body(), "\"ifEmpty\":false");
+    }
+
+    @Test
+    void listBucketsSendsMatchTypeAndIncludeInternalOnlyWhenAskedFor() throws Exception {
+        AtomicReference<SignableRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(captureRequest(exchange));
+            sendResponse(exchange, 200, "{\"total\":0,\"buckets\":[]}");
+        });
+
+        newClient().listBuckets();
+        assertFalse(received.get().body().contains("matchType"));
+        assertFalse(received.get().body().contains("includeInternal"));
+
+        newClient().listBuckets(ListBucketsRequest.builder().prefix(".xml").matchType("endsWith")
+                .includeInternal(true).build());
+        assertBodyContains(received.get().body(), "\"prefix\":\".xml\"", "\"matchType\":\"endsWith\"",
+                "\"includeInternal\":true", "\"pageSize\":10", "\"sortDirection\":\"asc\"");
+    }
+
+    @Test
+    void listObjectsByLevelSendsTheDelimiterAndParsesTheDirectoriesBelow() throws Exception {
+        AtomicReference<SignableRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(captureRequest(exchange));
+            sendResponse(exchange, 200, "{\"total\":1,\"objects\":[{\"ern\":\"obj-ern\",\"key\":\"in/a.xml\","
+                    + "\"lastAccessed\":\"2026-11-20T08:00:00Z\"}],\"commonPrefixes\":[\"in/2026/\",\"in/2027/\"]}");
+        });
+
+        ListObjectsResponse response = newClient().listObjects(ListObjectsRequest.builder().bucketErn("bucket-ern")
+                .prefix("in/").delimiter("/").build());
+
+        assertEquals("list-objects", received.get().header("x-euclid-action"));
+        assertBodyContains(received.get().body(), "\"bucketErn\":\"bucket-ern\"", "\"prefix\":\"in/\"",
+                "\"delimiter\":\"/\"");
+        assertFalse(received.get().body().contains("matchType"));
+        assertEquals(List.of("in/2026/", "in/2027/"), response.commonPrefixes());
+        assertEquals("2026-11-20T08:00:00Z", response.objects().getFirst().lastAccessed());
+    }
+
+    @Test
+    void listObjectsSendsTheMatchTypeAndLeavesTheDelimiterOut() throws Exception {
+        AtomicReference<SignableRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(captureRequest(exchange));
+            sendResponse(exchange, 200, "{\"total\":0,\"objects\":[]}");
+        });
+
+        ListObjectsResponse response = newClient().listObjects(ListObjectsRequest.builder().bucketErn("bucket-ern")
+                .prefix("report").matchType("contains").build());
+
+        assertBodyContains(received.get().body(), "\"matchType\":\"contains\"", "\"prefix\":\"report\"");
+        assertFalse(received.get().body().contains("delimiter"));
+        // A whole-subtree listing has no directories to report, and says so with an empty list
+        // rather than a null a caller would have to guard against.
+        assertTrue(response.commonPrefixes().isEmpty());
+    }
+
+    @Test
+    void listObjectsSurfacesARefusedMatchType() throws Exception {
+        server = startServer(exchange -> {
+            exchange.getRequestBody().readAllBytes();
+            sendResponse(exchange, 400, "{\"error\":\"matchType must be prefix when a delimiter is given\"}");
+        });
+
+        EuclidServiceException e = assertThrows(EuclidServiceException.class, () -> newClient().listObjects(
+                ListObjectsRequest.builder().bucketErn("bucket-ern").prefix("in/").matchType("regex").delimiter("/").build()));
+
+        assertEquals(400, e.statusCode());
+    }
+
+    @Test
+    void bucketsCarryTheirVersionLimit() throws Exception {
+        server = startServer(exchange -> sendResponse(exchange, 200,
+                "{\"bucket\":{\"name\":\"photos\",\"ern\":\"bucket-ern\",\"versioning\":true,\"maxVersions\":5}}"));
+
+        Bucket bucket = newClient().getBucket("photos").bucket();
+
+        assertTrue(bucket.versioning());
+        assertEquals(5, bucket.maxVersions());
+    }
+
+    // Only the limit: the server leaves a setting the request does not name as it is, and sending
+    // "enabled" here would switch versioning on or off as a side effect of capping it.
+    @Test
+    void setBucketMaxVersionsSendsOnlyTheLimit() throws Exception {
+        AtomicReference<SignableRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(captureRequest(exchange));
+            sendResponse(exchange, 200, "{\"ern\":\"bucket-ern\",\"name\":\"photos\",\"versioning\":false,\"maxVersions\":3}");
+        });
+
+        SetBucketVersioningResponse response = newClient().setBucketMaxVersions("photos", 3);
+
+        assertEquals("set-bucket-versioning", received.get().header("x-euclid-action"));
+        assertBodyContains(received.get().body(), "\"ern\":\"photos\"", "\"maxVersions\":3");
+        assertFalse(received.get().body().contains("enabled"));
+        assertFalse(response.versioning());
+        assertEquals(3, response.maxVersions());
+    }
+
+    @Test
+    void setBucketVersioningLeavesTheLimitAloneUnlessGivenOne() throws Exception {
+        AtomicReference<SignableRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(captureRequest(exchange));
+            sendResponse(exchange, 200, "{\"ern\":\"bucket-ern\",\"name\":\"photos\",\"versioning\":true,\"maxVersions\":10}");
+        });
+
+        SetBucketVersioningResponse response = newClient().setBucketVersioning("photos", true);
+        assertFalse(received.get().body().contains("maxVersions"));
+        assertEquals(10, response.maxVersions());
+
+        newClient().setBucketVersioning("photos", true, 0L);
+        assertBodyContains(received.get().body(), "\"enabled\":true", "\"maxVersions\":0");
+    }
+
+    @Test
+    void listObjectVersionsCarriesTheBucketsVersionLimit() throws Exception {
+        server = startServer(exchange -> sendResponse(exchange, 200, "{\"bucketErn\":\"bucket-ern\",\"key\":\"a.xml\","
+                + "\"ern\":\"obj-ern\",\"versioning\":true,\"maxVersions\":2,\"total\":0,\"versions\":[]}"));
+
+        assertEquals(2, newClient().listObjectVersions("incoming", "a.xml").maxVersions());
+    }
+
+    @Test
+    void deleteObjectsByPrefixSendsThePrefixAndOnlyASilenceThatWasAskedFor() throws Exception {
+        AtomicReference<SignableRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(captureRequest(exchange));
+            sendResponse(exchange, 200, "{\"ern\":\"bucket-ern\",\"prefix\":\"staging/\",\"objects\":7}");
+        });
+
+        DeleteObjectsResponse response = newClient().deleteObjectsByPrefix("bucket-ern", "staging/", false, true);
+        assertEquals("delete-objects", received.get().header("x-euclid-action"));
+        assertBodyContains(received.get().body(), "\"ern\":\"bucket-ern\"", "\"prefix\":\"staging/\"", "\"async\":false");
+        assertFalse(received.get().body().contains("notify"));
+        assertEquals("staging/", response.prefix());
+        assertEquals(7, response.objects());
+
+        newClient().deleteObjectsByPrefix("bucket-ern", "staging/", false, false);
+        assertBodyContains(received.get().body(), "\"notify\":false");
+    }
+
+    @Test
+    void deleteObjectsByPrefixInTheBackgroundNamesTheJob() throws Exception {
+        server = startServer(exchange -> {
+            exchange.getRequestBody().readAllBytes();
+            sendResponse(exchange, 202, "{\"ern\":\"bucket-ern\",\"prefix\":\"\",\"async\":true,\"jobId\":\"job-1\",\"objects\":900}");
+        });
+
+        DeleteObjectsResponse response = newClient().deleteObjectsByPrefix("bucket-ern", "", true, true);
+
+        assertTrue(response.async());
+        assertEquals("job-1", response.jobId());
+        assertEquals(900, response.objects());
+    }
+
+    // An empty key list reaches the server as "no keys", which with no prefix is the whole bucket.
+    @Test
+    void deleteObjectsWithNoKeysSendsNothing() throws Exception {
+        AtomicInteger requests = new AtomicInteger();
+        server = startServer(exchange -> {
+            requests.incrementAndGet();
+            sendResponse(exchange, 200, "{\"ern\":\"bucket-ern\",\"prefix\":\"\",\"objects\":100}");
+        });
+
+        DeleteObjectsResponse response = newClient().deleteObjects("bucket-ern", List.of());
+
+        assertEquals(0, requests.get());
+        assertEquals(0, response.objects());
+        assertEquals(0, response.asked());
     }
 
     private static void assertBodyContains(String body, String... fragments) {

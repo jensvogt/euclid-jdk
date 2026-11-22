@@ -12,9 +12,12 @@ import java.util.Map;
  * an update naming a single field leaves the rest of the definition alone. That is why every
  * field but {@code applicationId} is a boxed type: null means "leave alone", not "clear".
  * <p>
- * Setting {@code buckets} or {@code queues} also rewrites the access grants on the principal the
- * application runs as - but only when that principal is one EAP minted itself. A user named at
- * creation is the caller's to grant.
+ * The four resource lists - {@code buckets}, {@code queues}, {@code topics} and {@code secrets} -
+ * are one setting, not four: setting <em>any</em> of them replaces the application's whole
+ * resource list with what the four together name, so a request that sets only {@code buckets}
+ * takes away the queues, topics and secrets it had. Send all four together when changing one.
+ * Doing so also rewrites the access grants on the principal the application runs as - but only
+ * when that principal is one EAP minted itself. A user named at creation is the caller's to grant.
  *
  * @param applicationId  the application to change; the only required field
  * @param runtime        how the artifact is executed
@@ -26,9 +29,17 @@ import java.util.Map;
  * @param environment    environment variables, replacing the current set
  * @param buckets        names of the ESM buckets the application may reach, replacing the current grants
  * @param queues         names of the EQS queues the application may reach, replacing the current grants
+ * @param topics         names of the ENS topics the application may reach, replacing the current grants
+ * @param secrets        names of the ESS secrets the application may reach, replacing the current grants
+ * @param namespace      the namespace to move the application to, {@code ""} for the account root -
+ *                       a move rather than a copy, so it stops running where it was
+ * @param user           an existing user with an access key for the application to run as instead;
+ *                       cannot be emptied
  * @param minInstances   smallest number of processes to keep running
  * @param maxInstances   largest number of processes to run
  * @param readyTimeoutMs milliseconds to wait for a process to report ready
+ * @param memoryLimitMb  memory each instance may use, in MiB; 0 removes the limit. Restarts the pool
+ * @param cpuLimit       CPU each instance may use, in cores; 0 removes the limit. Restarts the pool
  * @param nodeLabels     key/value labels a worker node has to carry to run this, e.g.
  *                       {@code os=windows}; empty or unset means any node will do
  * @param type           {@code "PROCESS"} (the server's default) for something that stays up, or
@@ -42,8 +53,10 @@ import java.util.Map;
  */
 public record UpdateApplicationRequest(String applicationId, String runtime, String artifact, String version,
                                        String command, List<String> arguments, Map<String, String> environment,
-                                       List<String> buckets, List<String> queues, Long minInstances, Long maxInstances,
-                                       Long readyTimeoutMs, Map<String, String> nodeLabels,
+                                       List<String> buckets, List<String> queues, List<String> topics,
+                                       List<String> secrets, String namespace, String user,
+                                       Long minInstances, Long maxInstances, Long readyTimeoutMs,
+                                       Long memoryLimitMb, Double cpuLimit, Map<String, String> nodeLabels,
                                        String type, String schedule) {
 
     /**
@@ -142,6 +155,36 @@ public record UpdateApplicationRequest(String applicationId, String runtime, Str
         private String schedule;
 
         /**
+         * Names of the ENS topics the application may reach.
+         */
+        private List<String> topics;
+
+        /**
+         * Names of the ESS secrets the application may reach.
+         */
+        private List<String> secrets;
+
+        /**
+         * The namespace to move the application to; null leaves it where it is.
+         */
+        private String namespace;
+
+        /**
+         * The identity the application runs as; null leaves it alone.
+         */
+        private String user;
+
+        /**
+         * Memory each instance may use, in MiB; null leaves it alone.
+         */
+        private Long memoryLimitMb;
+
+        /**
+         * CPU each instance may use, in cores; null leaves it alone.
+         */
+        private Double cpuLimit;
+
+        /**
          * Sets the application to change; the only required field.
          *
          * @param applicationId the application to change; the only required field
@@ -177,11 +220,11 @@ public record UpdateApplicationRequest(String applicationId, String runtime, Str
         /**
          * Sets the version recorded for the application.
          * <p>
-         * Taken as given, unlike
+         * Taken as given, and with no check on the artifact either - unlike
          * {@link de.jensvogt.euclid.module.eap.EuclidEap#redeployApplication(RedeployApplicationRequest)},
-         * which refuses a version already deployed: this is the one place a version can be set to
-         * anything, which is what makes it the way to rebuild a version in place or roll back to
-         * one already seen.
+         * which refuses an artifact whose bytes are the build already deployed unless forced. This
+         * is the one place a version and an artifact can be set to anything, which is what makes it
+         * the way to roll back to a build already seen.
          *
          * @param version version recorded for the application
          * @return the builder instance
@@ -243,6 +286,99 @@ public record UpdateApplicationRequest(String applicationId, String runtime, Str
          */
         public Builder queues(List<String> queues) {
             this.queues = queues;
+            return this;
+        }
+
+        /**
+         * Sets names of the ENS topics the application may reach, replacing the current grants.
+         * <p>
+         * Like the other three resource lists, setting this replaces the application's whole
+         * resource list - see the class description.
+         *
+         * @param topics names of the ENS topics the application may reach
+         * @return the builder instance
+         */
+        public Builder topics(List<String> topics) {
+            this.topics = topics;
+            return this;
+        }
+
+        /**
+         * Sets names of the ESS secrets the application may reach, replacing the current grants.
+         * <p>
+         * Like the other three resource lists, setting this replaces the application's whole
+         * resource list - see the class description.
+         *
+         * @param secrets names of the ESS secrets the application may reach
+         * @return the builder instance
+         */
+        public Builder secrets(List<String> secrets) {
+            this.secrets = secrets;
+            return this;
+        }
+
+        /**
+         * Moves the application to another namespace.
+         * <p>
+         * A move, not a field change: the namespace is part of what identifies an application, so
+         * its row, its ERN and the grants of a principal EAP minted for it all follow it, and it
+         * stops running where it was. {@code ""} moves it back to the account root - so empty and
+         * unset mean different things here. The runtime name stays as it is. Refused with HTTP 409
+         * if the target namespace already has an application of this name. To leave the original
+         * running, use {@link de.jensvogt.euclid.module.eap.EuclidEap#copyApplication} instead.
+         *
+         * @param namespace the namespace to move the application to, or {@code ""} for the account root
+         * @return the builder instance
+         */
+        public Builder namespace(String namespace) {
+            this.namespace = namespace;
+            return this;
+        }
+
+        /**
+         * Changes the identity the application runs and signs its calls as.
+         * <p>
+         * This is the way out of a definition whose user was deleted or renamed underneath it -
+         * see {@link de.jensvogt.euclid.dto.eap.model.Application#userExists()}. The user has to
+         * exist and already have an access key, or the change is refused. A technical principal EAP
+         * had minted for the application is deleted along with its grants, since nothing else can
+         * use it. It cannot be emptied to get a new technical principal back: that would mint a
+         * principal and its key as a side effect of an empty field, so {@code ""} is HTTP 400.
+         *
+         * @param user an existing user with an access key
+         * @return the builder instance
+         */
+        public Builder user(String user) {
+            this.user = user;
+            return this;
+        }
+
+        /**
+         * Sets how much memory each instance may use, in MiB; 0 removes the limit, anything else
+         * has to be at least 64.
+         * <p>
+         * Through this request the change restarts the pool like any other change of definition,
+         * which is the one way running JVMs get a heap sized for the new limit.
+         * {@link de.jensvogt.euclid.module.eap.EuclidEap#setApplicationLimits} sets it without the
+         * restart.
+         *
+         * @param memoryLimitMb memory each instance may use, in MiB; 0 for no limit
+         * @return the builder instance
+         */
+        public Builder memoryLimitMb(Long memoryLimitMb) {
+            this.memoryLimitMb = memoryLimitMb;
+            return this;
+        }
+
+        /**
+         * Sets how much CPU each instance may use, in cores; 0 removes the limit, anything else has
+         * to be at least 0.01. Restarts the pool, as {@link #memoryLimitMb(Long)} does.
+         *
+         * @param cpuLimit CPU each instance may use, in cores; 0 for no limit
+         * @return the builder instance
+         */
+        public Builder cpuLimit(Double cpuLimit) {
+            this.cpuLimit = cpuLimit;
             return this;
         }
 
@@ -322,8 +458,8 @@ public record UpdateApplicationRequest(String applicationId, String runtime, Str
          */
         public UpdateApplicationRequest build() {
             return new UpdateApplicationRequest(applicationId, runtime, artifact, version, command, arguments,
-                    environment, buckets, queues, minInstances, maxInstances, readyTimeoutMs,
-                    nodeLabels, type, schedule);
+                    environment, buckets, queues, topics, secrets, namespace, user, minInstances, maxInstances,
+                    readyTimeoutMs, memoryLimitMb, cpuLimit, nodeLabels, type, schedule);
         }
     }
 }

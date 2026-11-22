@@ -172,6 +172,7 @@ public final class FakeGatewayServer implements AutoCloseable {
      * subscription for {@code topic}.
      *
      * @param topic          the topic to wait for
+     * @param count          retry count
      * @param timeoutSeconds the maximum time to wait
      * @throws InterruptedException if the thread is interrupted while waiting
      */

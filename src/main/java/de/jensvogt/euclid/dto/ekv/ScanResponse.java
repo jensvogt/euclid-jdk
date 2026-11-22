@@ -11,9 +11,14 @@ import java.util.List;
  * through one needs to know how far it has to go - and what tells it, before it starts, that the
  * table is larger than it wanted to read.
  *
+ * <p>That stays true of a narrowed scan, which is the catch: {@link #total()} counts the whole table,
+ * not what a {@link ScanRequest}'s time window or attribute comparison let through. A caller paging
+ * through a narrowed scan cannot work out the number of pages from it, and stops when a page comes
+ * back shorter than it asked for.
+ *
  * @param items the items on the requested page
  * @param count how many items came back, which is {@code items.size()}
- * @param total how many items the table holds, across every page
+ * @param total how many items the table holds, across every page - regardless of any narrowing
  */
 public record ScanResponse(List<Item> items, long count, long total) {
 

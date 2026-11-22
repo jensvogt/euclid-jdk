@@ -24,10 +24,13 @@ import java.util.Map;
  * @param versioning       whether an upload over an existing key keeps the object it replaces as a
  *                         non-current version - see
  *                         {@link de.jensvogt.euclid.module.esm.EuclidEsm#setBucketVersioning}
+ * @param maxVersions      the most non-current versions one key keeps, 0 for every one. The oldest
+ *                         beyond it are deleted, file and all, when an upload adds another - see
+ *                         {@link de.jensvogt.euclid.module.esm.EuclidEsm#setBucketMaxVersions}
  * @param created          creation timestamp
  * @param modified         last-modified timestamp
  */
 public record Bucket(String owner, String name, String ern, long size, long objects, long directories,
                      Map<String, String> tags, boolean encrypted, String encryptionKeyErn, boolean internal,
-                     String priority, boolean stopped, boolean versioning, String created, String modified) {
+                     String priority, boolean stopped, boolean versioning, long maxVersions, String created, String modified) {
 }

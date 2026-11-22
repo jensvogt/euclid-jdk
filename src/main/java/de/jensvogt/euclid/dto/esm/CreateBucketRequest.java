@@ -5,16 +5,16 @@ import com.fasterxml.jackson.annotation.JsonInclude;
 /**
  * Represents a request to create a new bucket with a specified name.
  * This class is immutable and provides a builder to simplify the construction process.
- *
+ * <p>
  * Fields:
  * - name: The name of the bucket to be created.
- *
+ * <p>
  * Provides functionality to construct a {@code CreateBucketRequest} instance using
  * the static {@code builder()} method, which returns a {@code Builder}.
- *
+ * <p>
  * The {@code Builder} class simplifies the construction of {@code CreateBucketRequest}
  * instances by allowing the caller to specify the required parameters in a fluent manner.
- *
+ * <p>
  * Example usage of the builder pattern is encouraged for creating instances of this
  * class to ensure clarity and immutability.
  *
@@ -22,12 +22,18 @@ import com.fasterxml.jackson.annotation.JsonInclude;
  * @param priority The priority the notifications this bucket sends are given, or null for none. The
  *                 bucket does nothing with it - see
  *                 {@link de.jensvogt.euclid.module.esm.EuclidEsm#setBucketPriority}.
+ * @param internal Whether the bucket is euclid's own plumbing, left out of ordinary listings from
+ *                 the moment it exists - the same flag
+ *                 {@link de.jensvogt.euclid.module.esm.EuclidEsm#setBucketInternal} sets later, but
+ *                 without the window in which the bucket shows up in every listing. False is not
+ *                 sent, for the same reason a missing priority is not.
  */
 // Nulls are left out rather than sent, so a create with no priority says exactly what a create has
 // always said - and an older installation is not handed a field it has no meaning for. Scoped to this
 // record rather than set on the module's ObjectMapper, which every other ESM request shares.
 @JsonInclude(JsonInclude.Include.NON_NULL)
-public record CreateBucketRequest(String name, String priority) {
+public record CreateBucketRequest(String name, String priority,
+                                  @JsonInclude(JsonInclude.Include.NON_DEFAULT) boolean internal) {
 
     /**
      * Provides a static method to obtain a new instance of the Builder.
@@ -44,13 +50,13 @@ public record CreateBucketRequest(String name, String priority) {
      * A builder class for constructing instances of {@code CreateBucketRequest}.
      * This class provides a fluent API to configure and create immutable
      * {@code CreateBucketRequest} objects.
-     *
+     * <p>
      * The builder allows setting a single parameter:
      * - {@code name}: The name of the bucket to be created.
-     *
+     * <p>
      * Instances of the builder can be created using the {@code builder()} method
      * of the enclosing {@code CreateBucketRequest} class.
-     *
+     * <p>
      * The {@code build()} method finalizes the configuration and returns an
      * immutable {@code CreateBucketRequest} instance.
      */
@@ -72,6 +78,11 @@ public record CreateBucketRequest(String name, String priority) {
          * The priority the notifications this bucket sends are given, or null for none.
          */
         private String priority;
+
+        /**
+         * Whether the bucket is euclid's own plumbing, hidden from ordinary listings.
+         */
+        private boolean internal;
 
         /**
          * Sets the name of the bucket to be created.
@@ -96,6 +107,17 @@ public record CreateBucketRequest(String name, String priority) {
         }
 
         /**
+         * Sets whether the bucket is created hidden from ordinary listings.
+         *
+         * @param internal true to create the bucket as one of euclid's internal ones
+         * @return the updated builder instance
+         */
+        public Builder internal(boolean internal) {
+            this.internal = internal;
+            return this;
+        }
+
+        /**
          * Constructs and returns a new instance of {@code CreateBucketRequest}
          * based on the current state of the builder.
          *
@@ -103,7 +125,7 @@ public record CreateBucketRequest(String name, String priority) {
          *         the configured bucket name
          */
         public CreateBucketRequest build() {
-            return new CreateBucketRequest(name, priority);
+            return new CreateBucketRequest(name, priority, internal);
         }
     }
 }

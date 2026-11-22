@@ -7,14 +7,36 @@ package de.jensvogt.euclid.dto.ess;
  * rather than refused, so an application listing what it may read gets an answer instead of a 403 -
  * which does mean {@code total} can exceed the number of secrets actually returned.
  *
- * @param prefix        only secrets whose name starts with this prefix are returned
+ * @param prefix        only secrets whose name matches this text, the way {@code matchType} says;
+ *                      empty matches every one
+ * @param matchType     how {@code prefix} is matched against each name: {@code "prefix"}, which
+ *                      is also what an empty value means and what every listing did before the
+ *                      field existed, {@code "endsWith"}, {@code "contains"} or {@code "regex"}.
+ *                      Every type but {@code "regex"} treats the text as a literal, so
+ *                      {@code "a.b"} does not also find {@code "aXb"}. An unknown type, or a
+ *                      regex that does not compile, is refused with HTTP 400 rather than quietly
+ *                      matching nothing
  * @param pageSize      the maximum number of secrets to return in a single page
  * @param pageIndex     the zero-based index of the page to return
  * @param sortColumn    the column results are sorted by
  * @param sortDirection the direction to sort in, {@code "asc"} or {@code "desc"}
  */
-public record ListSecretsRequest(String prefix, long pageSize, long pageIndex, String sortColumn,
-                                 String sortDirection) {
+public record ListSecretsRequest(String prefix, String matchType, long pageSize, long pageIndex,
+                                 String sortColumn, String sortDirection) {
+
+    /**
+     * Creates a request that matches names by prefix - the shape this record had before
+     * {@code matchType} existed, so code written against it still compiles.
+     *
+     * @param prefix        only secrets whose name starts with this prefix are returned
+     * @param pageSize      the maximum number of secrets to return in a single page
+     * @param pageIndex     the zero-based index of the page to return
+     * @param sortColumn    the column results are sorted by
+     * @param sortDirection the direction to sort in, {@code "asc"} or {@code "desc"}
+     */
+    public ListSecretsRequest(String prefix, long pageSize, long pageIndex, String sortColumn, String sortDirection) {
+        this(prefix, "", pageSize, pageIndex, sortColumn, sortDirection);
+    }
 
     /**
      * Creates a new instance of the Builder for constructing a ListSecretsRequest object.
@@ -40,6 +62,11 @@ public record ListSecretsRequest(String prefix, long pageSize, long pageIndex, S
          * Only secrets whose name starts with this prefix are returned.
          */
         private String prefix = "";
+
+        /**
+         * How the prefix is matched against each name; empty is a prefix match.
+         */
+        private String matchType = "";
 
         /**
          * The maximum number of secrets to return in a single page.
@@ -69,6 +96,18 @@ public record ListSecretsRequest(String prefix, long pageSize, long pageIndex, S
          */
         public Builder prefix(String prefix) {
             this.prefix = prefix;
+            return this;
+        }
+
+        /**
+         * Sets how the prefix is matched against each name.
+         *
+         * @param matchType {@code "prefix"}, {@code "endsWith"}, {@code "contains"} or
+         *                  {@code "regex"}; empty, the default, is a prefix match
+         * @return the builder instance
+         */
+        public Builder matchType(String matchType) {
+            this.matchType = matchType;
             return this;
         }
 
@@ -122,7 +161,7 @@ public record ListSecretsRequest(String prefix, long pageSize, long pageIndex, S
          * @return a new ListSecretsRequest instance.
          */
         public ListSecretsRequest build() {
-            return new ListSecretsRequest(prefix, pageSize, pageIndex, sortColumn, sortDirection);
+            return new ListSecretsRequest(prefix, matchType, pageSize, pageIndex, sortColumn, sortDirection);
         }
     }
 }

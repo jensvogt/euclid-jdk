@@ -9,6 +9,7 @@ import de.jensvogt.euclid.auth.SignableRequest;
 import de.jensvogt.euclid.dto.ess.CreateSecretRequest;
 import de.jensvogt.euclid.dto.ess.DeleteSecretResponse;
 import de.jensvogt.euclid.dto.ess.GetSecretResponse;
+import de.jensvogt.euclid.dto.ess.ListSecretsRequest;
 import de.jensvogt.euclid.dto.ess.ListSecretsResponse;
 import de.jensvogt.euclid.dto.ess.UpdateSecretRequest;
 import de.jensvogt.euclid.dto.ess.model.Secret;
@@ -173,6 +174,38 @@ class EuclidEssTest {
                 "\"sortDirection\":\"desc\"");
         assertEquals(1, response.secrets().size());
         assertEquals("db-password", response.secrets().getFirst().name());
+    }
+
+    @Test
+    void listSecretsSendsTheMatchTypeOfARequest() throws Exception {
+        AtomicReference<SignableRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(captureRequest(exchange));
+            sendResponse(exchange, 200, "{\"secrets\":[" + secretJson(1) + "],\"total\":1}");
+        });
+
+        ListSecretsResponse response = newClient().listSecrets(ListSecretsRequest.builder().prefix("password")
+                .matchType("contains").build());
+
+        assertEquals("list-secrets", received.get().header("x-euclid-action"));
+        assertBodyContains(received.get().body(), "\"prefix\":\"password\"", "\"matchType\":\"contains\"",
+                "\"pageSize\":10", "\"sortColumn\":\"name\"");
+        assertEquals(1, response.total());
+    }
+
+    // The positional overload, which existsSecret relies on, stays a prefix match: an empty
+    // matchType is what the server reads as one.
+    @Test
+    void listSecretsSendsAPrefixMatchByDefault() throws Exception {
+        AtomicReference<SignableRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(captureRequest(exchange));
+            sendResponse(exchange, 200, "{\"total\":0}");
+        });
+
+        newClient().listSecrets("db-", 5, 1, "name", "desc");
+
+        assertBodyContains(received.get().body(), "\"matchType\":\"\"");
     }
 
     // A restricted principal gets the secrets it may read, filtered rather than refused, so the

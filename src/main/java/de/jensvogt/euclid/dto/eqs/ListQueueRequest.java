@@ -3,14 +3,17 @@ package de.jensvogt.euclid.dto.eqs;
 /**
  * Request to list queues, optionally filtered by name prefix and paginated.
  *
- * @param prefix        only queues whose name starts with this prefix are returned
+ * @param prefix        only queues whose name matches this are returned, the way {@code matchType} says
+ * @param matchType     how {@code prefix} is matched: {@code "prefix"}, {@code "endsWith"},
+ *                      {@code "contains"} or {@code "regex"}; empty means {@code "prefix"}, and every type
+ *                      but {@code "regex"} takes the text literally
  * @param pageSize      the maximum number of queues to return in a single page
  * @param pageIndex     the zero-based index of the page to return
  * @param sortColumn    the name of the column results are sorted by
  * @param sortDirection the sort direction, {@code "asc"} or {@code "desc"}
  * @param includeInternal whether euclid's own queues are listed as well; they are hidden by default
  */
-public record ListQueueRequest(String prefix, long pageSize, long pageIndex, String sortColumn, String sortDirection,
+public record ListQueueRequest(String prefix, String matchType, long pageSize, long pageIndex, String sortColumn, String sortDirection,
                                boolean includeInternal) {
 
     /**
@@ -37,6 +40,11 @@ public record ListQueueRequest(String prefix, long pageSize, long pageIndex, Str
          * Only queues whose name starts with this prefix are returned.
          */
         private String prefix = "";
+
+        /**
+         * How {@code prefix} is matched; empty is the server's default, {@code "prefix"}.
+         */
+        private String matchType = "";
 
         /**
          * The maximum number of queues to return in a single page.
@@ -71,6 +79,22 @@ public record ListQueueRequest(String prefix, long pageSize, long pageIndex, Str
          */
         public Builder prefix(String prefix) {
             this.prefix = prefix;
+            return this;
+        }
+
+        /**
+         * Sets how {@code prefix} is matched against queue names.
+         *
+         * <p>Named by the server rather than by an enum here, so a match type a newer server adds
+         * can be asked for without waiting for this client to learn it; one the server does not
+         * know is refused with HTTP 400 rather than silently treated as a prefix.
+         *
+         * @param matchType {@code "prefix"}, {@code "endsWith"}, {@code "contains"} or {@code "regex"};
+         *                  {@code null} or empty means {@code "prefix"}
+         * @return the builder instance
+         */
+        public Builder matchType(String matchType) {
+            this.matchType = matchType == null ? "" : matchType;
             return this;
         }
 
@@ -140,7 +164,7 @@ public record ListQueueRequest(String prefix, long pageSize, long pageIndex, Str
          * @return a new ListQueueRequest instance.
          */
         public ListQueueRequest build() {
-            return new ListQueueRequest(prefix, pageSize, pageIndex, sortColumn, sortDirection, includeInternal);
+            return new ListQueueRequest(prefix, matchType, pageSize, pageIndex, sortColumn, sortDirection, includeInternal);
         }
     }
 }

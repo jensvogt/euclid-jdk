@@ -19,7 +19,9 @@ import de.jensvogt.euclid.dto.eqs.GetMessageMetadataResponse;
 import de.jensvogt.euclid.dto.eqs.GetQueueErnResponse;
 import de.jensvogt.euclid.dto.eqs.GetQueueMetadataResponse;
 import de.jensvogt.euclid.dto.eqs.ListMessagesResponse;
+import de.jensvogt.euclid.dto.eqs.ListQueueRequest;
 import de.jensvogt.euclid.dto.eqs.ListQueueResponse;
+import de.jensvogt.euclid.dto.eqs.PurgeQueueResponse;
 import de.jensvogt.euclid.dto.eqs.QueueStatusResponse;
 import de.jensvogt.euclid.dto.eqs.ReceiveMessagesResponse;
 import de.jensvogt.euclid.dto.eqs.RedriveDlqResponse;
@@ -96,7 +98,8 @@ class EuclidEqsTest {
         assertEquals(2L, result.sent());
         assertEquals(List.of("id-0", "id-2"), result.messageIds());
         assertEquals(1, result.failed().size());
-        assertEquals(1L, result.failed().getFirst());
+        assertEquals(1L, result.failed().getFirst().index());
+        assertEquals("message is 2048 bytes, and this queue accepts 1024", result.failed().getFirst().reason());
 
         String body = received.get().body();
         assertBodyContains(body, "\"ern\":\"orders\"", "\"body\":\"first\"", "\"priority\":\"HIGH\"");
@@ -1277,6 +1280,119 @@ class EuclidEqsTest {
 
             server.stop(0);
         }
+    }
+
+    @Test
+    void deleteQueueIfEmptyAsksTheServerToRefuseAQueueInUse() throws Exception {
+        AtomicReference<SignableRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(captureRequest(exchange));
+            sendResponse(exchange, 409, "{\"error\":\"Queue is not empty: 3 message(s) remain.\"}");
+        });
+
+        EuclidEqs eqs = newClient();
+        EuclidServiceException exception =
+                assertThrows(EuclidServiceException.class, () -> eqs.deleteQueue("queue-ern", true));
+
+        assertEquals(409, exception.statusCode());
+        assertEquals("delete-queue", received.get().header("x-euclid-action"));
+        assertBodyContains(received.get().body(), "\"ern\":\"queue-ern\"", "\"ifEmpty\":true");
+    }
+
+    @Test
+    void deleteQueueWithoutIfEmptyStaysUnconditional() throws Exception {
+        AtomicReference<SignableRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(captureRequest(exchange));
+            sendResponse(exchange, 200, "{}");
+        });
+
+        newClient().deleteQueue("queue-ern");
+
+        assertBodyContains(received.get().body(), "\"ifEmpty\":false");
+    }
+
+    @Test
+    void purgeQueueAsyncReportsWhatWasThereWhenAccepted() throws Exception {
+        AtomicReference<SignableRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(captureRequest(exchange));
+            sendResponse(exchange, 202, "{\"ern\":\"queue-ern\",\"async\":true,\"messages\":796171}");
+        });
+
+        PurgeQueueResponse response = newClient().purgeQueue("queue-ern", true);
+
+        assertEquals("purge-queue", received.get().header("x-euclid-action"));
+        assertBodyContains(received.get().body(), "\"ern\":\"queue-ern\"", "\"async\":true");
+        assertEquals("queue-ern", response.ern());
+        assertTrue(response.async());
+        assertEquals(796171L, response.messages());
+    }
+
+    @Test
+    void purgeQueueInlineReadsAnEmptyAnswerAsDone() throws Exception {
+        // A server from before purge-queue answered with a body says nothing at all; that purge was
+        // inline by definition, and the queue asked about is the one it was.
+        server = startServer(exchange -> sendResponse(exchange, 200, ""));
+
+        PurgeQueueResponse response = newClient().purgeQueue("queue-ern", false);
+
+        assertEquals("queue-ern", response.ern());
+        assertFalse(response.async());
+        assertEquals(0L, response.messages());
+    }
+
+    @Test
+    void listQueuesCarriesTheMatchType() throws Exception {
+        AtomicReference<SignableRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(captureRequest(exchange));
+            sendResponse(exchange, 200, "{\"queues\":[{\"name\":\"orders-dlq\",\"ern\":\"q\",\"status\":\"STOPPED\","
+                    + "\"internal\":true}],\"total\":1}");
+        });
+
+        ListQueueResponse response = newClient().listQueues(ListQueueRequest.builder()
+                .prefix("-dlq").matchType("endsWith").includeInternal(true).build());
+
+        assertEquals("list-queues", received.get().header("x-euclid-action"));
+        assertBodyContains(received.get().body(), "\"prefix\":\"-dlq\"", "\"matchType\":\"endsWith\"",
+                "\"includeInternal\":true");
+        Queue queue = response.queues().getFirst();
+        assertEquals("STOPPED", queue.status());
+        assertTrue(queue.internal());
+    }
+
+    @Test
+    void listQueuesLeavesTheMatchTypeToTheServerByDefault() throws Exception {
+        AtomicReference<SignableRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(captureRequest(exchange));
+            sendResponse(exchange, 200, "{\"queues\":[{\"name\":\"orders\",\"ern\":\"q\"}],\"total\":1}");
+        });
+
+        ListQueueResponse response = newClient().listQueues();
+
+        assertBodyContains(received.get().body(), "\"matchType\":\"\"");
+        assertFalse(response.queues().getFirst().internal());
+    }
+
+    @Test
+    void sendMessageCarriesSystemAttributesApartFromTheCallersOwn() throws Exception {
+        AtomicReference<SignableRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(captureRequest(exchange));
+            sendResponse(exchange, 200, "{\"messageId\":\"m-2\"}");
+        });
+
+        SendMessageResponse response = newClient().sendMessage("queue-ern", "hello",
+                Map.of("kind", new Variant("string", "reply")),
+                Map.of("correlationId", new Variant("string", "corr-1")), "HIGH");
+
+        assertEquals("m-2", response.messageId());
+        assertBodyContains(received.get().body(),
+                "\"attributes\":{\"kind\":{\"type\":\"string\",\"value\":\"reply\"}}",
+                "\"systemAttributes\":{\"correlationId\":{\"type\":\"string\",\"value\":\"corr-1\"}}",
+                "\"priority\":\"HIGH\"");
     }
 
 }

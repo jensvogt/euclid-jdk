@@ -18,6 +18,8 @@ import de.jensvogt.euclid.dto.eag.model.ListenerCertificate;
 import de.jensvogt.euclid.dto.eag.model.Protocol;
 import de.jensvogt.euclid.dto.eag.model.Route;
 import de.jensvogt.euclid.dto.eag.model.RouteAuthentication;
+import de.jensvogt.euclid.dto.eag.model.RouteType;
+import de.jensvogt.euclid.dto.eag.model.RouteUpload;
 import de.jensvogt.euclid.exception.EuclidServiceException;
 import de.jensvogt.euclid.http.EuclidHttpClient;
 
@@ -48,6 +50,11 @@ import java.util.function.Supplier;
  * in before it can call anything, most of all - and it names the one action it answers for, so that
  * what is exposed is exactly what somebody wrote down rather than every action the module has.
  * <p>
+ * An {@link RouteType#UPLOAD} route forwards nowhere: the gateway is the endpoint, and it streams
+ * the request body into a bucket in parts without ever holding it whole. It names a bucket instead
+ * of an application or a module, and has to require a credential - one that did not would be a
+ * public write endpoint into somebody's bucket.
+ * <p>
  * Matching is by longest path prefix on whole segments: a route on {@code /resource} carries
  * everything beneath it but never claims {@code /resource-intern}, and a more specific
  * {@code /resource/export} can be carved out of it later without either being reordered. Two routes
@@ -71,7 +78,7 @@ public final class EuclidEag implements TokenRefreshable, SigningSchemeSelectabl
      * the server rather than set to nothing.
      */
     private static final ObjectMapper OBJECT_MAPPER =
-            new ObjectMapper().setSerializationInclusion(JsonInclude.Include.NON_NULL);
+            new ObjectMapper().setDefaultPropertyInclusion(JsonInclude.Include.NON_NULL);
 
     /**
      * The Euclid service every request from this class is addressed to, sent as the
@@ -226,6 +233,31 @@ public final class EuclidEag implements TokenRefreshable, SigningSchemeSelectabl
     }
 
     /**
+     * Publishes a path at which the gateway itself accepts uploads, streaming each request body
+     * into a bucket under the key given by the rest of the path.
+     * <p>
+     * Nothing is forwarded, which is why there is no application or module to name; and the body
+     * is streamed through to ESM in parts rather than buffered, which is why this is a different
+     * kind of route rather than a proxy route to some uploading application. Key prefix, size
+     * limit, part size and accepted content types are left to their defaults - the whole bucket,
+     * no limit, 5 MB, anything - and {@link #createRoute(CreateRouteRequest)} sets them.
+     *
+     * @param routeId        the name to manage this route under
+     * @param path           the path prefix to publish, e.g. {@code /upload}
+     * @param bucketErn      ERN of the bucket bodies are written to, which has to exist already
+     * @param authentication what a caller must present. {@link RouteAuthentication#NONE} is refused
+     *                       with HTTP 400, since it would make the route a public write endpoint
+     * @return the route as it was stored
+     * @throws IOException          if an I/O error occurs during the operation
+     * @throws InterruptedException if the operation is interrupted
+     */
+    public Route createUploadRoute(String routeId, String path, String bucketErn, RouteAuthentication authentication)
+            throws IOException, InterruptedException {
+        return createRoute(CreateRouteRequest.builder().routeId(routeId).path(path).type(RouteType.UPLOAD)
+                .bucket(bucketErn).authentication(authentication).build());
+    }
+
+    /**
      * Publishes a path, with the methods, the scope and what a caller must present spelled out.
      * <p>
      * Refused with HTTP 409 if the route ID is taken, or if another route already answers for this
@@ -317,8 +349,24 @@ public final class EuclidEag implements TokenRefreshable, SigningSchemeSelectabl
      * @throws InterruptedException if the operation is interrupted
      */
     public List<Route> listRoutes(String pathPrefix) throws IOException, InterruptedException {
-        String body = OBJECT_MAPPER.writeValueAsString(ListRoutesRequest.builder().prefix(pathPrefix).build());
-        return toRouteList(post("list-routes", body).get("routes"));
+        return listRoutes(ListRoutesRequest.builder().prefix(pathPrefix).build());
+    }
+
+    /**
+     * Lists the routes whose path matches a search text the way the request says - as a prefix, a
+     * suffix, a substring or a regular expression.
+     * <p>
+     * What {@link #listRoutes(String)} cannot ask: "every route ending in {@code /export}", say, or
+     * "everything under any {@code /v2}". A match type the server does not know, or a regular
+     * expression that does not compile, is refused with HTTP 400.
+     *
+     * @param request the search text and how to match it
+     * @return the matching routes
+     * @throws IOException          if an I/O error occurs during the operation
+     * @throws InterruptedException if the operation is interrupted
+     */
+    public List<Route> listRoutes(ListRoutesRequest request) throws IOException, InterruptedException {
+        return toRouteList(post("list-routes", OBJECT_MAPPER.writeValueAsString(request)).get("routes"));
     }
 
     /**
@@ -436,14 +484,39 @@ public final class EuclidEag implements TokenRefreshable, SigningSchemeSelectabl
                 textOrNull(node, "region"),
                 textOrNull(node, "namespace"),
                 textOrNull(node, "path"),
+                RouteType.fromWireValue(textOrNull(node, "type")),
+                toRouteUpload(node.get("upload")),
                 textOrNull(node, "applicationId"),
                 textOrNull(node, "moduleTarget"),
                 textOrNull(node, "moduleAction"),
                 toStringList(node.get("methods")),
                 RouteAuthentication.fromWireValue(textOrNull(node, "authentication")),
+                node.path("timeout").asLong(0),
                 node.path("active").asBoolean(true),
                 textOrNull(node, "created"),
                 textOrNull(node, "modified"));
+    }
+
+    /**
+     * Builds a {@link RouteUpload} from a route's {@code upload} object.
+     * <p>
+     * The server reports the object on every route, proxy routes included, so an empty one is
+     * returned rather than {@code null} when it is missing - a caller reading
+     * {@code route.upload().bucket()} should not have to know which servers predate uploads.
+     *
+     * @param node the JSON object describing the upload settings, or {@code null}
+     * @return the parsed upload settings
+     */
+    private static RouteUpload toRouteUpload(JsonNode node) {
+        if (node == null || !node.isObject()) {
+            return new RouteUpload(null, null, 0, 0, List.of());
+        }
+        return new RouteUpload(
+                textOrNull(node, "bucket"),
+                textOrNull(node, "keyPrefix"),
+                node.path("maxBytes").asLong(0),
+                node.path("partSize").asLong(0),
+                toStringList(node.get("contentTypes")));
     }
 
     /**

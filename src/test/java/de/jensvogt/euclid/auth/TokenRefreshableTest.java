@@ -5,6 +5,7 @@ import com.sun.net.httpserver.HttpHandler;
 import com.sun.net.httpserver.HttpServer;
 import de.jensvogt.euclid.module.ead.EuclidEad;
 import de.jensvogt.euclid.module.eap.EuclidEap;
+import de.jensvogt.euclid.module.eds.EuclidEds;
 import de.jensvogt.euclid.module.emm.EuclidEmm;
 import de.jensvogt.euclid.module.ees.EuclidEes;
 import de.jensvogt.euclid.module.ekm.EuclidEkm;
@@ -127,6 +128,7 @@ class TokenRefreshableTest {
                 new EuclidEap(null, "t", null, null, null, null, null, null, null),
                 new EuclidEad(null, "t", null, null, null, null, null, null, null),
                 new EuclidEmm(null, "t", null, null, null, null, null, null, null),
+                new EuclidEds(null, "t", null, null, null, null, null, null, null),
                 new EuclidEventStream(null, "t", null, null, null, null, null, null, "ees"));
 
         for (Object client : clients) {

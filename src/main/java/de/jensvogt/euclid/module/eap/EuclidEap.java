@@ -10,8 +10,12 @@ import de.jensvogt.euclid.auth.SigningSchemeSelectable;
 import de.jensvogt.euclid.auth.TokenRefreshable;
 import de.jensvogt.euclid.dto.eap.ApplicationRequest;
 import de.jensvogt.euclid.dto.eap.ApplyInfrastructureResponse;
+import de.jensvogt.euclid.dto.eap.AssignInstanceRequest;
+import de.jensvogt.euclid.dto.eap.AssignInstanceResponse;
 import de.jensvogt.euclid.dto.eap.CopyApplicationRequest;
 import de.jensvogt.euclid.dto.eap.CreateApplicationRequest;
+import de.jensvogt.euclid.dto.eap.DrainNodeResponse;
+import de.jensvogt.euclid.dto.eap.EgressThrottledResponse;
 import de.jensvogt.euclid.dto.eap.ListApplicationsRequest;
 import de.jensvogt.euclid.dto.eap.ListNodesResponse;
 import de.jensvogt.euclid.dto.eap.RedeployApplicationRequest;
@@ -82,7 +86,7 @@ public final class EuclidEap implements TokenRefreshable, SigningSchemeSelectabl
      * leave it alone.
      */
     private static final ObjectMapper OBJECT_MAPPER =
-            new ObjectMapper().setSerializationInclusion(JsonInclude.Include.NON_NULL);
+            new ObjectMapper().setDefaultPropertyInclusion(JsonInclude.Include.NON_NULL);
 
     /**
      * The Euclid service every request from this class is addressed to, sent as the
@@ -198,6 +202,12 @@ public final class EuclidEap implements TokenRefreshable, SigningSchemeSelectabl
 
     /**
      * Deploys a new application. It is created stopped - call {@link #startApplication} to run it.
+     * <p>
+     * The infrastructure declaration stored beside the artifact, if there is one, is applied as part
+     * of the deployment, and what that did comes back as {@link Application#infrastructure()}. A
+     * declaration that could not be applied does not fail the call - a JSON typo is no reason to
+     * refuse a release whose artifact is fine - so look at its
+     * {@link ApplyInfrastructureResponse#error()} before relying on what it declares.
      * <p>
      * Everything named is resolved now rather than at start-up, so a bucket, artifact, granted
      * resource or user that does not exist is reported here as HTTP 404. An application ID already
@@ -351,16 +361,18 @@ public final class EuclidEap implements TokenRefreshable, SigningSchemeSelectabl
      * revision and restarts the pool within a few seconds. An application that is stopped stays
      * stopped and comes up on the new build when it is next started.
      * <p>
-     * Refused unless it is genuinely a new build - a version that differs from the one deployed,
-     * carrying bytes that differ too. {@link #updateApplication(UpdateApplicationRequest)} deploys
-     * either on purpose.
+     * Refused when the artifact's bytes are the build already deployed - the artifact, not its
+     * version, decides, so the same version rebuilt goes through. Set
+     * {@code RedeployApplicationRequest.Builder.force} to deploy an identical build anyway, or use
+     * {@link #updateApplication(UpdateApplicationRequest)}, which applies no check at all.
      *
      * @param request the build to deploy; only {@code applicationId} is required
      * @return the stored definition, carrying the new version and checksum
      * @throws IOException if an I/O error occurs during the operation
      * @throws InterruptedException if the operation is interrupted
-     * @throws de.jensvogt.euclid.exception.EuclidServiceException with status 409 if the version or
-     * the artifact is the one already deployed
+     * @throws de.jensvogt.euclid.exception.EuclidServiceException with status 409 if the artifact is
+     * byte for byte the one already deployed and {@code force} was not set, or is still being
+     * uploaded; with status 404 if it is not in the application's bucket
      */
     public Application redeployApplication(RedeployApplicationRequest request)
             throws IOException, InterruptedException {
@@ -388,8 +400,26 @@ public final class EuclidEap implements TokenRefreshable, SigningSchemeSelectabl
      * @throws InterruptedException if the operation is interrupted
      */
     public List<Application> listApplications(String prefix) throws IOException, InterruptedException {
-        String body = OBJECT_MAPPER.writeValueAsString(ListApplicationsRequest.builder().prefix(prefix).build());
-        JsonNode root = post("list-applications", body);
+        return listApplications(ListApplicationsRequest.builder().prefix(prefix).build());
+    }
+
+    /**
+     * Lists the applications whose ID matches the request's search text the way it asks - as a
+     * prefix, a suffix, a substring or a regular expression.
+     * <p>
+     * Only the session's namespace is searched: every other action resolves an application ID in
+     * the namespace it is made in, so a listing that crossed namespaces would show applications the
+     * caller could not then address.
+     *
+     * @param request the search text and how to match it
+     * @return the matching applications
+     * @throws IOException if an I/O error occurs during the operation
+     * @throws InterruptedException if the operation is interrupted
+     * @throws de.jensvogt.euclid.exception.EuclidServiceException with status 400 for an unknown
+     * match type or a regular expression that does not compile
+     */
+    public List<Application> listApplications(ListApplicationsRequest request) throws IOException, InterruptedException {
+        JsonNode root = post("list-applications", OBJECT_MAPPER.writeValueAsString(request));
 
         List<Application> applications = new ArrayList<>();
         JsonNode applicationsNode = root.get("applications");
@@ -743,6 +773,81 @@ public final class EuclidEap implements TokenRefreshable, SigningSchemeSelectabl
     }
 
     /**
+     * Drains a worker node: no new instances are placed on it, and the ones it has leave as they
+     * are replaced.
+     * <p>
+     * Not a stop. The node keeps running what it has and keeps renewing its leases, because a node
+     * that downed tools on being drained would make draining an outage. Draining and then stopping
+     * the worker is how a machine is taken out of service; {@link #deleteNode(String)} on its own
+     * does not do it. A drained node still counts as live, and {@link Node#drained()} says which
+     * state it is in.
+     * <p>
+     * Reachable over the API only - euclid-cli has no command for it. It is an operator's action,
+     * which the built-in {@code node} role a worker runs as is deliberately not granted.
+     *
+     * @param node the node's name
+     * @return the node, and that it is now drained
+     * @throws IOException if an I/O error occurs during the operation
+     * @throws InterruptedException if the operation is interrupted
+     * @throws de.jensvogt.euclid.exception.EuclidServiceException with status 404 if no node of
+     * that name is registered to this account
+     */
+    public DrainNodeResponse drainNode(String node) throws IOException, InterruptedException {
+        return drainNode(node, true);
+    }
+
+    /**
+     * Drains a worker node, or puts a drained one back into service.
+     * <p>
+     * The flag is always sent, though the server reads its absence as "drain": that is what the
+     * action is called, and {@code false} is the only way back. Undraining does not move anything
+     * onto the node by itself - it only lets placement choose it again.
+     *
+     * @param node    the node's name
+     * @param drained {@code true} to drain the node, {@code false} to put it back into service
+     * @return the node, and whether it is now drained
+     * @throws IOException if an I/O error occurs during the operation
+     * @throws InterruptedException if the operation is interrupted
+     * @throws de.jensvogt.euclid.exception.EuclidServiceException with status 404 if no node of
+     * that name is registered to this account
+     */
+    public DrainNodeResponse drainNode(String node, boolean drained) throws IOException, InterruptedException {
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("node", node);
+        body.put("drained", drained);
+        JsonNode answer = post("drain-node", OBJECT_MAPPER.writeValueAsString(body));
+        return new DrainNodeResponse(textOrNull(answer, "node"), answer.path("drained").asBoolean(drained));
+    }
+
+    /**
+     * Gives one instance slot to a worker node by hand, with a lease on the claim - or takes it back
+     * to the manager's own host by naming no node.
+     * <p>
+     * Placement does this by itself when a slot is created and when a lease lapses; this is the
+     * operator's override, for moving one instance somewhere specific. The slot is named the way the
+     * manager names it - the application's runtime name and the instance ID - because that is what
+     * a node renews and what its listing reports.
+     * <p>
+     * A drained node is refused, since a new assignment is exactly what draining refuses. The
+     * claim lasts one lease period from now; a node that does not renew it in time loses the slot
+     * to placement again. Reachable over the API only, and not granted to the {@code node} role a
+     * worker runs as.
+     *
+     * @param request the slot and the node to give it to
+     * @return where the slot now is, and until when the claim holds without a renewal
+     * @throws IOException if an I/O error occurs during the operation
+     * @throws InterruptedException if the operation is interrupted
+     * @throws de.jensvogt.euclid.exception.EuclidServiceException with status 400 if the runtime
+     * name or instance ID is missing; with status 404 if the node is not registered or the pool has
+     * no such slot; with status 409 if the node is drained
+     */
+    public AssignInstanceResponse assignInstance(AssignInstanceRequest request) throws IOException, InterruptedException {
+        JsonNode answer = post("assign-instance", OBJECT_MAPPER.writeValueAsString(request));
+        return new AssignInstanceResponse(textOrNull(answer, "runtimeName"), textOrNull(answer, "instanceId"),
+                textOrNull(answer, "node"), textOrNull(answer, "leaseExpiresAt"));
+    }
+
+    /**
      * Converts a JsonNode holding an array of nodes into a list of them.
      *
      * @param nodesNode the JsonNode representing the array of nodes
@@ -853,9 +958,13 @@ public final class EuclidEap implements TokenRefreshable, SigningSchemeSelectabl
             throws IOException, InterruptedException {
         JsonNode node = post("acquire-egress-permit", OBJECT_MAPPER.writeValueAsString(Map.of(
                 "applicationId", applicationId, "site", site, "leaseSeconds", leaseSeconds)));
-        return new EgressPermitResponse(textOrNull(node, "site"), node.path("granted").asBoolean(false),
-                textOrNull(node, "permitId"), textOrNull(node, "expiresAt"), textOrNull(node, "reason"),
-                node.path("retryAfterMs").asLong(0));
+        JsonNode limits = node.get("limits");
+        return new EgressPermitResponse(textOrNull(node, "applicationId"), textOrNull(node, "site"),
+                node.path("granted").asBoolean(false), textOrNull(node, "permitId"), textOrNull(node, "expiresAt"),
+                textOrNull(node, "reason"), node.path("retryAfterMs").asLong(0),
+                // Null rather than all zeros when absent: zero limits would read as "nothing is
+                // allowed", which is not what an older EAP that did not say meant.
+                limits == null || !limits.isObject() ? null : toEgressLimits(limits));
     }
 
     /**
@@ -883,14 +992,17 @@ public final class EuclidEap implements TokenRefreshable, SigningSchemeSelectabl
      * @param applicationId     the application the site refused
      * @param site              the site that refused
      * @param retryAfterSeconds how long it asked to be left alone (its {@code Retry-After}); euclid
-     *                          caps one report at an hour
+     *                          caps one report at an hour and floors it at a second
+     * @return until when the site is now left alone - never earlier than a block already in force
      * @throws IOException if an I/O error occurs during the operation
      * @throws InterruptedException if the operation is interrupted
      */
-    public void reportEgressThrottled(String applicationId, String site, long retryAfterSeconds)
+    public EgressThrottledResponse reportEgressThrottled(String applicationId, String site, long retryAfterSeconds)
             throws IOException, InterruptedException {
-        post("report-egress-throttled", OBJECT_MAPPER.writeValueAsString(Map.of(
+        JsonNode node = post("report-egress-throttled", OBJECT_MAPPER.writeValueAsString(Map.of(
                 "applicationId", applicationId, "site", site, "retryAfterSeconds", retryAfterSeconds)));
+        return new EgressThrottledResponse(textOrNull(node, "applicationId"), textOrNull(node, "site"),
+                emptyToNull(textOrNull(node, "blockedUntil")));
     }
 
     /**
@@ -1071,7 +1183,8 @@ public final class EuclidEap implements TokenRefreshable, SigningSchemeSelectabl
                 .deleted(toStringList(node.path("deleted")))
                 .kept(kept)
                 .granted(toStringList(node.path("granted")))
-                .revoked(toStringList(node.path("revoked"))).build();
+                .revoked(toStringList(node.path("revoked")))
+                .error(textOrNull(node, "error")).build();
     }
 
     /**
@@ -1213,6 +1326,7 @@ public final class EuclidEap implements TokenRefreshable, SigningSchemeSelectabl
                 textOrNull(node, "artifactKey"),
                 textOrNull(node, "version"),
                 textOrNull(node, "md5Sum"),
+                node.path("artifactSize").asLong(0),
                 textOrNull(node, "command"),
                 toStringList(node.get("arguments")),
                 toStringMap(node.get("environment")),
@@ -1234,7 +1348,30 @@ public final class EuclidEap implements TokenRefreshable, SigningSchemeSelectabl
                 node.path("instances").asLong(0),
                 toEndpointList(node.get("endpoints")),
                 textOrNull(node, "created"),
-                textOrNull(node, "modified"));
+                textOrNull(node, "modified"),
+                toDeploymentInfrastructure(node));
+    }
+
+    /**
+     * Reads the report of the infrastructure apply create-application makes as part of deploying.
+     * <p>
+     * The server sends it without the application's ID - it is nested inside the application - so
+     * the ID is filled in from the definition around it, which keeps "exactly one of applicationId
+     * and platform is set" true of every {@link ApplyInfrastructureResponse} this client hands out.
+     *
+     * @param application the JSON object describing the application
+     * @return the report, or {@code null} for every action but create-application, which alone
+     *         sends one
+     */
+    private static ApplyInfrastructureResponse toDeploymentInfrastructure(JsonNode application) {
+        JsonNode infrastructure = application.get("infrastructure");
+        if (infrastructure == null || !infrastructure.isObject()) {
+            return null;
+        }
+        ApplyInfrastructureResponse report = toApplyInfrastructureResponse(infrastructure);
+        return new ApplyInfrastructureResponse(textOrNull(application, "applicationId"), report.platform(),
+                report.declared(), report.dryRun(), report.created(), report.adopted(), report.updated(),
+                report.deleted(), report.kept(), report.granted(), report.revoked(), report.error());
     }
 
     /**
@@ -1267,6 +1404,10 @@ public final class EuclidEap implements TokenRefreshable, SigningSchemeSelectabl
                 textOrNull(node, "principal"),
                 toStringMap(node.get("labels")),
                 node.path("cpuCount").asLong(0),
+                node.path("memoryMb").asLong(0),
+                node.path("memoryTotalMb").asLong(0),
+                node.path("memoryUsedMb").asLong(0),
+                node.path("loadAverage").asDouble(0.0),
                 textOrNull(node, "version"),
                 textOrNull(node, "os"),
                 textOrNull(node, "arch"),

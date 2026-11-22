@@ -10,10 +10,14 @@ import java.util.Map;
  *
  * @param ern        the ERN (Entity Resource Name) of the queue to send the message to
  * @param body       the message body
- * @param attributes typed, user-defined message attributes
- * @param priority   the priority of the message
+ * @param attributes       typed, user-defined message attributes
+ * @param systemAttributes euclid's own envelope - a correlation id, say - passed on from the message
+ *                         this one was sent in response to, so it identifies the whole chain rather
+ *                         than only its first hop; kept apart from {@code attributes} the whole way
+ * @param priority         the priority of the message
  */
-public record SendMessageRequest(String ern, String body, Map<String, Variant> attributes, String priority) {
+public record SendMessageRequest(String ern, String body, Map<String, Variant> attributes,
+                                 Map<String, Variant> systemAttributes, String priority) {
 
     /**
      * Creates a new instance of the Builder for constructing a SendMessageRequest object.
@@ -48,6 +52,11 @@ public record SendMessageRequest(String ern, String body, Map<String, Variant> a
          * Typed, user-defined message attributes.
          */
         private Map<String, Variant> attributes = new LinkedHashMap<>();
+
+        /**
+         * Euclid's own envelope, carried across every hop.
+         */
+        private Map<String, Variant> systemAttributes = new LinkedHashMap<>();
 
         /**
          * The priority of the message.
@@ -88,6 +97,22 @@ public record SendMessageRequest(String ern, String body, Map<String, Variant> a
         }
 
         /**
+         * Sets euclid's own envelope for this message.
+         *
+         * <p>For a service in the middle of a chain: the message it received carried these in
+         * {@link de.jensvogt.euclid.dto.eqs.model.Message#systemAttributes()}, and handing them on
+         * here is what keeps whatever was travelling - a correlation id most of all - travelling.
+         * Left empty, the chain ends at this hop.
+         *
+         * @param systemAttributes the system attributes to carry on
+         * @return the builder instance
+         */
+        public Builder systemAttributes(Map<String, Variant> systemAttributes) {
+            this.systemAttributes = systemAttributes;
+            return this;
+        }
+
+        /**
          * Sets the priority of the message.
          *
          * @param priority the message priority
@@ -101,10 +126,10 @@ public record SendMessageRequest(String ern, String body, Map<String, Variant> a
         /**
          * Builds and returns a new instance of SendMessageRequest using the properties set on the Builder.
          *
-         * @return a new SendMessageRequest instance populated with the ERN, body, attributes and priority values.
+         * @return a new SendMessageRequest instance populated with the ERN, body, attributes, system attributes and priority values.
          */
         public SendMessageRequest build() {
-            return new SendMessageRequest(ern, body, attributes, priority);
+            return new SendMessageRequest(ern, body, attributes, systemAttributes, priority);
         }
     }
 }

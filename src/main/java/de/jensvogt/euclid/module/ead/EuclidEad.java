@@ -55,7 +55,7 @@ public final class EuclidEad implements TokenRefreshable, SigningSchemeSelectabl
      * command must not reach it at all.
      */
     private static final ObjectMapper OBJECT_MAPPER =
-            new ObjectMapper().setSerializationInclusion(JsonInclude.Include.NON_NULL);
+            new ObjectMapper().setDefaultPropertyInclusion(JsonInclude.Include.NON_NULL);
 
     /**
      * The Euclid service every request from this class is addressed to, sent as the

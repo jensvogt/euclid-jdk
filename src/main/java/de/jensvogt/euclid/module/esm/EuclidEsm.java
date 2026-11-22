@@ -341,7 +341,31 @@ public final class EuclidEsm implements TokenRefreshable, SigningSchemeSelectabl
      * @throws InterruptedException if the operation is interrupted while waiting for a response
      */
     public CreateBucketResponse createBucket(String name, String priority) throws IOException, InterruptedException {
-        CreateBucketRequest.Builder request = CreateBucketRequest.builder().name(name);
+        return createBucket(name, priority, false);
+    }
+
+    /**
+     * Creates a bucket, optionally as one of euclid's own internal ones.
+     *
+     * <p>An internal bucket is plumbing - application artifacts, infrastructure declarations - and
+     * is left out of ordinary listings. Creating it that way rather than calling
+     * {@link #setBucketInternal} afterwards means there is no moment in which it shows up in
+     * everybody's bucket list. Internal buckets cannot have lifecycle rules, and their objects
+     * cannot be archived: the modules that use them read the files straight off the disk. A false
+     * flag is not sent, so an ordinary create says exactly what it always said.
+     *
+     * @param name     the name of the bucket
+     * @param priority {@code "LOW"}, {@code "MEDIUM"} or {@code "HIGH"}, or empty for none - see
+     *                 {@link #createBucket(String, String)}
+     * @param internal whether the bucket is hidden from ordinary listings from the start
+     * @return the created bucket
+     * @throws IOException if an I/O error occurs during the HTTP request
+     * @throws InterruptedException if the operation is interrupted while waiting for a response
+     * @throws EuclidServiceException with status 400 for a priority that is not one of the three
+     */
+    public CreateBucketResponse createBucket(String name, String priority, boolean internal)
+            throws IOException, InterruptedException {
+        CreateBucketRequest.Builder request = CreateBucketRequest.builder().name(name).internal(internal);
         if (priority != null && !priority.isEmpty()) {
             request.priority(priority);
         }
@@ -396,7 +420,40 @@ public final class EuclidEsm implements TokenRefreshable, SigningSchemeSelectabl
      * @throws InterruptedException If the operation is interrupted during the process.
      */
     public DeleteBucketResponse deleteBucket(String ern, boolean async) throws IOException, InterruptedException {
-        String body = OBJECT_MAPPER.writeValueAsString(DeleteBucketRequest.builder().ern(ern).async(async).build());
+        return deleteBucket(ern, async, false);
+    }
+
+    /**
+     * Deletes a bucket, optionally only if nothing is in it.
+     * <p>
+     * {@code ifEmpty} is what an automated caller means when it tidies up after itself, as opposed
+     * to an operator who has decided the contents go too: a provisioning run that drops a line
+     * from a manifest must not be one mistake away from destroying a bucket full of deliveries.
+     * With it, a bucket that still holds anything - directory markers included, since a transfer
+     * client can see those - is refused with HTTP 409 naming how many objects remain, and nothing
+     * is deleted. The count is taken from the objects themselves rather than from the bucket's
+     * counter, because a drift in that counter is not a thing to decide this on.
+     * <p>
+     * An object that lands while the bucket is being deleted puts the bucket back and is answered
+     * with 409 as well: that is the race the check is for, and no check made beforehand could see
+     * it. {@code ifEmpty} wins over {@code async} - there is nothing to empty in the background -
+     * so the delete then runs inline and the response is empty.
+     *
+     * @param ern     the bucket's ERN
+     * @param async   whether the server answers before the bucket and its objects are gone - see
+     *                {@link #deleteBucket(String, boolean)}
+     * @param ifEmpty whether a bucket with anything in it is refused rather than emptied
+     * @return the objects taken on and the job doing it, empty unless the delete ran in the
+     * background
+     * @throws IOException If an I/O error occurs while making the HTTP request.
+     * @throws InterruptedException If the operation is interrupted during the process.
+     * @throws EuclidServiceException with status 409 when {@code ifEmpty} is set and the bucket is
+     * not empty; 404 when {@code ifEmpty} is set and there is no such bucket
+     */
+    public DeleteBucketResponse deleteBucket(String ern, boolean async, boolean ifEmpty)
+            throws IOException, InterruptedException {
+        String body = OBJECT_MAPPER.writeValueAsString(
+                DeleteBucketRequest.builder().ern(ern).async(async).ifEmpty(ifEmpty).build());
         HttpResponse<String> response = httpClient.post(baseUrl + "/", body, "esm", "delete-bucket",
                 requestHeaders("delete-bucket", body));
 
@@ -454,9 +511,31 @@ public final class EuclidEsm implements TokenRefreshable, SigningSchemeSelectabl
      */
     public ListBucketsResponse listBuckets(String prefix, long pageSize, long pageIndex, String sortColumn,
                                            String sortDirection) throws IOException, InterruptedException {
-        String body = OBJECT_MAPPER.writeValueAsString(
-                ListBucketsRequest.builder().prefix(prefix).pageSize(pageSize).pageIndex(pageIndex)
-                        .sortColumn(sortColumn).sortDirection(sortDirection).build());
+        return listBuckets(ListBucketsRequest.builder().prefix(prefix).pageSize(pageSize).pageIndex(pageIndex)
+                .sortColumn(sortColumn).sortDirection(sortDirection).build());
+    }
+
+    /**
+     * Retrieves a list of buckets described by a full request - the form that reaches the options
+     * the positional overloads leave out: matching the name other than by prefix, and listing
+     * euclid's internal buckets.
+     * <p>
+     * {@link ListBucketsRequest#matchType()} picks how {@link ListBucketsRequest#prefix()} is
+     * matched - {@code "prefix"}, {@code "endsWith"}, {@code "contains"} or {@code "regex"}. All but
+     * the last take the text literally, so a name with a dot in it matches only itself; a regex is
+     * compiled by the server first and refused with HTTP 400 if it does not compile, rather than
+     * reaching the database as a 500. {@link ListBucketsRequest#includeInternal()} is honoured for
+     * EAM administrators only, and quietly ignored for anybody else.
+     *
+     * @param request the listing to ask for
+     * @return the matching buckets and how many there are in total
+     * @throws IOException if an I/O error occurs during the HTTP request
+     * @throws InterruptedException if the operation is interrupted while waiting for a response
+     * @throws EuclidServiceException with status 400 for an unknown match type or a regex that does
+     * not compile
+     */
+    public ListBucketsResponse listBuckets(ListBucketsRequest request) throws IOException, InterruptedException {
+        String body = OBJECT_MAPPER.writeValueAsString(request);
         HttpResponse<String> response = httpClient.post(baseUrl + "/", body, "esm", "list-buckets",
                 requestHeaders("list-buckets", body));
 
@@ -696,9 +775,62 @@ public final class EuclidEsm implements TokenRefreshable, SigningSchemeSelectabl
      */
     public SetBucketVersioningResponse setBucketVersioning(String ern, boolean enabled)
             throws IOException, InterruptedException {
-        JsonNode node = postJson("set-bucket-versioning", Map.of("ern", ern, "enabled", enabled));
+        return setBucketVersioning(ern, enabled, null);
+    }
+
+    /**
+     * Limits how many non-current versions each key of a bucket keeps, leaving versioning itself
+     * on or off as it is.
+     * <p>
+     * Once an upload adds a version beyond the limit, the oldest are deleted, file and all - so a
+     * key is never over it for longer than that upload takes. Lowering the limit therefore takes
+     * effect key by key, the next time each one is uploaded, not all at once. The current object is
+     * never counted, so a limit of 1 is "the object and the one before it".
+     *
+     * @param ern         the bucket's ERN, or its name
+     * @param maxVersions the most non-current versions one key keeps; 0 keeps every one
+     * @return the bucket and both of its versioning settings now
+     * @throws IOException if an I/O error occurs during the HTTP request
+     * @throws InterruptedException if the operation is interrupted while waiting for a response
+     * @throws EuclidServiceException with status 400 for a negative limit; 404 if there is no such
+     * bucket
+     */
+    public SetBucketVersioningResponse setBucketMaxVersions(String ern, long maxVersions)
+            throws IOException, InterruptedException {
+        return setBucketVersioning(ern, null, maxVersions);
+    }
+
+    /**
+     * Sets either or both of a bucket's versioning settings in one call.
+     * <p>
+     * A setting left null is not sent, and the server leaves it as it is: turning versioning on or
+     * off is a change somebody may not have meant, and the two cost very different amounts of
+     * disk, so nothing is assumed for the one a caller did not name. Naming neither is refused.
+     *
+     * @param ern         the bucket's ERN, or its name
+     * @param enabled     true to keep replaced objects as versions, false to replace them, null to
+     *                    leave it - see {@link #setBucketVersioning(String, boolean)}
+     * @param maxVersions the most non-current versions one key keeps, 0 for every one, null to
+     *                    leave it - see {@link #setBucketMaxVersions(String, long)}
+     * @return the bucket and both of its versioning settings now
+     * @throws IOException if an I/O error occurs during the HTTP request
+     * @throws InterruptedException if the operation is interrupted while waiting for a response
+     * @throws EuclidServiceException with status 400 when both are null or the limit is negative;
+     * 404 if there is no such bucket
+     */
+    public SetBucketVersioningResponse setBucketVersioning(String ern, Boolean enabled, Long maxVersions)
+            throws IOException, InterruptedException {
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("ern", ern);
+        if (enabled != null) {
+            body.put("enabled", enabled);
+        }
+        if (maxVersions != null) {
+            body.put("maxVersions", maxVersions);
+        }
+        JsonNode node = postJson("set-bucket-versioning", body);
         return new SetBucketVersioningResponse(textOrNull(node, "ern"), textOrNull(node, "name"),
-                node.path("versioning").asBoolean(false));
+                node.path("versioning").asBoolean(false), node.path("maxVersions").asLong(0));
     }
 
     /**
@@ -729,7 +861,8 @@ public final class EuclidEsm implements TokenRefreshable, SigningSchemeSelectabl
                     textOrNull(entry, "modified")));
         }
         return new ListObjectVersionsResponse(textOrNull(node, "bucketErn"), textOrNull(node, "key"),
-                textOrNull(node, "ern"), node.path("versioning").asBoolean(false), versions,
+                textOrNull(node, "ern"), node.path("versioning").asBoolean(false),
+                node.path("maxVersions").asLong(0), versions,
                 node.path("total").asLong(versions.size()));
     }
 
@@ -1078,10 +1211,39 @@ public final class EuclidEsm implements TokenRefreshable, SigningSchemeSelectabl
     public ListObjectsResponse listObjects(String bucketErn, String prefix, long pageSize, long pageIndex,
                                            String sortColumn, String sortDirection, boolean includeDirectories)
             throws IOException, InterruptedException {
-        String body = OBJECT_MAPPER.writeValueAsString(
-                ListObjectsRequest.builder().bucketErn(bucketErn).prefix(prefix).pageSize(pageSize)
-                        .pageIndex(pageIndex).sortColumn(sortColumn).sortDirection(sortDirection)
-                        .includeDirectories(includeDirectories).build());
+        return listObjects(ListObjectsRequest.builder().bucketErn(bucketErn).prefix(prefix).pageSize(pageSize)
+                .pageIndex(pageIndex).sortColumn(sortColumn).sortDirection(sortDirection)
+                .includeDirectories(includeDirectories).build());
+    }
+
+    /**
+     * Lists objects as described by a full request - the form that reaches the options the
+     * positional overloads leave out: matching keys other than by prefix, and listing one level of
+     * the bucket rather than a whole subtree.
+     * <p>
+     * <b>Matching.</b> {@link ListObjectsRequest#matchType()} picks how the prefix is matched -
+     * {@code "prefix"}, {@code "endsWith"}, {@code "contains"} or {@code "regex"}. All but the last
+     * take the text literally, since keys are full of dots and an unescaped one would quietly match
+     * more than was asked for. A regex is compiled by the server first and refused with HTTP 400 if
+     * it does not compile.
+     * <p>
+     * <b>One level.</b> With {@link ListObjectsRequest#delimiter()} set to {@code "/"} the prefix
+     * names a level - it has to end in {@code "/"}, or be empty for the top - and the answer is the
+     * objects directly in it, with the directories one step below in
+     * {@link ListObjectsResponse#commonPrefixes()}. This is how a bucket of hundreds of thousands
+     * of objects is browsed like a file system without paging through all of them. A level is a
+     * path rather than a search, so only the plain prefix match goes with it.
+     *
+     * @param request the listing to ask for
+     * @return the objects, their total, and for a one-level listing the directories below it
+     * @throws IOException if an I/O error occurs during the HTTP request
+     * @throws InterruptedException if the operation is interrupted while waiting for a response
+     * @throws EuclidServiceException with status 400 for an unknown match type, a regex that does
+     * not compile, a delimiter other than {@code "/"}, a level that does not end in {@code "/"}, or
+     * a delimiter with any match type but {@code "prefix"}; 404 if there is no such bucket
+     */
+    public ListObjectsResponse listObjects(ListObjectsRequest request) throws IOException, InterruptedException {
+        String body = OBJECT_MAPPER.writeValueAsString(request);
         HttpResponse<String> response = httpClient.post(baseUrl + "/", body, "esm", "list-objects",
                 requestHeaders("list-objects", body));
 
@@ -1242,9 +1404,13 @@ public final class EuclidEsm implements TokenRefreshable, SigningSchemeSelectabl
      * response reports both how many keys were asked for and how many objects went, and a caller
      * that cares compares the two.
      * <p>
-     * Deleting everything under a key prefix is {@link #purgeBucket(String, String)} rather than a
-     * variant of this: the server refuses keys and a prefix in the same request, since naming both
-     * asks two different questions and answering both would delete more than either.
+     * Deleting everything under a key prefix is {@link #deleteObjectsByPrefix} or
+     * {@link #purgeBucket(String, String)} rather than a variant of this: the server refuses keys
+     * and a prefix in the same request, since naming both asks two different questions and
+     * answering both would delete more than either.
+     * <p>
+     * An empty key list deletes nothing and is answered here, without a request: to the server,
+     * a delete that names neither keys nor a prefix means the whole bucket.
      *
      * @param bucketErn the ERN of the bucket the objects are in
      * @param keys      the keys of the objects to delete
@@ -1273,8 +1439,51 @@ public final class EuclidEsm implements TokenRefreshable, SigningSchemeSelectabl
      */
     public DeleteObjectsResponse deleteObjects(String bucketErn, List<String> keys, boolean async)
             throws IOException, InterruptedException {
-        String body = OBJECT_MAPPER.writeValueAsString(
-                DeleteObjectsRequest.builder().ern(bucketErn).keys(keys).async(async).build());
+        // Not sent: an empty list reaches the server as "no keys", and with no prefix either that
+        // is the request for everything in the bucket - the opposite of what an empty list means.
+        if (keys == null || keys.isEmpty()) {
+            return DeleteObjectsResponse.builder().ern(bucketErn).async(async).build();
+        }
+        return deleteObjects(DeleteObjectsRequest.builder().ern(bucketErn).keys(keys).async(async).build());
+    }
+
+    /**
+     * Deletes everything under a key prefix, optionally without announcing it.
+     * <p>
+     * The same removal {@link #purgeBucket(String, String, boolean)} does, with one thing it cannot
+     * say: {@code notify} false deletes the objects without a deletion event for any of them. That
+     * is for an operator who knows what is listening - clearing out a staging area a downstream
+     * consumer would otherwise act on object by object. Otherwise every deletion is announced, as
+     * a delete always is.
+     * <p>
+     * An empty prefix is the whole bucket. In the background the server answers HTTP 202 with how
+     * many objects it took on and {@link DeleteObjectsResponse#jobId()} naming the job doing it.
+     *
+     * @param bucketErn the ERN of the bucket the objects are in
+     * @param prefix    the key prefix everything beneath which is deleted; empty for the whole bucket
+     * @param async     whether the server answers before it has finished deleting
+     * @param notify    whether each deletion is announced to the bucket's subscribers
+     * @return the prefix, how many objects were deleted or taken on, and the job when there is one
+     * @throws IOException if an I/O error occurs during the HTTP request
+     * @throws InterruptedException if the operation is interrupted while waiting for a response
+     * @throws EuclidServiceException with status 404 if there is no such bucket
+     */
+    public DeleteObjectsResponse deleteObjectsByPrefix(String bucketErn, String prefix, boolean async, boolean notify)
+            throws IOException, InterruptedException {
+        return deleteObjects(DeleteObjectsRequest.builder().ern(bucketErn).prefix(prefix == null ? "" : prefix)
+                .async(async).notifySubscribers(notify ? null : Boolean.FALSE).build());
+    }
+
+    /**
+     * Sends one delete-objects request as given.
+     *
+     * @param request the keys or the prefix to delete, and how
+     * @return the server's answer
+     * @throws IOException if an I/O error occurs during the HTTP request
+     * @throws InterruptedException if the operation is interrupted while waiting for a response
+     */
+    private DeleteObjectsResponse deleteObjects(DeleteObjectsRequest request) throws IOException, InterruptedException {
+        String body = OBJECT_MAPPER.writeValueAsString(request);
         HttpResponse<String> response = httpClient.post(baseUrl + "/", body, "esm", "delete-objects",
                 requestHeaders("delete-objects", body));
 
@@ -2879,7 +3088,8 @@ public final class EuclidEsm implements TokenRefreshable, SigningSchemeSelectabl
     private static DeleteObjectsResponse extractDeleteObjectsResponse(String responseBody) throws IOException {
         JsonNode root = OBJECT_MAPPER.readTree(responseBody);
         return DeleteObjectsResponse.builder().ern(textOrNull(root, "ern")).asked(root.path("asked").asLong(0))
-                .objects(root.path("objects").asLong(0)).async(root.path("async").asBoolean(false)).build();
+                .objects(root.path("objects").asLong(0)).async(root.path("async").asBoolean(false))
+                .prefix(textOrNull(root, "prefix")).jobId(root.path("jobId").asText("")).build();
     }
 
     /**
@@ -3001,8 +3211,12 @@ public final class EuclidEsm implements TokenRefreshable, SigningSchemeSelectabl
      */
     private static ListObjectsResponse extractListObjectsResponse(String responseBody) throws IOException {
         JsonNode root = OBJECT_MAPPER.readTree(responseBody);
+        List<String> commonPrefixes = new ArrayList<>();
+        for (JsonNode entry : root.path("commonPrefixes")) {
+            commonPrefixes.add(entry.asText());
+        }
         return ListObjectsResponse.builder().objects(toObjectList(root.get("objects")))
-                .total(root.path("total").asLong(0)).build();
+                .total(root.path("total").asLong(0)).commonPrefixes(commonPrefixes).build();
     }
 
     /**
@@ -3043,7 +3257,8 @@ public final class EuclidEsm implements TokenRefreshable, SigningSchemeSelectabl
                 textOrNull(objectNode, "lifecycleState"),
                 emptyToNull(textOrNull(objectNode, "restoredUntil")),
                 textOrNull(objectNode, "created"),
-                textOrNull(objectNode, "modified"));
+                textOrNull(objectNode, "modified"),
+                textOrNull(objectNode, "lastAccessed"));
     }
 
     /**
@@ -3089,6 +3304,7 @@ public final class EuclidEsm implements TokenRefreshable, SigningSchemeSelectabl
                 textOrNull(bucketNode, "priority"),
                 bucketNode.path("stopped").asBoolean(false),
                 bucketNode.path("versioning").asBoolean(false),
+                bucketNode.path("maxVersions").asLong(0),
                 textOrNull(bucketNode, "created"),
                 textOrNull(bucketNode, "modified"));
     }

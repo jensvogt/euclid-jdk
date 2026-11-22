@@ -3,14 +3,36 @@ package de.jensvogt.euclid.dto.ekv;
 /**
  * Request to list the tables of an account and namespace.
  *
- * @param prefix        only tables whose name starts with this prefix are returned
+ * @param prefix        only tables whose name matches this text, the way {@code matchType} says;
+ *                      empty matches every one
+ * @param matchType     how {@code prefix} is matched against each name: {@code "prefix"}, which
+ *                      is also what an empty value means and what every listing did before the
+ *                      field existed, {@code "endsWith"}, {@code "contains"} or {@code "regex"}.
+ *                      Every type but {@code "regex"} treats the text as a literal, so
+ *                      {@code "a.b"} does not also find {@code "aXb"}. An unknown type, or a
+ *                      regex that does not compile, is refused with HTTP 400 rather than quietly
+ *                      matching nothing
  * @param pageSize      the maximum number of tables to return in a single page
  * @param pageIndex     the zero-based index of the page to return
  * @param sortColumn    the column results are sorted by
  * @param sortDirection the direction to sort in, {@code "asc"} or {@code "desc"}
  */
-public record ListTablesRequest(String prefix, long pageSize, long pageIndex, String sortColumn,
-                                String sortDirection) {
+public record ListTablesRequest(String prefix, String matchType, long pageSize, long pageIndex,
+                                String sortColumn, String sortDirection) {
+
+    /**
+     * Creates a request that matches names by prefix - the shape this record had before
+     * {@code matchType} existed, so code written against it still compiles.
+     *
+     * @param prefix        only tables whose name starts with this prefix are returned
+     * @param pageSize      the maximum number of tables to return in a single page
+     * @param pageIndex     the zero-based index of the page to return
+     * @param sortColumn    the column results are sorted by
+     * @param sortDirection the direction to sort in, {@code "asc"} or {@code "desc"}
+     */
+    public ListTablesRequest(String prefix, long pageSize, long pageIndex, String sortColumn, String sortDirection) {
+        this(prefix, "", pageSize, pageIndex, sortColumn, sortDirection);
+    }
 
     /**
      * Creates a new instance of the Builder for constructing a ListTablesRequest object.
@@ -36,6 +58,11 @@ public record ListTablesRequest(String prefix, long pageSize, long pageIndex, St
          * Only tables whose name starts with this prefix are returned.
          */
         private String prefix = "";
+
+        /**
+         * How the prefix is matched against each name; empty is a prefix match.
+         */
+        private String matchType = "";
 
         /**
          * The maximum number of tables to return in a single page.
@@ -65,6 +92,18 @@ public record ListTablesRequest(String prefix, long pageSize, long pageIndex, St
          */
         public Builder prefix(String prefix) {
             this.prefix = prefix;
+            return this;
+        }
+
+        /**
+         * Sets how the prefix is matched against each name.
+         *
+         * @param matchType {@code "prefix"}, {@code "endsWith"}, {@code "contains"} or
+         *                  {@code "regex"}; empty, the default, is a prefix match
+         * @return the builder instance
+         */
+        public Builder matchType(String matchType) {
+            this.matchType = matchType;
             return this;
         }
 
@@ -118,7 +157,7 @@ public record ListTablesRequest(String prefix, long pageSize, long pageIndex, St
          * @return a new ListTablesRequest instance.
          */
         public ListTablesRequest build() {
-            return new ListTablesRequest(prefix, pageSize, pageIndex, sortColumn, sortDirection);
+            return new ListTablesRequest(prefix, matchType, pageSize, pageIndex, sortColumn, sortDirection);
         }
     }
 }

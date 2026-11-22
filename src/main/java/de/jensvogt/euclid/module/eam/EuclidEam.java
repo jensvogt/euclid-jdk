@@ -3,31 +3,62 @@ package de.jensvogt.euclid.module.eam;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import de.jensvogt.euclid.dto.Metadata;
+import de.jensvogt.euclid.dto.eam.ListMyAccountsResponse;
 import de.jensvogt.euclid.dto.eam.LoginRequest;
 import de.jensvogt.euclid.dto.eam.LoginResponse;
+import de.jensvogt.euclid.dto.eam.OidcAuthorizeRequest;
+import de.jensvogt.euclid.dto.eam.OidcAuthorizeResponse;
+import de.jensvogt.euclid.dto.eam.OidcLoginRequest;
+import de.jensvogt.euclid.dto.eam.SamlAcsRequest;
+import de.jensvogt.euclid.dto.eam.SamlAuthorizeRequest;
+import de.jensvogt.euclid.dto.eam.SamlAuthorizeResponse;
+import de.jensvogt.euclid.dto.eam.model.Account;
 import de.jensvogt.euclid.exception.EuclidAuthenticationException;
+import de.jensvogt.euclid.exception.EuclidServiceException;
 import de.jensvogt.euclid.http.EuclidHttpClient;
 
+import java.awt.Desktop;
 import java.io.IOException;
+import java.net.URI;
 import java.net.http.HttpResponse;
+import java.net.http.HttpTimeoutException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.attribute.PosixFilePermissions;
+import java.time.Duration;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.Base64;
 import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
+import java.util.function.Consumer;
 
 /**
  * Fluent builder for authenticating against an Euclid server.
  *
  * <pre>{@code
- * EuclidSession session = EuclidAccess.forServer("https://euclid.example.com")
+ * EuclidSession session = EuclidEam.forServer("https://euclid.example.com")
  *         .credentials("jens", "secret")
  *         .login();
  * }</pre>
+ *
+ * <p>An installation that federates its logins to an identity provider is signed into through a
+ * browser instead, exactly as euclid-cli's {@code eam login --oidc} / {@code --saml} do - no
+ * password is asked for or sent, because the provider decides who is signing in:
+ *
+ * <pre>{@code
+ * EuclidSession session = EuclidEam.forServer("https://euclid.example.com")
+ *         .loginWithOidc();      // or loginWithSaml()
+ * }</pre>
+ *
+ * <p>Every way in ends the same way: the session is cached in {@code $HOME/.euclid/credentials},
+ * shared with euclid-cli, and reused by the next login while its token is valid. A federated
+ * session is not a different kind of session - the server issues the same token, access key and
+ * admin flag whichever proof it was given.
  */
 public final class EuclidEam {
 
@@ -148,6 +179,24 @@ public final class EuclidEam {
     private String namespace;
 
     /**
+     * Account to work in once login succeeds - by account ID or by name - or {@code null} for the
+     * user's home account. Set via {@link #account(String)}.
+     */
+    private String account;
+
+    /**
+     * How a federated login shows the person the URL to authenticate at. Defaults to opening the
+     * system browser, with the URL printed to standard error either way.
+     */
+    private Consumer<String> browser = EuclidEam::openInBrowser;
+
+    /**
+     * How long a federated login waits for the browser to come back, the same three minutes
+     * euclid-cli waits.
+     */
+    private Duration callbackTimeout = Duration.ofMinutes(3);
+
+    /**
      * Constructs an instance of {@code EuclidEam} with the specified base URL.
      *
      * @param baseUrl the base URL of the server to be used for making API requests; must not be null
@@ -257,6 +306,59 @@ public final class EuclidEam {
     }
 
     /**
+     * Sets the account the session should work in once login succeeds, instead of the user's home
+     * account - mirroring euclid-cli's {@code eam login --account}. Every request made through the
+     * returned session then carries it as {@code x-euclid-account-id}.
+     * <p>
+     * Given by account ID or by name, and checked against {@link EuclidSession#listMyAccounts()}
+     * with the session just issued: only the server knows which accounts a grant covers, and an
+     * account the user may not work in is one every later call would be refused in, one at a time,
+     * for a reason none of them would say. An ID is exact and wins outright; a name is taken only
+     * when no ID matched, since nothing stops an account being named like another account's ID.
+     * <p>
+     * Applied before {@link #namespace(String)}, since a namespace belongs to an account.
+     *
+     * @param account the account ID or name to work in
+     * @return the current instance of {@code EuclidEam}
+     */
+    public EuclidEam account(String account) {
+        this.account = account;
+        return this;
+    }
+
+    /**
+     * Sets how a federated login ({@link #loginWithOidc()}, {@link #loginWithSaml()}) shows the
+     * person the URL they have to authenticate at.
+     * <p>
+     * The default opens the system browser and prints the URL to standard error whether or not
+     * that works, so somebody on a machine without one - over ssh, in a container - can copy it to
+     * one that has. An application with a user interface of its own will rather show the link
+     * there; a test drives the flow by fetching the URL itself.
+     *
+     * @param browser receives the URL to open; called once per login, before the wait begins
+     * @return the current instance of {@code EuclidEam}
+     * @throws NullPointerException if {@code browser} is null
+     */
+    public EuclidEam browser(Consumer<String> browser) {
+        this.browser = Objects.requireNonNull(browser, "browser must not be null");
+        return this;
+    }
+
+    /**
+     * Sets how long a federated login waits for the browser to come back before giving up. Three
+     * minutes unless set - long enough to type a password and a second factor, short enough that a
+     * login nobody is attending to does not hold a port open indefinitely.
+     *
+     * @param callbackTimeout how long to wait for the callback
+     * @return the current instance of {@code EuclidEam}
+     * @throws NullPointerException if {@code callbackTimeout} is null
+     */
+    public EuclidEam callbackTimeout(Duration callbackTimeout) {
+        this.callbackTimeout = Objects.requireNonNull(callbackTimeout, "callbackTimeout must not be null");
+        return this;
+    }
+
+    /**
      * Sets the target value and returns the current instance of {@code EuclidEam}.
      *
      * @param target the target value to be set
@@ -282,8 +384,13 @@ public final class EuclidEam {
      * Authenticates the user using the configured username and password, and establishes a session
      * with the server. If a cached session is available and still valid, it will be returned instead
      * of performing authentication again.
+     * <p>
+     * Either way the session is moved to the {@link #account(String)} and {@link #namespace(String)}
+     * asked for, if any, before it is returned and cached.
      *
      * @return an active {@code EuclidSession} object representing the authenticated session
+     * @throws IllegalArgumentException if {@link #account(String)} names an account the user may
+     *                               not work in; the session is cached in the home account all the same
      * @throws IOException if an error occurs during network communication or while processing the server response
      * @throws InterruptedException if the operation is interrupted during execution
      * @throws NullPointerException if the password, or both the username and email, are not set
@@ -291,16 +398,9 @@ public final class EuclidEam {
      * @throws EuclidAuthenticationException if the server responds with an authentication failure
      */
     public EuclidSession login() throws IOException, InterruptedException {
-        EuclidSession cached = loadCachedSession();
+        EuclidSession cached = cachedSession();
         if (cached != null) {
-            // A cached session may have been established - by this caller or by euclid-cli,
-            // since both share the same credentials file - before namespace(...) was ever asked
-            // for, or scoped to a different one. Switching it here is what makes namespace(...)
-            // apply regardless of whether login() ends up reusing a cached session or doing a
-            // fresh one.
-            return namespace != null && !namespace.equals(cached.nameSpace())
-                    ? cached.changeNamespace(namespace)
-                    : cached;
+            return cached;
         }
 
         if ((username == null || username.isEmpty()) && (email == null || email.isEmpty())) {
@@ -320,12 +420,377 @@ public final class EuclidEam {
             throw new EuclidAuthenticationException(response.statusCode(), response.body());
         }
 
-        EuclidSession session = extractSession(response.body(), baseUrl, caCertPath);
-        if (namespace != null) {
-            session = session.changeNamespace(namespace);
+        return establish(response.body());
+    }
+
+    /**
+     * Signs in through the installation's OpenID Connect provider, in a browser, the way
+     * euclid-cli's {@code eam login --oidc} does - and caches the session exactly as
+     * {@link #login()} does.
+     * <p>
+     * The flow: a listener is bound on a loopback port first, because the redirect URI has to name
+     * the port it ended up on; the server is asked ({@code oidc-authorize}) where to send the
+     * person, with that listener as the redirect URI; the URL goes to the {@link #browser(Consumer)};
+     * and once the provider redirects back with a code, the code and its state are redeemed
+     * ({@code oidc-login}) for an ordinary euclid session. No password is asked for or sent - the
+     * provider says who is signing in - so a username or password set on this builder is ignored.
+     * <p>
+     * A still-valid cached session is reused instead, as {@link #login()} reuses one: the point of
+     * caching is not having to go through the browser again within the hour.
+     * <p>
+     * The state that comes back is checked against the one that went out before anything is
+     * redeemed. The server would refuse a state it did not seal anyway, but a mismatch caught here
+     * says plainly that the callback belongs to a different login attempt.
+     *
+     * @return an active session, cached for reuse
+     * @throws EuclidServiceException        if the server cannot start the flow - OIDC is not
+     *                                       enabled (404), misconfigured (500), or the provider is
+     *                                       unreachable (502)
+     * @throws EuclidAuthenticationException if the provider refused the login, the callback does
+     *                                       not belong to this attempt, or the server would not
+     *                                       redeem the code (401) or give this identity an account
+     *                                       (403)
+     * @throws HttpTimeoutException          if the browser did not come back within the
+     *                                       {@link #callbackTimeout(Duration)}
+     * @throws IOException                   if the listener cannot be bound, or on any other I/O
+     *                                       failure
+     * @throws InterruptedException          if the thread is interrupted while waiting
+     */
+    public EuclidSession loginWithOidc() throws IOException, InterruptedException {
+        EuclidSession cached = cachedSession();
+        if (cached != null) {
+            return cached;
         }
+
+        try (LoopbackCallbackListener listener = new LoopbackCallbackListener()) {
+            OidcAuthorizeResponse authorization = oidcAuthorize(
+                    OidcAuthorizeRequest.builder().redirectUri(listener.callbackUrl()).build());
+            if (authorization.authorizationUrl() == null || authorization.authorizationUrl().isEmpty()) {
+                throw new EuclidServiceException("eam", "oidc-authorize", 200, "the server did not say where to authenticate");
+            }
+
+            LoopbackCallbackListener.Callback callback = awaitCallback(listener, authorization.authorizationUrl());
+            if (!Objects.equals(callback.state(), authorization.state())) {
+                throw new EuclidAuthenticationException(401, "the callback does not belong to this login attempt");
+            }
+
+            return oidcLogin(OidcLoginRequest.builder().code(callback.code()).state(callback.state()).build());
+        }
+    }
+
+    /**
+     * Signs in through the installation's SAML 2.0 identity provider, in a browser, the way
+     * euclid-cli's {@code eam login --saml} does - and caches the session exactly as
+     * {@link #login()} does.
+     * <p>
+     * Unlike OIDC, nothing about this client is ever registered with the provider: the provider
+     * posts its signed assertion to the server's own assertion consumer service, the server
+     * verifies it and issues the session, and only then hands that session to the loopback
+     * listener named as {@code returnTo} - in a self-submitting form post, so the token never
+     * appears in a URL. The listener therefore receives a finished session rather than something
+     * to redeem.
+     * <p>
+     * A still-valid cached session is reused instead, as {@link #login()} reuses one.
+     *
+     * @return an active session, cached for reuse
+     * @throws EuclidServiceException        if the server cannot start the flow - SAML is not
+     *                                       enabled (404), or misconfigured (500)
+     * @throws EuclidAuthenticationException if the provider refused the login, or the browser came
+     *                                       back without a session
+     * @throws HttpTimeoutException          if the browser did not come back within the
+     *                                       {@link #callbackTimeout(Duration)}
+     * @throws IOException                   if the listener cannot be bound, or on any other I/O
+     *                                       failure
+     * @throws InterruptedException          if the thread is interrupted while waiting
+     */
+    public EuclidSession loginWithSaml() throws IOException, InterruptedException {
+        EuclidSession cached = cachedSession();
+        if (cached != null) {
+            return cached;
+        }
+
+        try (LoopbackCallbackListener listener = new LoopbackCallbackListener()) {
+            SamlAuthorizeResponse authentication = samlAuthorize(
+                    SamlAuthorizeRequest.builder().returnTo(listener.callbackUrl()).build());
+            if (authentication.authenticationUrl() == null || authentication.authenticationUrl().isEmpty()) {
+                throw new EuclidServiceException("eam", "saml-authorize", 200, "the server did not say where to authenticate");
+            }
+
+            LoopbackCallbackListener.Callback callback = awaitCallback(listener, authentication.authenticationUrl());
+            if (callback.session() == null || callback.session().isEmpty()) {
+                throw new EuclidAuthenticationException(401, "the callback carried no session");
+            }
+
+            JsonNode session;
+            try {
+                session = OBJECT_MAPPER.readTree(callback.session());
+            } catch (IOException e) {
+                throw new EuclidAuthenticationException(401, "the session euclid sent back is not valid JSON");
+            }
+            if (textOrNull(session, "token") == null || textOrNull(session, "token").isEmpty()) {
+                throw new EuclidAuthenticationException(401, "the session euclid sent back did not contain a token");
+            }
+            return establish(callback.session());
+        }
+    }
+
+    /**
+     * Turns a SAML response obtained some other way into a session, by handing it to the server's
+     * assertion consumer service ({@code saml-acs}) - the last step of euclid-cli's
+     * {@code eam login --onelogin}, which fetches the assertion from OneLogin's API rather than
+     * through a browser.
+     * <p>
+     * Verified exactly as one a browser posts: the provider's signature is what is trusted, not how
+     * the assertion arrived. An assertion with no RelayState answers no login request euclid made,
+     * so the server refuses it unless it allows IdP-initiated logins
+     * ({@code saml.allow-idp-initiated}); and each assertion is accepted once only.
+     * <p>
+     * Never answered from the cache, unlike {@link #login()}: the caller has spent an assertion on
+     * this, and quietly returning some other session would discard it.
+     *
+     * @param request the base64-encoded SAML response, and the RelayState it came with
+     * @return an active session, cached for reuse
+     * @throws EuclidAuthenticationException if the assertion is refused - unsigned, expired,
+     *                                       unsolicited, or replayed (401) - or the identity may not
+     *                                       have an account here (403)
+     * @throws IOException                   if an I/O error occurs
+     * @throws InterruptedException          if the request is interrupted
+     */
+    public EuclidSession loginWithSamlAssertion(SamlAcsRequest request) throws IOException, InterruptedException {
+        HttpResponse<String> response = new EuclidHttpClient(caCertPath).post(baseUrl + loginPath,
+                OBJECT_MAPPER.writeValueAsString(request), "eam", "saml-acs", Map.of("Content-Type", "application/json"));
+        if (response.statusCode() / 100 != 2) {
+            throw new EuclidAuthenticationException(response.statusCode(), response.body());
+        }
+        return establish(response.body());
+    }
+
+    /**
+     * Starts an OpenID Connect login without driving it: answers with where to send the person and
+     * the state the attempt travels under ({@code oidc-authorize}).
+     * <p>
+     * The building block for a caller that runs the browser leg itself - a web application that
+     * registers its own callback, say - and finishes with {@link #oidcLogin(OidcLoginRequest)}.
+     * {@link #loginWithOidc()} is this and the rest of the flow put together for a program on the
+     * signing-in person's own machine.
+     *
+     * @param request where the provider should send the browser back to, and where the server
+     *                should send it once the login has succeeded
+     * @return the authorization URL to open, and the state to expect back
+     * @throws EuclidServiceException if OIDC is not enabled (404), misconfigured (500), the
+     *                                {@code returnTo} is not a permitted destination (400), or the
+     *                                provider is unreachable (502)
+     * @throws IOException            if an I/O error occurs
+     * @throws InterruptedException   if the request is interrupted
+     */
+    public OidcAuthorizeResponse oidcAuthorize(OidcAuthorizeRequest request) throws IOException, InterruptedException {
+        HttpResponse<String> response = new EuclidHttpClient(caCertPath).post(baseUrl + loginPath,
+                OBJECT_MAPPER.writeValueAsString(request), "eam", "oidc-authorize", Map.of("Content-Type", "application/json"));
+        if (response.statusCode() / 100 != 2) {
+            throw new EuclidServiceException("eam", "oidc-authorize", response.statusCode(), response.body());
+        }
+        return OBJECT_MAPPER.readValue(response.body(), OidcAuthorizeResponse.class);
+    }
+
+    /**
+     * Finishes an OpenID Connect login: redeems the code the provider sent back for a euclid session
+     * ({@code oidc-login}), and caches it as {@link #login()} does - applying
+     * {@link #account(String)} and {@link #namespace(String)} on the way.
+     * <p>
+     * Never answered from the cache: a code is good for one redemption, and the caller has
+     * presumably just been through a browser to get it.
+     *
+     * @param request the code and state from the provider's callback, exactly as they arrived
+     * @return an active session, cached for reuse
+     * @throws EuclidAuthenticationException if the code or state is refused (401), or the identity
+     *                                       may not have an account here (403)
+     * @throws IOException                   if an I/O error occurs
+     * @throws InterruptedException          if the request is interrupted
+     */
+    public EuclidSession oidcLogin(OidcLoginRequest request) throws IOException, InterruptedException {
+        HttpResponse<String> response = new EuclidHttpClient(caCertPath).post(baseUrl + loginPath,
+                OBJECT_MAPPER.writeValueAsString(request), "eam", "oidc-login", Map.of("Content-Type", "application/json"));
+        if (response.statusCode() / 100 != 2) {
+            throw new EuclidAuthenticationException(response.statusCode(), response.body());
+        }
+        return establish(response.body());
+    }
+
+    /**
+     * Starts a SAML login without driving it: answers with where to send the person and the
+     * RelayState the attempt travels under ({@code saml-authorize}, also reachable as
+     * {@code saml-login}).
+     * <p>
+     * The building block for a caller that runs the browser leg itself; {@link #loginWithSaml()}
+     * is the whole flow for a program on the signing-in person's own machine. Where the session
+     * ends up is decided by {@link SamlAuthorizeRequest#returnTo()}.
+     *
+     * @param request where the server should deliver the session once the assertion is accepted
+     * @return the single sign-on URL to open, and the RelayState it carries
+     * @throws EuclidServiceException if SAML is not enabled (404), misconfigured (500), or the
+     *                                {@code returnTo} is not a permitted destination (400)
+     * @throws IOException            if an I/O error occurs
+     * @throws InterruptedException   if the request is interrupted
+     */
+    public SamlAuthorizeResponse samlAuthorize(SamlAuthorizeRequest request) throws IOException, InterruptedException {
+        HttpResponse<String> response = new EuclidHttpClient(caCertPath).post(baseUrl + loginPath,
+                OBJECT_MAPPER.writeValueAsString(request), "eam", "saml-authorize", Map.of("Content-Type", "application/json"));
+        if (response.statusCode() / 100 != 2) {
+            throw new EuclidServiceException("eam", "saml-authorize", response.statusCode(), response.body());
+        }
+        return OBJECT_MAPPER.readValue(response.body(), SamlAuthorizeResponse.class);
+    }
+
+    /**
+     * Hands the URL to the browser and waits for it to come back, turning the two ways that can go
+     * wrong - no answer, or the provider's refusal - into exceptions.
+     *
+     * @param listener the listener the browser will come back to
+     * @param url      the URL the person has to authenticate at
+     * @return the callback, carrying no error
+     * @throws HttpTimeoutException if nothing came back in time
+     * @throws InterruptedException if the thread is interrupted while waiting
+     */
+    private LoopbackCallbackListener.Callback awaitCallback(LoopbackCallbackListener listener, String url)
+            throws HttpTimeoutException, InterruptedException {
+        browser.accept(url);
+        LoopbackCallbackListener.Callback callback = listener.await(callbackTimeout);
+        if (callback == null) {
+            throw new HttpTimeoutException("no callback from the identity provider within " + callbackTimeout);
+        }
+        if (callback.error() != null) {
+            throw new EuclidAuthenticationException(401, "the identity provider refused the login: " + callback.error());
+        }
+        return callback;
+    }
+
+    /**
+     * A still-valid cached session for this server, with {@link #account(String)} and
+     * {@link #namespace(String)} applied to it, or {@code null} if there is none to reuse.
+     * <p>
+     * A cached session may have been established - by this caller or by euclid-cli, since both
+     * share the same credentials file - before an account or namespace was ever asked for, or
+     * scoped to different ones. Switching it here is what makes those settings apply whether a
+     * login ends up reusing a cached session or doing a fresh one.
+     *
+     * @return the session to reuse, or {@code null}
+     * @throws IOException          if switching the account or namespace fails on the wire
+     * @throws InterruptedException if switching is interrupted
+     */
+    private EuclidSession cachedSession() throws IOException, InterruptedException {
+        EuclidSession cached = loadCachedSession();
+        if (cached == null) {
+            return null;
+        }
+        EuclidSession selected = applySelections(cached);
+        if (selected != cached) {
+            storeCredentials(selected);
+        }
+        return selected;
+    }
+
+    /**
+     * What every way in does with the login response it got: build the session, move it to the
+     * account and namespace asked for, and cache it. Shared deliberately - a federated login is not
+     * a different kind of session, and a difference between the paths here would be one nobody
+     * meant to introduce.
+     *
+     * @param responseBody the login response JSON
+     * @return the established session
+     * @throws IOException          if the response cannot be parsed or a follow-up call fails
+     * @throws InterruptedException if a follow-up call is interrupted
+     */
+    private EuclidSession establish(String responseBody) throws IOException, InterruptedException {
+        EuclidSession session = applySelections(extractSession(responseBody, baseUrl, caCertPath));
         storeCredentials(session);
         return session;
+    }
+
+    /**
+     * Moves a session to the account and namespace this builder was asked for - the account first,
+     * because a namespace belongs to one.
+     *
+     * @param session the session as issued or cached
+     * @return the same instance if nothing had to change, otherwise the switched session
+     * @throws IOException          if a follow-up call fails
+     * @throws InterruptedException if a follow-up call is interrupted
+     */
+    private EuclidSession applySelections(EuclidSession session) throws IOException, InterruptedException {
+        EuclidSession selected = session;
+        if (account != null && !account.isEmpty() && !account.equals(selected.accountId())) {
+            selected = selectAccount(selected);
+        }
+        if (namespace != null && !namespace.equals(selected.nameSpace())) {
+            selected = selected.changeNamespace(namespace);
+        }
+        return selected;
+    }
+
+    /**
+     * Resolves {@link #account(String)} against the accounts the user may work in, as euclid-cli's
+     * {@code resolveAccount} does.
+     * <p>
+     * On a miss the session is still cached, in the home account, before the refusal is thrown:
+     * the login itself succeeded, and throwing the session away would make the next attempt a
+     * second password entry - or a second trip through the browser - for a typo in an account name.
+     *
+     * @param session the session to switch
+     * @return the session working in the resolved account
+     * @throws IllegalArgumentException if the account is not one the user may work in; the message
+     *                                  names the ones they may
+     * @throws IOException              if listing the accounts fails
+     * @throws InterruptedException     if listing the accounts is interrupted
+     */
+    private EuclidSession selectAccount(EuclidSession session) throws IOException, InterruptedException {
+        ListMyAccountsResponse mine = session.listMyAccounts();
+        String byName = null;
+        List<String> known = new ArrayList<>();
+        for (Account candidate : mine.accounts()) {
+            if (account.equals(candidate.accountId())) {
+                return session.withAccountId(candidate.accountId());
+            }
+            if (byName == null && candidate.name() != null && account.equals(candidate.name())) {
+                byName = candidate.accountId();
+            }
+            known.add(candidate.name() == null || candidate.name().isEmpty() || candidate.name().equals(candidate.accountId())
+                    ? candidate.accountId() : candidate.accountId() + " (" + candidate.name() + ")");
+        }
+        if (byName != null) {
+            return session.withAccountId(byName);
+        }
+
+        storeCredentials(session);
+        throw new IllegalArgumentException("'" + account + "' is not an account you may work in"
+                + (known.isEmpty() ? "" : "; yours are: " + String.join(", ", known))
+                + " - logged in to your home account " + session.accountId() + " instead");
+    }
+
+    /**
+     * The default {@link #browser(Consumer)}: prints the URL, then opens it the way the platform
+     * offers - best effort, and said out loud either way, so a person on a machine with no browser
+     * can copy the URL somewhere that has one.
+     *
+     * @param url the URL to open
+     */
+    private static void openInBrowser(String url) {
+        System.err.println("Opening your browser to sign in. If it does not open, go to:\n\n  " + url
+                + "\n\nWaiting for the callback ...");
+        try {
+            if (Desktop.isDesktopSupported() && Desktop.getDesktop().isSupported(Desktop.Action.BROWSE)) {
+                Desktop.getDesktop().browse(URI.create(url));
+                return;
+            }
+            // No shell in between, so nothing in the URL is ever interpreted as anything but an
+            // argument.
+            String os = System.getProperty("os.name", "").toLowerCase(Locale.ROOT);
+            List<String> command = os.contains("mac") ? List.of("open", url)
+                    : os.contains("win") ? List.of("rundll32", "url.dll,FileProtocolHandler", url)
+                    : List.of("xdg-open", url);
+            new ProcessBuilder(command).redirectOutput(ProcessBuilder.Redirect.DISCARD)
+                    .redirectError(ProcessBuilder.Redirect.DISCARD).start();
+        } catch (IOException | RuntimeException ignored) {
+            // The URL is printed above; that is the fallback.
+        }
     }
 
     /**
@@ -364,10 +829,11 @@ public final class EuclidEam {
      * access when supported by the file system.
      *
      * @param session the {@code EuclidSession} object containing the credentials
-     *                to be saved
+     *                to be saved; its own {@link EuclidSession#baseUrl()} is the server recorded
      * @throws IOException if an error occurs while writing to the file system
      */
-    private void storeCredentials(EuclidSession session) throws IOException {
+    private static void storeCredentials(EuclidSession session) throws IOException {
+        String baseUrl = session.baseUrl();
         Files.createDirectories(credentialsPath().getParent());
         // Field names and shape are euclid-cli's Credentials::Save(), since both clients read and
         // write the same $HOME/.euclid/credentials: the namespace key is "namespace" (not
@@ -428,6 +894,34 @@ public final class EuclidEam {
     }
 
     /**
+     * Replaces the cached session with a renewed one - see {@link EuclidSession#refreshSession()} -
+     * but only when what is cached is this same user's session on this same server.
+     * <p>
+     * The file is shared with euclid-cli and with every other session this process holds, so a
+     * refresh must not take it over: a process that logged in as one user while somebody else's
+     * session sits in the cache would otherwise silently swap who the next command runs as. When
+     * nothing is cached, nothing is written either - a session that was never cached has no copy
+     * to keep current. Best-effort, like {@link #updateCachedNamespace(String, String)}.
+     *
+     * @param session the renewed session
+     */
+    static void updateCachedSession(EuclidSession session) {
+        if (!Files.isReadable(credentialsPath())) {
+            return;
+        }
+        try {
+            JsonNode root = OBJECT_MAPPER.readTree(Files.readString(credentialsPath()));
+            if (!Objects.equals(session.baseUrl(), textOrNull(root, "baseUrl"))
+                    || !Objects.equals(session.userId(), textOrNull(root, "userId"))) {
+                return;
+            }
+            storeCredentials(session);
+        } catch (IOException ignored) {
+            // best-effort; the renewed session is returned to the caller either way
+        }
+    }
+
+    /**
      * Validates the provided token to determine if it is correctly formatted and not expired.
      *
      * @param token the token to be validated; must be a non-null string
@@ -472,7 +966,7 @@ public final class EuclidEam {
      * @return an instance of {@code EuclidSession} containing the extracted session details
      * @throws IOException if an error occurs while reading or parsing the response body
      */
-    private static EuclidSession extractSession(String responseBody, String baseUrl, String caCertPath) throws IOException {
+    static EuclidSession extractSession(String responseBody, String baseUrl, String caCertPath) throws IOException {
         LoginResponse login = extractLoginResponse(responseBody);
         Metadata metadata = login.metadata();
         return new EuclidSession(login.token(), metadata == null ? null : metadata.user(),

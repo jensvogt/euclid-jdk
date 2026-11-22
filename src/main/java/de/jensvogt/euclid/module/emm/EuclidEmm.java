@@ -73,7 +73,7 @@ public final class EuclidEmm implements TokenRefreshable, SigningSchemeSelectabl
      * the configuration decide - and a JSON null is not an absent field.
      */
     private static final ObjectMapper OBJECT_MAPPER =
-            new ObjectMapper().setSerializationInclusion(JsonInclude.Include.NON_NULL);
+            new ObjectMapper().setDefaultPropertyInclusion(JsonInclude.Include.NON_NULL);
 
     /**
      * The Euclid service every request from this class is addressed to, sent as the

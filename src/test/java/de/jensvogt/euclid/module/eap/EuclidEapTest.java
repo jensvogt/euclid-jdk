@@ -7,9 +7,15 @@ import com.sun.net.httpserver.HttpServer;
 import de.jensvogt.euclid.auth.SigV4;
 import de.jensvogt.euclid.auth.SignableRequest;
 import de.jensvogt.euclid.dto.eap.ApplyInfrastructureResponse;
+import de.jensvogt.euclid.dto.eap.AssignInstanceRequest;
+import de.jensvogt.euclid.dto.eap.AssignInstanceResponse;
 import de.jensvogt.euclid.dto.eap.CopyApplicationRequest;
 import de.jensvogt.euclid.dto.eap.CreateApplicationRequest;
+import de.jensvogt.euclid.dto.eap.DrainNodeResponse;
 import de.jensvogt.euclid.dto.eap.EgressLimitResponse;
+import de.jensvogt.euclid.dto.eap.EgressThrottledResponse;
+import de.jensvogt.euclid.dto.eap.ListApplicationsRequest;
+import de.jensvogt.euclid.dto.eap.model.EgressLimits;
 import de.jensvogt.euclid.dto.eap.ListEgressSitesResponse;
 import de.jensvogt.euclid.dto.eap.RebalanceApplicationResponse;
 import de.jensvogt.euclid.dto.eap.ScaleApplicationRequest;
@@ -875,6 +881,23 @@ class EuclidEapTest {
         String body = received.get().body();
         assertFalse(body.contains("artifact"), "an unset artifact should not be sent, was " + body);
         assertFalse(body.contains("version"), "an unset version should not be sent, was " + body);
+        assertFalse(body.contains("force"), "an unset force must not override the refusal, was " + body);
+    }
+
+    // Force is how somebody who has been told what the refusal would be deploys identical bytes
+    // anyway - a host that lost its copy, say - so it has to reach the server as a real boolean.
+    @Test
+    void redeployApplicationCanForceAnIdenticalBuild() throws Exception {
+        AtomicReference<SignableRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(captureRequest(exchange));
+            sendResponse(exchange, 200, applicationJson());
+        });
+
+        newClient().redeployApplication(RedeployApplicationRequest.builder()
+                .applicationId("billing").force(true).build());
+
+        assertBodyContains(received.get().body(), "\"force\":true");
     }
 
     // A redeploy that is not a new build is refused by the server, and the reason is the whole
@@ -882,8 +905,9 @@ class EuclidEapTest {
     @Test
     void aRefusedRedeploySurfacesTheServersReason() throws Exception {
         server = startServer(exchange -> sendResponse(exchange, 409,
-                "{\"error\":\"Refusing to redeploy 'billing': version 1.0.0 is already deployed"
-                        + " - a new build needs a new version. Use 'update-application' to deploy it anyway.\"}"));
+                "{\"error\":\"Refusing to redeploy 'billing': the artifact is byte for byte the build already deployed"
+                        + " as version 1.0.0 - nothing would change. Redeploy with force to do it anyway,"
+                        + " or use 'update-application'.\"}"));
 
         EuclidEap eap = newClient();
         EuclidServiceException exception = assertThrows(EuclidServiceException.class,
@@ -1183,9 +1207,242 @@ class EuclidEapTest {
         assertEquals(403, exception.statusCode());
     }
 
+    @Test
+    void aNodeReportsItsMemoryAndLoad() throws Exception {
+        server = startServer(exchange -> {
+            exchange.getRequestBody().readAllBytes();
+            sendResponse(exchange, 200, "{\"nodes\":[" + nodeJson(true, false) + "],\"total\":1}");
+        });
+
+        Node node = newClient().listNodes().nodes().getFirst();
+
+        // What applications are offered, and the machine's own "used / total" beside it.
+        assertEquals(28672, node.memoryMb());
+        assertEquals(32768, node.memoryTotalMb());
+        assertEquals(12288, node.memoryUsedMb());
+        assertEquals(1.75, node.loadAverage());
+    }
+
+    @Test
+    void drainNodeSendsTheNameAndTheFlag() throws Exception {
+        AtomicReference<SignableRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(captureRequest(exchange));
+            sendResponse(exchange, 200, "{\"node\":\"worker-1\",\"drained\":true}");
+        });
+
+        DrainNodeResponse response = newClient().drainNode("worker-1");
+
+        assertEquals("drain-node", received.get().header("x-euclid-action"));
+        assertBodyContains(received.get().body(), "\"node\":\"worker-1\"", "\"drained\":true");
+        assertEquals("worker-1", response.node());
+        assertTrue(response.drained());
+    }
+
+    // false is the only way a node is put back into service - the server reads an absent flag as
+    // "drain", so it has to be sent rather than left out.
+    @Test
+    void undrainingANodeSendsFalse() throws Exception {
+        AtomicReference<SignableRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(captureRequest(exchange));
+            sendResponse(exchange, 200, "{\"node\":\"worker-1\",\"drained\":false}");
+        });
+
+        DrainNodeResponse response = newClient().drainNode("worker-1", false);
+
+        assertBodyContains(received.get().body(), "\"drained\":false");
+        assertFalse(response.drained());
+    }
+
+    @Test
+    void drainNodeSurfacesANodeThatIsNotRegistered() throws Exception {
+        server = startServer(exchange -> {
+            exchange.getRequestBody().readAllBytes();
+            sendResponse(exchange, 404, "{\"error\":\"Node is not registered, node: nope\"}");
+        });
+
+        EuclidServiceException exception = assertThrows(EuclidServiceException.class,
+                () -> newClient().drainNode("nope"));
+
+        assertEquals("drain-node", exception.action());
+        assertEquals(404, exception.statusCode());
+    }
+
+    @Test
+    void assignInstanceNamesTheSlotByPoolAndParsesTheLease() throws Exception {
+        AtomicReference<SignableRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(captureRequest(exchange));
+            sendResponse(exchange, 200, "{\"runtimeName\":\"billing-7f3a91\",\"instanceId\":\"i-1\","
+                    + "\"node\":\"worker-1\",\"leaseExpiresAt\":\"2026-11-22T12:00:45Z\"}");
+        });
+
+        AssignInstanceResponse response = newClient().assignInstance(AssignInstanceRequest.builder()
+                .runtimeName("billing-7f3a91").instanceId("i-1").node("worker-1").build());
+
+        assertEquals("assign-instance", received.get().header("x-euclid-action"));
+        assertBodyContains(received.get().body(), "\"runtimeName\":\"billing-7f3a91\"", "\"instanceId\":\"i-1\"",
+                "\"node\":\"worker-1\"");
+        assertEquals("worker-1", response.node());
+        assertEquals("2026-11-22T12:00:45Z", response.leaseExpiresAt());
+    }
+
+    // No node is a request in its own right: the slot goes back to the manager's own host.
+    @Test
+    void assignInstanceWithoutANodeTakesTheSlotBack() throws Exception {
+        AtomicReference<SignableRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(captureRequest(exchange));
+            sendResponse(exchange, 200, "{\"runtimeName\":\"billing-7f3a91\",\"instanceId\":\"i-1\","
+                    + "\"node\":\"\",\"leaseExpiresAt\":\"2026-11-22T12:00:45Z\"}");
+        });
+
+        AssignInstanceResponse response = newClient().assignInstance(AssignInstanceRequest.builder()
+                .runtimeName("billing-7f3a91").instanceId("i-1").build());
+
+        assertBodyContains(received.get().body(), "\"node\":\"\"");
+        assertEquals("", response.node());
+    }
+
+    // Draining refuses exactly this - a new assignment - and keeps what the node already has.
+    @Test
+    void assignInstanceSurfacesADrainedNode() throws Exception {
+        server = startServer(exchange -> {
+            exchange.getRequestBody().readAllBytes();
+            sendResponse(exchange, 409, "{\"error\":\"Node 'worker-1' is drained\"}");
+        });
+
+        EuclidServiceException exception = assertThrows(EuclidServiceException.class,
+                () -> newClient().assignInstance(AssignInstanceRequest.builder()
+                        .runtimeName("billing-7f3a91").instanceId("i-1").node("worker-1").build()));
+
+        assertEquals(409, exception.statusCode());
+    }
+
+    @Test
+    void createApplicationSendsTopicsSecretsAndLimits() throws Exception {
+        AtomicReference<SignableRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(captureRequest(exchange));
+            sendResponse(exchange, 200, applicationJson());
+        });
+
+        newClient().createApplication(CreateApplicationRequest.builder()
+                .applicationId("billing").runtime("RUST").bucket("artifacts").artifact("billing-1.0.0")
+                .topics(List.of("invoices-issued")).secrets(List.of("db-credentials"))
+                .memoryLimitMb(512L).cpuLimit(1.5).build());
+
+        assertBodyContains(received.get().body(), "\"runtime\":\"RUST\"", "\"topics\":[\"invoices-issued\"]",
+                "\"secrets\":[\"db-credentials\"]", "\"memoryLimitMb\":512", "\"cpuLimit\":1.5");
+    }
+
+    // A declaration that could not be applied does not fail the deployment, so the failure has to
+    // be readable from the answer - otherwise a created application would silently lack what it
+    // declared.
+    @Test
+    void createApplicationReportsWhatItsDeclarationDid() throws Exception {
+        server = startServer(exchange -> {
+            exchange.getRequestBody().readAllBytes();
+            sendResponse(exchange, 200, applicationJson().replaceFirst("\\}$",
+                    ",\"infrastructure\":{\"declared\":true,\"dryRun\":false,"
+                            + "\"created\":[\"ern:eqs:eu-central-1:863459426936:queue/billing-events\"],"
+                            + "\"adopted\":[],\"updated\":[],\"deleted\":[],\"kept\":[],\"granted\":[],"
+                            + "\"revoked\":[]}}"));
+        });
+
+        Application created = newClient().createApplication(minimalRequest());
+
+        assertTrue(created.infrastructure().declared());
+        assertNull(created.infrastructure().error());
+        assertEquals("billing", created.infrastructure().applicationId());
+        assertEquals(List.of("ern:eqs:eu-central-1:863459426936:queue/billing-events"),
+                created.infrastructure().created());
+    }
+
+    @Test
+    void createApplicationReportsADeclarationThatCouldNotBeApplied() throws Exception {
+        server = startServer(exchange -> {
+            exchange.getRequestBody().readAllBytes();
+            sendResponse(exchange, 200, applicationJson().replaceFirst("\\}$",
+                    ",\"infrastructure\":{\"declared\":false,\"error\":\"not valid JSON\"}}"));
+        });
+
+        Application created = newClient().createApplication(minimalRequest());
+
+        assertEquals("not valid JSON", created.infrastructure().error());
+        assertFalse(created.infrastructure().declared());
+    }
+
+    // Only create-application applies a declaration as part of answering; the other actions have
+    // nothing to report and must not read as "applied nothing".
+    @Test
+    void anApplicationFromAnyOtherActionHasNoInfrastructureReport() throws Exception {
+        server = startServer(exchange -> {
+            exchange.getRequestBody().readAllBytes();
+            sendResponse(exchange, 200, applicationJson());
+        });
+
+        Application found = newClient().getApplication("billing");
+
+        assertNull(found.infrastructure());
+        assertEquals(1048576, found.artifactSize());
+    }
+
+    @Test
+    void updateApplicationCanMoveChangeUserAndSetLimits() throws Exception {
+        AtomicReference<SignableRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(captureRequest(exchange));
+            sendResponse(exchange, 200, applicationJson());
+        });
+
+        newClient().updateApplication(UpdateApplicationRequest.builder().applicationId("billing")
+                .namespace("").user("billing-operator").memoryLimitMb(0L).cpuLimit(2.0)
+                .topics(List.of("invoices-issued")).secrets(List.of("db-credentials")).build());
+
+        // An empty namespace is a move to the account root, so it has to be sent rather than
+        // dropped like an unset field.
+        assertBodyContains(received.get().body(), "\"namespace\":\"\"", "\"user\":\"billing-operator\"",
+                "\"memoryLimitMb\":0", "\"cpuLimit\":2.0", "\"topics\":[\"invoices-issued\"]",
+                "\"secrets\":[\"db-credentials\"]");
+    }
+
+    @Test
+    void listApplicationsCanMatchOtherThanAPrefix() throws Exception {
+        AtomicReference<SignableRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(captureRequest(exchange));
+            sendResponse(exchange, 200, "{\"applications\":[" + applicationJson() + "]}");
+        });
+
+        List<Application> found = newClient().listApplications(ListApplicationsRequest.builder()
+                .prefix("ill").matchType("contains").build());
+
+        assertEquals("list-applications", received.get().header("x-euclid-action"));
+        assertBodyContains(received.get().body(), "\"prefix\":\"ill\"", "\"matchType\":\"contains\"");
+        assertEquals(1, found.size());
+    }
+
+    // An older client never sent matchType, and the server reads its absence as a prefix - so a
+    // plain prefix search must go on not sending one.
+    @Test
+    void aPlainPrefixSearchSendsNoMatchType() throws Exception {
+        AtomicReference<SignableRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(captureRequest(exchange));
+            sendResponse(exchange, 200, "{\"applications\":[]}");
+        });
+
+        newClient().listApplications("bill");
+
+        assertFalse(received.get().body().contains("matchType"), received.get().body());
+    }
+
     private static String nodeJson(boolean live, boolean drained) {
         return "{\"name\":\"worker-1\",\"address\":\"10.0.0.7:9100\",\"principal\":\"node-worker-1\","
                 + "\"labels\":{\"os\":\"linux\",\"gpu\":\"true\"},\"cpuCount\":16,"
+                + "\"memoryMb\":28672,\"memoryTotalMb\":32768,\"memoryUsedMb\":12288,\"loadAverage\":1.75,"
                 + "\"version\":\"1.2.20\",\"os\":\"linux\",\"arch\":\"x86_64\","
                 + "\"drained\":" + drained + ",\"live\":" + live + ",\"lastSeen\":\"2026-10-13T08:00:00Z\"}";
     }
@@ -1201,7 +1458,7 @@ class EuclidEapTest {
                 + "\"region\":\"eu-central-1\",\"runtime\":\"JAVA\","
                 + "\"bucketErn\":\"ern:esm:eu-central-1:863459426936:bucket/artifacts\","
                 + "\"artifactKey\":\"billing-1.0.0.jar\",\"version\":\"1.0.0\","
-                + "\"md5Sum\":\"0dc7cdef5e707bae7f7b6bbb5be4c32a\",\"command\":\"java\","
+                + "\"md5Sum\":\"0dc7cdef5e707bae7f7b6bbb5be4c32a\",\"artifactSize\":1048576,\"command\":\"java\","
                 + "\"arguments\":[\"-jar\",\"billing-1.0.jar\"],\"environment\":{\"LOG_LEVEL\":\"info\"},"
                 + "\"resources\":[\"ern:esm:eu-central-1:863459426936:bucket/invoices\"],"
                 + "\"userId\":\"eap-billing\",\"userExists\":true,\"logLevel\":\"info\","
@@ -1223,10 +1480,12 @@ class EuclidEapTest {
             received.add(request);
             String action = request.header("x-euclid-action");
             String body = switch (action) {
-                case "acquire-egress-permit" -> "{\"site\":\"downloads.example.com\",\"granted\":false,"
-                        + "\"reason\":\"rate\",\"retryAfterMs\":250,\"limits\":{}}";
+                case "acquire-egress-permit" -> "{\"applicationId\":\"downloader\",\"site\":\"downloads.example.com\","
+                        + "\"granted\":false,\"reason\":\"rate\",\"retryAfterMs\":250,"
+                        + "\"limits\":{\"requestsPerSecond\":2.0,\"burst\":4.0,\"concurrent\":1}}";
                 case "release-egress-permit" -> "{\"site\":\"downloads.example.com\",\"released\":true}";
-                default -> "{\"site\":\"downloads.example.com\",\"blockedUntil\":\"2026-10-16T12:00:00Z\"}";
+                default -> "{\"applicationId\":\"downloader\",\"site\":\"downloads.example.com\","
+                        + "\"blockedUntil\":\"2026-10-16T12:00:00Z\"}";
             };
             sendResponse(exchange, 200, body);
         });
@@ -1234,11 +1493,15 @@ class EuclidEapTest {
         EuclidEap eap = newClient();
         var answer = eap.acquireEgressPermit("downloader", "downloads.example.com", 600);
         assertTrue(eap.releaseEgressPermit("downloader", "downloads.example.com", "p-1"));
-        eap.reportEgressThrottled("downloader", "downloads.example.com", 90);
+        EgressThrottledResponse throttled = eap.reportEgressThrottled("downloader", "downloads.example.com", 90);
 
         assertFalse(answer.granted());
         assertEquals("rate", answer.reason());
         assertEquals(250, answer.retryAfterMs());
+        // What the refusal was decided under, so a caller held back can see by what.
+        assertEquals("downloader", answer.applicationId());
+        assertEquals(new EgressLimits(2.0, 4.0, 1), answer.limits());
+        assertEquals("2026-10-16T12:00:00Z", throttled.blockedUntil());
 
         assertEquals("acquire-egress-permit", received.get(0).header("x-euclid-action"));
         assertBodyContains(received.get(0).body(), "\"applicationId\":\"downloader\"",

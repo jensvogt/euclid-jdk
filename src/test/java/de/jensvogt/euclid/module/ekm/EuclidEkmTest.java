@@ -10,7 +10,9 @@ import de.jensvogt.euclid.dto.ekm.CreateCertificateRequest;
 import de.jensvogt.euclid.dto.ekm.CreateKeyResponse;
 import de.jensvogt.euclid.dto.ekm.DeleteCertificateResponse;
 import de.jensvogt.euclid.dto.ekm.DeleteKeyResponse;
+import de.jensvogt.euclid.dto.ekm.ListCertificatesRequest;
 import de.jensvogt.euclid.dto.ekm.ListCertificatesResponse;
+import de.jensvogt.euclid.dto.ekm.ListKeysRequest;
 import de.jensvogt.euclid.dto.ekm.ListKeysResponse;
 import de.jensvogt.euclid.dto.ekm.RevokeKeyResponse;
 import de.jensvogt.euclid.dto.ekm.SetKeyDescriptionResponse;
@@ -246,6 +248,38 @@ class EuclidEkmTest {
         assertBodyContains(received.get().body(), "\"prefix\":\"pro\"", "\"pageSize\":25", "\"pageIndex\":2",
                 "\"sortColumn\":\"created\"", "\"sortDirection\":\"desc\"");
         assertTrue(response.keys().isEmpty());
+    }
+
+    // An empty matchType is a prefix match server-side, which is what every listing did before the
+    // field existed - so the positional overload has to keep sending exactly that.
+    @Test
+    void listKeysSendsAPrefixMatchByDefault() throws Exception {
+        AtomicReference<SignableRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(captureRequest(exchange));
+            sendResponse(exchange, 200, "{\"total\":0,\"keys\":[]}");
+        });
+
+        newClient().listKeys("pro", 25, 2, "created", "desc");
+
+        assertBodyContains(received.get().body(), "\"matchType\":\"\"");
+    }
+
+    @Test
+    void listKeysSendsTheMatchTypeOfARequest() throws Exception {
+        AtomicReference<SignableRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(captureRequest(exchange));
+            sendResponse(exchange, 200, "{\"total\":4,\"keys\":[]}");
+        });
+
+        ListKeysResponse response = newClient().listKeys(ListKeysRequest.builder().prefix("-prod")
+                .matchType("endsWith").pageSize(50).build());
+
+        assertEquals("list-keys", received.get().header("x-euclid-action"));
+        assertBodyContains(received.get().body(), "\"prefix\":\"-prod\"", "\"matchType\":\"endsWith\"",
+                "\"pageSize\":50", "\"sortColumn\":\"name\"");
+        assertEquals(4, response.total());
     }
 
     @Test
@@ -553,6 +587,22 @@ class EuclidEkmTest {
         assertEquals(3, response.total());
         assertEquals("edge", response.certificates().getFirst().name());
         assertEquals(Map.of("env", "prod"), response.certificates().getFirst().tags());
+    }
+
+    @Test
+    void listCertificatesSendsTheMatchTypeOfARequest() throws Exception {
+        AtomicReference<SignableRequest> received = new AtomicReference<>();
+        server = startServer(exchange -> {
+            received.set(captureRequest(exchange));
+            sendResponse(exchange, 200, "{\"certificates\":[" + certificateJson(false) + "],\"total\":1}");
+        });
+
+        ListCertificatesResponse response = newClient().listCertificates(ListCertificatesRequest.builder()
+                .prefix("^ed(ge)?$").matchType("regex").build());
+
+        assertEquals("list-certificates", received.get().header("x-euclid-action"));
+        assertBodyContains(received.get().body(), "\"prefix\":\"^ed(ge)?$\"", "\"matchType\":\"regex\"");
+        assertEquals("edge", response.certificates().getFirst().name());
     }
 
     @Test

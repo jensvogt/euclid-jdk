@@ -26,8 +26,16 @@ import java.util.Map;
  *                    {@code null}
  * @param created     creation timestamp
  * @param modified    last-modified timestamp
+ * @param lastAccessed when the object was last used: its last read, or its last modification while
+ *                    nothing has read it yet. This is the clock a lifecycle rule's
+ *                    {@link LifecycleRule#archiveAfterDays()} runs against, which is why an object
+ *                    that is written once and read daily is never archived. Reads are recorded
+ *                    coarsely (about once an hour by default) so the busiest path the server has
+ *                    does not become a write per read - good enough for a rule that decides in days,
+ *                    not for an access log
  */
 public record EsmObject(String ern, String bucketErn, String key, long size, String status, String contentType,
                         String md5Sum, String versionId, boolean encrypted, Map<String, Variant> attributes,
-                        String lifecycleState, String restoredUntil, String created, String modified) {
+                        String lifecycleState, String restoredUntil, String created, String modified,
+                        String lastAccessed) {
 }

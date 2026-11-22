@@ -3,14 +3,36 @@ package de.jensvogt.euclid.dto.ekm;
 /**
  * Request to list the certificates of an account and namespace.
  *
- * @param prefix        only certificates whose name starts with this prefix are returned
+ * @param prefix        only certificates whose name matches this text, the way {@code matchType} says;
+ *                      empty matches every one
+ * @param matchType     how {@code prefix} is matched against each name: {@code "prefix"}, which
+ *                      is also what an empty value means and what every listing did before the
+ *                      field existed, {@code "endsWith"}, {@code "contains"} or {@code "regex"}.
+ *                      Every type but {@code "regex"} treats the text as a literal, so
+ *                      {@code "a.b"} does not also find {@code "aXb"}. An unknown type, or a
+ *                      regex that does not compile, is refused with HTTP 400 rather than quietly
+ *                      matching nothing
  * @param pageSize      the maximum number of certificates to return in a single page
  * @param pageIndex     the zero-based index of the page to return
  * @param sortColumn    the column results are sorted by
  * @param sortDirection the direction to sort in, {@code "asc"} or {@code "desc"}
  */
-public record ListCertificatesRequest(String prefix, long pageSize, long pageIndex, String sortColumn,
-                                      String sortDirection) {
+public record ListCertificatesRequest(String prefix, String matchType, long pageSize, long pageIndex,
+                                      String sortColumn, String sortDirection) {
+
+    /**
+     * Creates a request that matches names by prefix - the shape this record had before
+     * {@code matchType} existed, so code written against it still compiles.
+     *
+     * @param prefix        only certificates whose name starts with this prefix are returned
+     * @param pageSize      the maximum number of certificates to return in a single page
+     * @param pageIndex     the zero-based index of the page to return
+     * @param sortColumn    the column results are sorted by
+     * @param sortDirection the direction to sort in, {@code "asc"} or {@code "desc"}
+     */
+    public ListCertificatesRequest(String prefix, long pageSize, long pageIndex, String sortColumn, String sortDirection) {
+        this(prefix, "", pageSize, pageIndex, sortColumn, sortDirection);
+    }
 
     /**
      * Creates a new instance of the Builder for constructing a ListCertificatesRequest object.
@@ -36,6 +58,11 @@ public record ListCertificatesRequest(String prefix, long pageSize, long pageInd
          * Only certificates whose name starts with this prefix are returned.
          */
         private String prefix = "";
+
+        /**
+         * How the prefix is matched against each name; empty is a prefix match.
+         */
+        private String matchType = "";
 
         /**
          * The maximum number of certificates to return in a single page.
@@ -65,6 +92,18 @@ public record ListCertificatesRequest(String prefix, long pageSize, long pageInd
          */
         public Builder prefix(String prefix) {
             this.prefix = prefix;
+            return this;
+        }
+
+        /**
+         * Sets how the prefix is matched against each name.
+         *
+         * @param matchType {@code "prefix"}, {@code "endsWith"}, {@code "contains"} or
+         *                  {@code "regex"}; empty, the default, is a prefix match
+         * @return the builder instance
+         */
+        public Builder matchType(String matchType) {
+            this.matchType = matchType;
             return this;
         }
 
@@ -118,7 +157,7 @@ public record ListCertificatesRequest(String prefix, long pageSize, long pageInd
          * @return a new ListCertificatesRequest instance.
          */
         public ListCertificatesRequest build() {
-            return new ListCertificatesRequest(prefix, pageSize, pageIndex, sortColumn, sortDirection);
+            return new ListCertificatesRequest(prefix, matchType, pageSize, pageIndex, sortColumn, sortDirection);
         }
     }
 }

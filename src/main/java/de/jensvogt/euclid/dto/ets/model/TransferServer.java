@@ -36,6 +36,14 @@ import java.util.List;
  *                     and a map could not name a user who has not logged in yet
  * @param userIds      EAM user IDs allowed to log in
  * @param userGroups   EAM user groups whose members may log in
+ * @param userCount    how many people this server lets in, counted once each. Neither list's
+ *                     length nor their sum: the two are a union - a user may be named directly, be
+ *                     a member of one of the groups, or both - so counting {@code userIds} alone
+ *                     undercounts a server that admits people by group, and adding the group names
+ *                     in counts a group as if it were a person. Resolved by the server against EAM
+ *                     the way a login is, so a group that no longer exists admits nobody here
+ *                     either; both lists are still reported as stored, since a page that edits
+ *                     them has to show what is there
  * @param directories  directories every session should find under its home, created at login and
  *                     relative to the home prefix - so {@code "incoming/mix"} under a
  *                     {@code "{user}"} home is {@code "jvo/incoming/mix/"} for one client and
@@ -58,7 +66,7 @@ public record TransferServer(String serverId, String runtimeName, String ern, St
                              String region, String protocol,
                              String address, long port, String bucketName, String bucketErn, String homeDirectory,
                              List<String> userIds,
-                             List<String> userGroups, List<String> directories, String desiredState, String state,
+                             List<String> userGroups, long userCount, List<String> directories, String desiredState, String state,
                              String hostKey, long pasvMin,
                              long pasvMax, String created, String modified) {
 }

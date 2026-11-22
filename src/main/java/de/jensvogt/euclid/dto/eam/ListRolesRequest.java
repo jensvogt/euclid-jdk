@@ -3,7 +3,14 @@ package de.jensvogt.euclid.dto.eam;
 /**
  * Request to list an account's roles.
  *
- * @param prefix         only roles whose name starts with this; empty matches all
+ * @param prefix         the text to filter role names by, matched as {@code matchType} says;
+ *                       empty matches all
+ * @param matchType     how {@code prefix} is matched against the name: {@code "prefix"},
+ *                      {@code "endsWith"}, {@code "contains"} or {@code "regex"}; empty means
+ *                      {@code "prefix"}, which is what every listing did before the choice existed.
+ *                      Every type but {@code "regex"} takes the text literally, so a search for
+ *                      {@code "a.b"} does not also find {@code "aXb"}; a pattern the server cannot
+ *                      use is refused with HTTP 400
  * @param pageSize       the maximum number of stored roles to return in a single page
  * @param pageIndex      the zero-based index of the page to return
  * @param sortColumn     the column results are sorted by
@@ -12,8 +19,23 @@ package de.jensvogt.euclid.dto.eam;
  *                       They are not stored, so they sit outside the paging and arrive first - a
  *                       caller listing roles almost always wants to see what it can bind
  */
-public record ListRolesRequest(String prefix, long pageSize, long pageIndex, String sortColumn, String sortDirection,
+public record ListRolesRequest(String prefix, String matchType, long pageSize, long pageIndex, String sortColumn, String sortDirection,
                                boolean includeBuiltin) {
+
+    /**
+     * Creates a request that matches {@code prefix} as a prefix - the shape this request had
+     * before {@code matchType} existed, kept so code written against it goes on compiling.
+     *
+     * @param prefix see the record component of the same name
+     * @param pageSize see the record component of the same name
+     * @param pageIndex see the record component of the same name
+     * @param sortColumn see the record component of the same name
+     * @param sortDirection see the record component of the same name
+     * @param includeBuiltin see the record component of the same name
+     */
+    public ListRolesRequest(String prefix, long pageSize, long pageIndex, String sortColumn, String sortDirection, boolean includeBuiltin) {
+        this(prefix, "", pageSize, pageIndex, sortColumn, sortDirection, includeBuiltin);
+    }
 
     /**
      * Creates a builder.
@@ -36,6 +58,11 @@ public record ListRolesRequest(String prefix, long pageSize, long pageIndex, Str
         }
 
         private String prefix = "";
+
+        /**
+         * How the prefix is matched; empty means as a prefix.
+         */
+        private String matchType = "";
         private long pageSize = 10;
         private long pageIndex = 0;
         private String sortColumn = "name";
@@ -50,6 +77,18 @@ public record ListRolesRequest(String prefix, long pageSize, long pageIndex, Str
          */
         public Builder prefix(String prefix) {
             this.prefix = prefix;
+            return this;
+        }
+
+        /**
+         * Sets how the prefix is matched: {@code "prefix"}, {@code "endsWith"}, {@code "contains"}
+         * or {@code "regex"}.
+         *
+         * @param matchType the match type; empty means {@code "prefix"}
+         * @return the builder instance
+         */
+        public Builder matchType(String matchType) {
+            this.matchType = matchType;
             return this;
         }
 
@@ -114,7 +153,7 @@ public record ListRolesRequest(String prefix, long pageSize, long pageIndex, Str
          * @return the request
          */
         public ListRolesRequest build() {
-            return new ListRolesRequest(prefix, pageSize, pageIndex, sortColumn, sortDirection, includeBuiltin);
+            return new ListRolesRequest(prefix, matchType, pageSize, pageIndex, sortColumn, sortDirection, includeBuiltin);
         }
     }
 }

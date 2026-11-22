@@ -33,6 +33,8 @@ import de.jensvogt.euclid.dto.eam.ListUserGroupsResponse;
 import de.jensvogt.euclid.dto.eam.ListUserRequest;
 import de.jensvogt.euclid.dto.eam.ListUserResponse;
 import de.jensvogt.euclid.dto.eam.RegisterRequest;
+import de.jensvogt.euclid.dto.eam.RegisterResponse;
+import de.jensvogt.euclid.dto.eam.ListPermissionsResponse;
 import de.jensvogt.euclid.dto.eam.ListGrantsResponse;
 import de.jensvogt.euclid.dto.eam.ListRolesRequest;
 import de.jensvogt.euclid.dto.eam.ListRolesResponse;
@@ -52,6 +54,7 @@ import de.jensvogt.euclid.dto.eam.model.UserGroup;
 import de.jensvogt.euclid.module.ead.EuclidEad;
 import de.jensvogt.euclid.module.eag.EuclidEag;
 import de.jensvogt.euclid.module.eap.EuclidEap;
+import de.jensvogt.euclid.module.eds.EuclidEds;
 import de.jensvogt.euclid.module.ees.EuclidEes;
 import de.jensvogt.euclid.module.ekm.EuclidEkm;
 import de.jensvogt.euclid.module.ekv.EuclidEkv;
@@ -279,6 +282,22 @@ public record EuclidSession(String token, String userId, String accountId, Strin
     }
 
     /**
+     * EDS (domain name service) operations for this session - the zones the name server answers
+     * for, the record sets in them, and what it would answer for a name. Requests are signed with
+     * SigV4 using {@link #accessKeyId()}/{@link #secretAccessKey()} when both are present, falling
+     * back to the bearer token otherwise - mirroring how euclid-cli authenticates service calls.
+     * <p>
+     * Zones are owned by the session's account and namespace, but a zone's name is unique across
+     * the installation. Each action needs the matching {@code eds:*} permission and is answered
+     * with HTTP 403 without it.
+     *
+     * @return EuclidEds instance
+     */
+    public EuclidEds eds() {
+        return new EuclidEds(baseUrl, token, region, accountId, userId, accessKeyId, secretAccessKey, caCertPath, nameSpace);
+    }
+
+    /**
      * EMM (module manager) operations for this session - every module's process pool, limits and
      * desired state, and the backup, export and import of the installation's data. Requests are
      * signed with SigV4 using {@link #accessKeyId()}/{@link #secretAccessKey()} when both are
@@ -354,9 +373,25 @@ public record EuclidSession(String token, String userId, String accountId, Strin
      */
     public ListUserResponse listUsers(String prefix, long pageSize, long pageIndex, String sortColumn,
                                       String sortDirection) throws IOException, InterruptedException {
-        String body = OBJECT_MAPPER.writeValueAsString(
-                ListUserRequest.builder().prefix(prefix).pageSize(pageSize).pageIndex(pageIndex)
-                        .sortColumn(sortColumn).sortDirection(sortDirection).build());
+        return listUsers(ListUserRequest.builder().prefix(prefix).pageSize(pageSize).pageIndex(pageIndex)
+                .sortColumn(sortColumn).sortDirection(sortDirection).build());
+    }
+
+    /**
+     * Retrieves users with every listing option spelled out, including how the search text is
+     * matched - {@link ListUserRequest#matchType()} turns the prefix filter into a suffix,
+     * substring or regular-expression search, which the positional forms cannot ask for.
+     * Requires administrator privileges.
+     *
+     * @param request what to list
+     * @return a {@code ListUserResponse} carrying the matching users and their total
+     * @throws EuclidServiceException if the caller is not an administrator (403), or the match type
+     *                                or pattern is not one the server can use (400)
+     * @throws IOException            if an I/O error occurs when sending or receiving the HTTP request
+     * @throws InterruptedException   if the operation is interrupted while waiting for the HTTP response
+     */
+    public ListUserResponse listUsers(ListUserRequest request) throws IOException, InterruptedException {
+        String body = OBJECT_MAPPER.writeValueAsString(request);
         HttpResponse<String> response = new EuclidHttpClient(caCertPath).post(baseUrl + "/", body, "eam", "list-users",
                 requestHeaders(Map.of("Content-Type", "application/json", "Authorization", "Bearer " + token)));
 
@@ -403,10 +438,14 @@ public record EuclidSession(String token, String userId, String accountId, Strin
      * @param password  the password for the new user
      * @param email     the email address of the user being registered
      * @param isAdmin   indicates whether the user should have administrative privileges
+     * @return the user as the server stored them - their ERN in particular, which is built
+     *         server-side from the account and user ID rather than sent
+     * @throws EuclidServiceException if the caller is not an administrator (403), the user ID or
+     *                                password is missing (400), or the user ID is taken (409)
      * @throws IOException          if an I/O error occurs during the registration process
      * @throws InterruptedException if the operation is interrupted while waiting for a response
      */
-    public void register(String region, String accountId, String userId, String password, String email, boolean isAdmin)
+    public RegisterResponse register(String region, String accountId, String userId, String password, String email, boolean isAdmin)
             throws IOException, InterruptedException {
         RegisterRequest request = RegisterRequest.builder().region(region).accountId(accountId).userId(userId).password(password).email(email).isAdmin(isAdmin).build();
         String body = OBJECT_MAPPER.writeValueAsString(request);
@@ -416,6 +455,9 @@ public record EuclidSession(String token, String userId, String accountId, Strin
         if (response.statusCode() / 100 != 2) {
             throw new EuclidServiceException("eam", "register", response.statusCode(), response.body());
         }
+
+        JsonNode root = OBJECT_MAPPER.readTree(response.body());
+        return RegisterResponse.builder().metadata(toMetadata(root.get("metadata"))).user(toUser(root.path("user"))).build();
     }
 
     /**
@@ -615,6 +657,66 @@ public record EuclidSession(String token, String userId, String accountId, Strin
     }
 
     /**
+     * Renews this session before its token runs out ({@code refresh-session}), and returns the
+     * renewed one.
+     * <p>
+     * A token lasts an hour and nothing about that is negotiable, so a program that stays open for
+     * longer has to renew - without this the only way back is a fresh login, which for a password
+     * means asking for it again and for a federated login means another trip through the browser.
+     * The server answers with the same response a login gives, so the renewed session carries a new
+     * token with a full hour on it and the same access key: the server reuses the user's active key
+     * rather than minting one, so nothing signing with it elsewhere is invalidated.
+     * <p>
+     * Deliberately not a way <em>in</em>: it authenticates like every other action, with this
+     * session's still-valid token, so it extends a session rather than creating one. An expired
+     * token is refused with HTTP 401 here exactly as everywhere else - renewing is something to do
+     * before the token runs out, not after.
+     * <p>
+     * What this session chose for itself survives: the account it works in (which may not be the
+     * home account the server's answer names - see {@link EuclidEam#account(String)}) and its
+     * active namespace. The cached copy in {@code $HOME/.euclid/credentials} is replaced too, but
+     * only when it holds this same user's session on this same server - a refresh does not take
+     * over a cache that belongs to somebody else.
+     * <p>
+     * This session object is left as it is; records are immutable. Use the one returned.
+     *
+     * @return the renewed session
+     * @throws EuclidServiceException if the token has expired or is otherwise refused (401)
+     * @throws IOException            if an I/O error occurs during the operation
+     * @throws InterruptedException   if the operation is interrupted while waiting for a response
+     */
+    public EuclidSession refreshSession() throws IOException, InterruptedException {
+        HttpResponse<String> response = new EuclidHttpClient(caCertPath).post(baseUrl + "/", "{}", "eam", "refresh-session",
+                requestHeaders(Map.of("Content-Type", "application/json", "Authorization", "Bearer " + token)));
+
+        if (response.statusCode() / 100 != 2) {
+            throw new EuclidServiceException("eam", "refresh-session", response.statusCode(), response.body());
+        }
+
+        EuclidSession issued = EuclidEam.extractSession(response.body(), baseUrl, caCertPath);
+        EuclidSession refreshed = new EuclidSession(issued.token(), issued.userId() == null ? userId : issued.userId(),
+                accountId == null ? issued.accountId() : accountId, region == null ? issued.region() : region,
+                issued.accessKeyId() == null ? accessKeyId : issued.accessKeyId(),
+                issued.secretAccessKey() == null ? secretAccessKey : issued.secretAccessKey(),
+                issued.isAdmin(), response.body(), baseUrl, caCertPath, nameSpace);
+        EuclidEam.updateCachedSession(refreshed);
+        return refreshed;
+    }
+
+    /**
+     * This session, working in another account. Package-private: the only way to choose an account
+     * is {@link EuclidEam#account(String)}, which checks it against the accounts the user may work
+     * in first.
+     *
+     * @param accountId the account to work in
+     * @return a new session, identical to this one except for the account
+     */
+    EuclidSession withAccountId(String accountId) {
+        return new EuclidSession(token, userId, accountId, region, accessKeyId, secretAccessKey, isAdmin, rawResponse,
+                baseUrl, caCertPath, nameSpace);
+    }
+
+    /**
      * Creates a new SigV4 access key for this session's user and returns it. The secret is only
      * ever returned once, right here - it is not retrievable again via {@link #listAccessKeys()}.
      *
@@ -742,9 +844,28 @@ public record EuclidSession(String token, String userId, String accountId, Strin
      */
     public ListUserGroupsResponse listUserGroups(String prefix, long pageSize, long pageIndex, String sortColumn,
                                           String sortDirection) throws IOException, InterruptedException {
-        String body = OBJECT_MAPPER.writeValueAsString(
-                ListUserGroupsRequest.builder().prefix(prefix).pageSize(pageSize).pageIndex(pageIndex)
-                        .sortColumn(sortColumn).sortDirection(sortDirection).build());
+        return listUserGroups(ListUserGroupsRequest.builder().prefix(prefix).pageSize(pageSize).pageIndex(pageIndex)
+                .sortColumn(sortColumn).sortDirection(sortDirection).build());
+    }
+
+    /**
+     * Lists user groups with every listing option spelled out, including how the search text is
+     * matched - see {@link ListUserGroupsRequest#matchType()}.
+     * <p>
+     * Not administrator-only: the server gates this on the {@code eam:list-user-groups} permission
+     * like any other action, so an application whose role carries it may list groups - which is
+     * what one resolving its own callers' group memberships needs. What comes back is the same
+     * either way.
+     *
+     * @param request what to list
+     * @return a {@code ListUserGroupsResponse} carrying the matching user groups and their total
+     * @throws EuclidServiceException if the caller holds no role allowing it (403), or the match
+     *                                type or pattern is not one the server can use (400)
+     * @throws IOException            if an I/O error occurs during the operation
+     * @throws InterruptedException   if the operation is interrupted while waiting for a response
+     */
+    public ListUserGroupsResponse listUserGroups(ListUserGroupsRequest request) throws IOException, InterruptedException {
+        String body = OBJECT_MAPPER.writeValueAsString(request);
         HttpResponse<String> response = new EuclidHttpClient(caCertPath).post(baseUrl + "/", body, "eam", "list-user-groups",
                 requestHeaders(Map.of("Content-Type", "application/json", "Authorization", "Bearer " + token)));
 
@@ -801,10 +922,17 @@ public record EuclidSession(String token, String userId, String accountId, Strin
     }
 
     /**
-     * Adds a user to a user group.
+     * Adds a user to a user group. Requires administrator privileges.
+     * <p>
+     * Both may be given either way they are spelled elsewhere: the group by name or by ERN, the
+     * user by user ID or by ERN. A value starting with {@code "ern:"} is taken as an ERN - a name
+     * cannot begin that way without being one - so the name a listing shows and the ERN a grant
+     * carries both work.
      *
-     * @param userGroup user group ERN
-     * @param user      user ERN
+     * @param userGroup the group's name, or its ERN
+     * @param user      the user's ID, or their ERN
+     * @throws EuclidServiceException if either does not exist (404), or the user is already a member
+     *                                (409)
      * @throws IOException          if an I/O error occurs during the operation
      * @throws InterruptedException if the operation is interrupted while waiting for a response
      */
@@ -820,10 +948,15 @@ public record EuclidSession(String token, String userId, String accountId, Strin
     }
 
     /**
-     * Removes a user from a user group.
+     * Removes a user from a user group. Requires administrator privileges.
+     * <p>
+     * Accepts the same spellings {@link #addUserToUserGroup(String, String)} does: the group by name
+     * or ERN, the user by user ID or ERN. Removing a user who is not a member is not an error - the
+     * group simply ends up without them, which is what was asked for.
      *
-     * @param userGroup user group ERN
-     * @param user      user ERN
+     * @param userGroup the group's name, or its ERN
+     * @param user      the user's ID, or their ERN
+     * @throws EuclidServiceException if either does not exist (404)
      * @throws IOException          if an I/O error occurs during the operation
      * @throws InterruptedException if the operation is interrupted while waiting for a response
      */
@@ -955,9 +1088,24 @@ public record EuclidSession(String token, String userId, String accountId, Strin
      */
     public ListAccountsResponse listAccounts(String prefix, long pageSize, long pageIndex, String sortColumn,
                                       String sortDirection) throws IOException, InterruptedException {
-        String body = OBJECT_MAPPER.writeValueAsString(
-                ListAccountsRequest.builder().prefix(prefix).pageSize(pageSize).pageIndex(pageIndex)
-                        .sortColumn(sortColumn).sortDirection(sortDirection).build());
+        return listAccounts(ListAccountsRequest.builder().prefix(prefix).pageSize(pageSize).pageIndex(pageIndex)
+                .sortColumn(sortColumn).sortDirection(sortDirection).build());
+    }
+
+    /**
+     * Lists accounts with every listing option spelled out, including how the search text is
+     * matched - see {@link ListAccountsRequest#matchType()}. Requires administrator privileges;
+     * {@link #listMyAccounts()} is the listing anybody may ask for.
+     *
+     * @param request what to list
+     * @return a {@code ListAccountsResponse} carrying the matching accounts and their total
+     * @throws EuclidServiceException if the caller is not an administrator (403), or the match type
+     *                                or pattern is not one the server can use (400)
+     * @throws IOException            if an I/O error occurs during the operation
+     * @throws InterruptedException   if the operation is interrupted while waiting for a response
+     */
+    public ListAccountsResponse listAccounts(ListAccountsRequest request) throws IOException, InterruptedException {
+        String body = OBJECT_MAPPER.writeValueAsString(request);
         HttpResponse<String> response = new EuclidHttpClient(caCertPath).post(baseUrl + "/", body, "eam", "list-accounts",
                 requestHeaders(Map.of("Content-Type", "application/json", "Authorization", "Bearer " + token)));
 
@@ -1112,9 +1260,30 @@ public record EuclidSession(String token, String userId, String accountId, Strin
     public ListNamespacesResponse listNamespaces(String accountId, String prefix, long pageSize, long pageIndex,
                                           String sortColumn, String sortDirection)
             throws IOException, InterruptedException {
-        String body = OBJECT_MAPPER.writeValueAsString(
-                ListNamespacesRequest.builder().accountId(accountId).prefix(prefix).pageSize(pageSize)
-                        .pageIndex(pageIndex).sortColumn(sortColumn).sortDirection(sortDirection).build());
+        return listNamespaces(ListNamespacesRequest.builder().accountId(accountId).prefix(prefix).pageSize(pageSize)
+                .pageIndex(pageIndex).sortColumn(sortColumn).sortDirection(sortDirection).build());
+    }
+
+    /**
+     * Lists the namespaces of an account with every listing option spelled out, including how the
+     * search text is matched - see {@link ListNamespacesRequest#matchType()}.
+     * <p>
+     * What comes back is what this session's user may work in, not everything the account holds:
+     * an account administrator sees every namespace, anybody else only those a grant of theirs or
+     * of one of their groups names (or all of them, for a grant scoped to {@code "*"}). That is the
+     * choice somebody picking a namespace at sign-in is making, and offering the rest would offer a
+     * choice that is refused the moment it is acted on. {@link ListNamespacesResponse#total()}
+     * counts the same visible set, so it stays an honest guide to paging.
+     *
+     * @param request what to list; {@link ListNamespacesRequest#accountId()} is required
+     * @return a {@code ListNamespacesResponse} carrying the visible namespaces and their total
+     * @throws EuclidServiceException if no account was named, or the match type or pattern is not
+     *                                one the server can use (400)
+     * @throws IOException            if an I/O error occurs during the operation
+     * @throws InterruptedException   if the operation is interrupted while waiting for a response
+     */
+    public ListNamespacesResponse listNamespaces(ListNamespacesRequest request) throws IOException, InterruptedException {
+        String body = OBJECT_MAPPER.writeValueAsString(request);
         HttpResponse<String> response = new EuclidHttpClient(caCertPath).post(baseUrl + "/", body, "eam", "list-namespaces",
                 requestHeaders(Map.of("Content-Type", "application/json", "Authorization", "Bearer " + token)));
 
@@ -1459,6 +1628,32 @@ public record EuclidSession(String token, String userId, String accountId, Strin
             permissions.add(permission.asText());
         }
         return permissions;
+    }
+
+    /**
+     * The whole answer {@code list-permissions} gives: every permission, and the modules they come
+     * from - including the ones that are never grantable, named rather than silently missing.
+     * <p>
+     * {@link #listPermissions()} is the permission names alone, which is what validating a role
+     * needs. This is for a caller that has to explain the vocabulary as well - offering a
+     * {@code "<module>:*"} permission per module, or saying why {@code emm} has no entries - which
+     * the names alone cannot do. Readable by anybody logged in: it is the vocabulary, not anybody's
+     * access.
+     *
+     * @return the permissions, the modules that have them, and the modules that never will
+     * @throws IOException          if an I/O error occurs during the operation
+     * @throws InterruptedException if the operation is interrupted while waiting for a response
+     */
+    public ListPermissionsResponse describePermissions() throws IOException, InterruptedException {
+        HttpResponse<String> response = new EuclidHttpClient(caCertPath).post(baseUrl + "/", "{}", "eam",
+                "list-permissions",
+                requestHeaders(Map.of("Content-Type", "application/json", "Authorization", "Bearer " + token)));
+
+        if (response.statusCode() / 100 != 2) {
+            throw new EuclidServiceException("eam", "list-permissions", response.statusCode(), response.body());
+        }
+
+        return OBJECT_MAPPER.readValue(response.body(), ListPermissionsResponse.class);
     }
 
     /**

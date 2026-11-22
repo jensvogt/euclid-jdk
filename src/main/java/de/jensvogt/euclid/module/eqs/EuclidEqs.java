@@ -31,6 +31,7 @@ import de.jensvogt.euclid.dto.eqs.ListQueueRequest;
 import de.jensvogt.euclid.dto.eqs.ListQueueResponse;
 import de.jensvogt.euclid.dto.eqs.PurgeAllQueuesRequest;
 import de.jensvogt.euclid.dto.eqs.PurgeQueueRequest;
+import de.jensvogt.euclid.dto.eqs.PurgeQueueResponse;
 import de.jensvogt.euclid.dto.eqs.QueueStatusRequest;
 import de.jensvogt.euclid.dto.eqs.QueueStatusResponse;
 import de.jensvogt.euclid.dto.eqs.ReceiveMessagesRequest;
@@ -400,9 +401,30 @@ public final class EuclidEqs implements TokenRefreshable, SigningSchemeSelectabl
     public ListQueueResponse listQueues(String prefix, long pageSize, long pageIndex, String sortColumn,
                                         String sortDirection, boolean includeInternal)
             throws IOException, InterruptedException {
-        String body = OBJECT_MAPPER.writeValueAsString(
-                ListQueueRequest.builder().prefix(prefix).pageSize(pageSize).pageIndex(pageIndex)
-                        .sortColumn(sortColumn).sortDirection(sortDirection).includeInternal(includeInternal).build());
+        return listQueues(ListQueueRequest.builder().prefix(prefix).pageSize(pageSize).pageIndex(pageIndex)
+                .sortColumn(sortColumn).sortDirection(sortDirection).includeInternal(includeInternal).build());
+    }
+
+    /**
+     * Retrieves a page of queues described by a complete request - the form that reaches every
+     * option list-queues has, including how the name filter is matched.
+     * <p>
+     * A request rather than one more overload: the filter has grown a match type
+     * ({@code "prefix"}, {@code "endsWith"}, {@code "contains"} or {@code "regex"}), and a
+     * seven-argument call with three adjacent strings is one nobody reads correctly. The shorter
+     * overloads remain for the common cases and all end up here.
+     * <p>
+     * A match type the server does not know, or a regular expression it cannot compile, is refused
+     * with HTTP 400 rather than quietly treated as a prefix. Asking for internal queues without
+     * being an administrator is not refused - they are simply left out.
+     *
+     * @param request the filter, page, sort order and whether to include euclid's own queues
+     * @return the queues on the requested page, and how many match in total
+     * @throws IOException If an I/O error occurs during the operation.
+     * @throws InterruptedException If the operation is interrupted during execution.
+     */
+    public ListQueueResponse listQueues(ListQueueRequest request) throws IOException, InterruptedException {
+        String body = OBJECT_MAPPER.writeValueAsString(request);
         HttpResponse<String> response = httpClient.post(baseUrl + "/", body, "eqs", "list-queues",
                 requestHeaders("list-queues", body));
 
@@ -578,7 +600,30 @@ public final class EuclidEqs implements TokenRefreshable, SigningSchemeSelectabl
      * @throws EuclidServiceException If the server responds with a failure status code.
      */
     public void deleteQueue(String ern) throws IOException, InterruptedException {
-        String body = OBJECT_MAPPER.writeValueAsString(DeleteQueueRequest.builder().ern(ern).build());
+        deleteQueue(ern, false);
+    }
+
+    /**
+     * Deletes a queue, optionally only if nothing is using it.
+     * <p>
+     * With {@code ifEmpty} the server refuses the delete with HTTP 409 while the queue still holds
+     * messages, and equally while events are on their way into it - a bucket or topic delivery not
+     * yet turned into a message is about to become one, and the delete would discard it. It also
+     * refuses when it cannot establish whether such deliveries are pending, rather than deleting a
+     * queue because the database did not answer. The count is taken from the messages themselves,
+     * not from the queue's counters, so a counter that has drifted cannot decide this. A queue that
+     * does not exist cannot be shown to be unused either, and is HTTP 404.
+     *
+     * @param ern     the ERN (Entity Resource Name) of the queue to delete
+     * @param ifEmpty {@code true} to delete only an unused queue, {@code false} to delete it whatever
+     *                it holds
+     * @throws IOException If an I/O error occurs during the request.
+     * @throws InterruptedException If the operation is interrupted.
+     * @throws EuclidServiceException If the server refuses - with status 409 when {@code ifEmpty}
+     *                                found the queue in use.
+     */
+    public void deleteQueue(String ern, boolean ifEmpty) throws IOException, InterruptedException {
+        String body = OBJECT_MAPPER.writeValueAsString(DeleteQueueRequest.builder().ern(ern).ifEmpty(ifEmpty).build());
         HttpResponse<String> response = httpClient.post(baseUrl + "/", body, "eqs", "delete-queue",
                 requestHeaders("delete-queue", body));
 
@@ -729,13 +774,34 @@ public final class EuclidEqs implements TokenRefreshable, SigningSchemeSelectabl
      * @throws InterruptedException If the thread executing the method is interrupted.
      */
     public void purgeQueue(String ern) throws IOException, InterruptedException {
-        String body = OBJECT_MAPPER.writeValueAsString(PurgeQueueRequest.builder().ern(ern).build());
+        purgeQueue(ern, false);
+    }
+
+    /**
+     * Purges a queue, optionally in the background.
+     * <p>
+     * A queue with a large backlog takes longer to empty than the gateway will wait, so an inline
+     * purge of one hands the caller a timeout while the purge runs on regardless. With
+     * {@code async} the server answers HTTP 202 at once instead, and the response carries how many
+     * messages were waiting when it accepted the purge. Nothing tracks the background work: a purge
+     * interrupted halfway has removed part of the queue, and asking again removes the rest.
+     *
+     * @param ern   the ERN (Entity Resource Name) of the queue to purge
+     * @param async {@code true} to have the server answer before the purge has finished
+     * @return whether the purge is still running, and the messages there were when it was accepted
+     * @throws IOException If there is an issue with the input/output during the process.
+     * @throws InterruptedException If the thread executing the method is interrupted.
+     */
+    public PurgeQueueResponse purgeQueue(String ern, boolean async) throws IOException, InterruptedException {
+        String body = OBJECT_MAPPER.writeValueAsString(PurgeQueueRequest.builder().ern(ern).async(async).build());
         HttpResponse<String> response = httpClient.post(baseUrl + "/", body, "eqs", "purge-queue",
                 requestHeaders("purge-queue", body));
 
         if (response.statusCode() / 100 != 2) {
             throw new EuclidServiceException("eqs", "purge-queue", response.statusCode(), response.body());
         }
+
+        return extractPurgeQueueResponse(response.body(), ern);
     }
 
     /**
@@ -1047,8 +1113,34 @@ public final class EuclidEqs implements TokenRefreshable, SigningSchemeSelectabl
      */
     public SendMessageResponse sendMessage(String ern, String body, Map<String, Variant> attributes, String priority)
             throws IOException, InterruptedException {
+        return sendMessage(ern, body, attributes, new HashMap<>(), priority);
+    }
+
+    /**
+     * Sends a message carrying euclid's own envelope along with the caller's attributes.
+     * <p>
+     * For a service in the middle of a chain. The message it received carried system attributes -
+     * a correlation id most of all - and the next message has to carry them on, or they identify
+     * only the first hop. They travel apart from {@code attributes} the whole way, so a consumer's
+     * own attribute names can never collide with them. A priority among them does not set this
+     * message's priority; {@code priority} does.
+     *
+     * @param ern              The endpoint resource name to which the message will be sent.
+     * @param body             The message content to be transmitted.
+     * @param attributes       A map of additional attributes to include with the message.
+     * @param systemAttributes Euclid's envelope to carry on, typically
+     *                         {@link Message#systemAttributes()} of the message being answered.
+     * @param priority         The priority level of the message.
+     * @return A SendMessageResponse object containing the response details from the operation.
+     * @throws IOException If an I/O error occurs during the operation.
+     * @throws InterruptedException If the operation is interrupted.
+     */
+    public SendMessageResponse sendMessage(String ern, String body, Map<String, Variant> attributes,
+                                           Map<String, Variant> systemAttributes, String priority)
+            throws IOException, InterruptedException {
         String requestBody = OBJECT_MAPPER.writeValueAsString(
-                SendMessageRequest.builder().ern(ern).body(body).attributes(attributes).priority(priority).build());
+                SendMessageRequest.builder().ern(ern).body(body).attributes(attributes)
+                        .systemAttributes(systemAttributes).priority(priority).build());
         HttpResponse<String> response = httpClient.post(baseUrl + "/", requestBody, "eqs", "send-message",
                 requestHeaders("send-message", requestBody));
 
@@ -1637,6 +1729,25 @@ public final class EuclidEqs implements TokenRefreshable, SigningSchemeSelectabl
     }
 
     /**
+     * Extracts a {@link PurgeQueueResponse} from the provided JSON response string.
+     * <p>
+     * A server from before purge-queue answered with a body answers with an empty one; that purge
+     * was done inline by definition, so it reads as such for the queue that was asked about.
+     *
+     * @param responseBody The JSON response body as a string.
+     * @param ern          The queue that was asked about, for a server that does not name it.
+     * @return A {@link PurgeQueueResponse} saying whether the purge is still running.
+     * @throws IOException If an error occurs while parsing the JSON response.
+     */
+    private static PurgeQueueResponse extractPurgeQueueResponse(String responseBody, String ern) throws IOException {
+        JsonNode root = responseBody == null || responseBody.isBlank()
+                ? OBJECT_MAPPER.createObjectNode() : OBJECT_MAPPER.readTree(responseBody);
+        String reported = textOrNull(root, "ern");
+        return PurgeQueueResponse.builder().ern(reported != null ? reported : ern)
+                .async(root.path("async").asBoolean(false)).messages(root.path("messages").asLong(0)).build();
+    }
+
+    /**
      * Extracts a {@link QueueStatusResponse} object from the provided JSON response string.
      *
      * @param responseBody The JSON response body as a string.
@@ -1826,6 +1937,8 @@ public final class EuclidEqs implements TokenRefreshable, SigningSchemeSelectabl
                 queueNode.path("maxReceiveCount").asLong(3),
                 textOrNull(queueNode, "deadLetterQueueArn"),
                 textOrNull(queueNode, "priority"),
+                textOrNull(queueNode, "status"),
+                queueNode.path("internal").asBoolean(false),
                 textOrNull(queueNode, "created"),
                 textOrNull(queueNode, "modified"));
     }

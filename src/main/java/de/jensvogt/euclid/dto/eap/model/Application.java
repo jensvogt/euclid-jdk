@@ -1,5 +1,7 @@
 package de.jensvogt.euclid.dto.eap.model;
 
+import de.jensvogt.euclid.dto.eap.ApplyInfrastructureResponse;
+
 import java.util.List;
 import java.util.Map;
 
@@ -27,7 +29,8 @@ import java.util.Map;
  * @param namespace      the namespace the application belongs to, empty for one at the account root
  * @param region         the region the application runs in
  * @param runtime        how the artifact is executed: {@code "JAVA"}, {@code "JAVA21"},
- *                       {@code "JAVA25"}, {@code "PYTHON"}, {@code "NODEJS"} or {@code "BINARY"}
+ *                       {@code "JAVA25"}, {@code "PYTHON"}, {@code "NODEJS"}, {@code "BINARY"} or
+ *                       {@code "RUST"}
  * @param bucketErn      ERN of the bucket holding the artifact, resolved when the application was
  *                       deployed
  * @param artifactKey    key of the artifact object within that bucket
@@ -35,6 +38,9 @@ import java.util.Map;
  *                       application defined before versions were recorded, until its next redeploy
  * @param md5Sum         MD5 of the artifact as it was when this version was deployed, which together
  *                       with the version answers "which build is running?" from the definition alone
+ * @param artifactSize   size of that artifact in bytes, read from the same ESM row as {@code md5Sum}
+ *                       so the two always describe the same build; 0 for an application deployed
+ *                       before the size was recorded, until its next redeploy
  * @param command        command the artifact is run with
  * @param arguments      arguments passed to the command
  * @param environment    environment variables the processes are started with
@@ -80,10 +86,19 @@ import java.util.Map;
  *                       spawn time and change as the pool scales
  * @param created        creation timestamp
  * @param modified       last-modified timestamp
+ * @param infrastructure what applying the application's own infrastructure declaration did as part
+ *                       of the deployment. Only
+ *                       {@link de.jensvogt.euclid.module.eap.EuclidEap#createApplication} answers
+ *                       with it; it is {@code null} from every other action. Reported here rather
+ *                       than as a failed call because a declaration that cannot be applied never
+ *                       stops a deployment whose artifact is fine - so check
+ *                       {@link ApplyInfrastructureResponse#error()} rather than assuming that a
+ *                       created application also got the queues and buckets it declared
  */
 public record Application(String applicationId, String runtimeName, String ern, String accountId, String namespace,
                           String region, String runtime,
-                          String bucketErn, String artifactKey, String version, String md5Sum, String command,
+                          String bucketErn, String artifactKey, String version, String md5Sum, long artifactSize,
+                          String command,
                           List<String> arguments,
                           Map<String, String> environment, List<String> resources, String userId,
                           boolean userExists, String logLevel,
@@ -93,5 +108,5 @@ public record Application(String applicationId, String runtimeName, String ern, 
                           ApplicationType type, String schedule, String nextRunAt,
                           String desiredState, String state, long instances,
                           List<ApplicationEndpoint> endpoints,
-                          String created, String modified) {
+                          String created, String modified, ApplyInfrastructureResponse infrastructure) {
 }
