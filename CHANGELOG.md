@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.61](https://github.com/jensvogt/euclid-jdk/compare/euclid-jdk-v0.1.60...euclid-jdk-v0.1.61) (2026-11-22)
+
+
+### Features
+
+* added EDS module ([70735ac](https://github.com/jensvogt/euclid-jdk/commit/70735ac3e5f3ffc7ed49552f30788a21eb5868f5))
+
 ## [0.1.60](https://github.com/jensvogt/euclid-jdk/compare/euclid-jdk-v0.1.59...euclid-jdk-v0.1.60) (2026-11-06)
 
 
